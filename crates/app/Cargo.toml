@@ -1,0 +1,18 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+commands.workspace = true
+futures.workspace = true
+gpui-kit.workspace = true
+state.workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[[bin]]
+name = "mm"
+path = "src/main.rs"

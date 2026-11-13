@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Build and test on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      - name: Check formatting
+        run: nix develop -c cargo fmt --all --check
+      - name: Lint
+        run: nix develop -c cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test the workspace
+        run: nix develop -c cargo test --workspace
+      - name: Test the pure crate on its own
+        run: nix develop -c cargo test -p state
+      - name: Refuse a UI toolkit, async runtime or HTTP client in the pure crate
+        run: |
+          tree="$(nix develop -c cargo tree -p state -e normal --prefix none)"
+          status=0
+          for crate in gpui-kit gpui-pre tokio reqwest hyper async-std smol zip; do
+            if grep -q "^${crate} v" <<< "$tree"; then
+              echo "::error::${crate} is in the dependency tree of the state crate"
+              status=1
+            fi
+          done
+          exit "$status"
