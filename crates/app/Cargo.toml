@@ -8,7 +8,9 @@ publish.workspace = true
 commands.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
+platform.workspace = true
 state.workspace = true
+thunderstore-engine.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

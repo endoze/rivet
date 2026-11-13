@@ -12,6 +12,11 @@ state = { path = "crates/state" }
 commands = { path = "crates/commands" }
 platform = { path = "crates/platform" }
 app = { path = "crates/app" }
+dirs = "6"
 futures = "0.3"
 gpui-kit = "=0.9.1"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+thunderstore-engine = { path = "../thunderstore-engine", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync"] }
+toml = "1"
