@@ -46,6 +46,9 @@ pub enum Notice {
   },
   /// The Steam launch option line was put on the clipboard.
   LaunchLineCopied,
+  /// Steam's launch options for a game, by its key in the game definitions,
+  /// were found to hold the line after being found without it.
+  SteamOptionSet(String),
 }
 
 impl Notice {
@@ -60,9 +63,10 @@ impl Notice {
   pub fn level(&self) -> Level {
     match self {
       Notice::OperationFinished { changed, .. } if changed.is_empty() => Level::Info,
-      Notice::OperationFinished { .. } | Notice::ProfileChanged(_) | Notice::Launched { .. } => {
-        Level::Success
-      }
+      Notice::OperationFinished { .. }
+      | Notice::ProfileChanged(_)
+      | Notice::Launched { .. }
+      | Notice::SteamOptionSet(_) => Level::Success,
       Notice::ProfileChangeFailed { .. } => Level::Error,
       Notice::IndexStale(_) => Level::Warning,
       Notice::LaunchLineCopied => Level::Info,
@@ -106,6 +110,10 @@ mod tests {
         Level::Success,
       ),
       (Notice::LaunchLineCopied, Level::Info),
+      (
+        Notice::SteamOptionSet("valheim".to_string()),
+        Level::Success,
+      ),
     ];
 
     for (notice, level) in levels {

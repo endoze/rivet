@@ -489,8 +489,7 @@ pub const COPY: &str = "Copy";
 pub const CHECK_AGAIN: &str = "Check again";
 pub const STEAM_OPTION_LEAD: &str = "Steam must start this game through Rivet for mods to load. Paste this line into the game's launch options in Steam, under Properties:";
 pub const STEAM_OPTION_CHECKING: &str = "Checking Steam's launch options";
-pub const STEAM_OPTION_SET: &str = "The launch option is set.";
-pub const STEAM_OPTION_NOT_SET: &str = "Steam's saved launch options do not have this line. Steam saves them when it closes, so after pasting it, restart Steam and press Check again.";
+pub const STEAM_OPTION_NOT_SET: &str = "Steam's saved launch options do not have this line. Steam saves them when it closes, so after pasting it, restart Steam. Rivet checks again when you come back to it, or press Check again.";
 
 /// Steam's launch options could not be read, so whether the line is set is
 /// unknown.
@@ -717,7 +716,19 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       title: LAUNCH_LINE_COPIED.to_string(),
       detail: vec![PASTE_IN_STEAM.to_string()],
     },
+    Notice::SteamOptionSet(game) => Told {
+      title: STEAM_SET_UP.to_string(),
+      detail: vec![steam_set_up(&game_name(game))],
+    },
   }
+}
+
+pub const STEAM_SET_UP: &str = "Steam is set up";
+
+/// What a Steam launch option found set means, such as `Steam now starts
+/// Valheim through Rivet, so modded launches load your mods.`.
+pub fn steam_set_up(game: &str) -> String {
+  format!("Steam now starts {game} through Rivet, so modded launches load your mods.")
 }
 
 pub const NO_README_SELECTED: &str = "Select a mod to read its readme.";

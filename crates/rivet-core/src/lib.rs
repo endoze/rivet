@@ -257,6 +257,8 @@ pub enum Msg {
   SteamOptionCheckPressed,
   /// Copy was pressed beside the Steam launch option line.
   LaunchLineCopyPressed,
+  /// The window came back into focus.
+  WindowFocused,
   /// A game's profiles were listed by name, or why they could not be.
   ProfilesListed {
     game: String,
@@ -513,6 +515,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),
     Msg::SteamOptionCheckPressed => launch::check_steam_option(state),
     Msg::LaunchLineCopyPressed => launch::copy_line(state),
+    Msg::WindowFocused => launch::window_focused(state),
     Msg::ProfilesListed { game, names } => switcher::listed(state, game, names),
     Msg::ProfilePicked(name) => switcher::picked(state, name),
     Msg::ProfileNamePressed(naming) => switcher::name_pressed(state, naming),

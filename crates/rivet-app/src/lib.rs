@@ -121,6 +121,11 @@ impl Shell {
         }
       },
     );
+    let focused = cx.observe_window_activation(window, |this: &mut Self, window, cx| {
+      if window.is_window_active() {
+        this.dispatch(Msg::WindowFocused, cx);
+      }
+    });
     let shell = cx.weak_entity();
 
     window.on_window_should_close(cx, move |_, cx| {
@@ -147,7 +152,13 @@ impl Shell {
       notices: Vec::new(),
       installed_search,
       icons: cx.new(|_| IconCache::new()),
-      _subscriptions: vec![searched, package_searched, named, installed_searched],
+      _subscriptions: vec![
+        searched,
+        package_searched,
+        named,
+        installed_searched,
+        focused,
+      ],
       _inbox,
     };
 
@@ -798,7 +809,7 @@ impl Shell {
     });
     let steam = launcher
       .and_then(|launcher| launcher.steam.as_ref())
-      .map(|steam| render_steam_option(steam, cx));
+      .and_then(|steam| render_steam_option(steam, cx));
 
     v_flex()
       .gap_2()
@@ -831,20 +842,26 @@ impl Shell {
 }
 
 /// The line to paste into Steam's launch options, with a copy button, and
-/// whether Steam holds it.
-fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyElement {
+/// what the last check of Steam found, or `None` when
+/// [`SteamOption::needs_attention`] says nothing is wrong.
+fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> Option<AnyElement> {
+  if !steam.needs_attention() {
+    return None;
+  }
+
   let palette = Palette::new(cx);
-  let (id, status) = match &steam.status {
-    OptionStatus::Checking => (
+  let (id, status) = match &steam.found {
+    _ if steam.checking => (
       "launch-option-checking",
       text::STEAM_OPTION_CHECKING.to_string(),
     ),
-    OptionStatus::Set => ("launch-option-set", text::STEAM_OPTION_SET.to_string()),
-    OptionStatus::NotSet => (
+    Some(OptionStatus::Unknown(reason)) => {
+      ("launch-option-unknown", text::steam_option_unknown(reason))
+    }
+    _ => (
       "launch-option-not-set",
       text::STEAM_OPTION_NOT_SET.to_string(),
     ),
-    OptionStatus::Unknown(reason) => ("launch-option-unknown", text::steam_option_unknown(reason)),
   };
   let line = steam.line.clone().map(|line| {
     h_flex()
@@ -864,29 +881,33 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyEleme
       )
   });
 
-  v_flex()
-    .gap_2()
-    .p_3()
-    .border_1()
-    .border_color(palette.border)
-    .child(text::STEAM_OPTION_LEAD)
-    .children(line)
-    .child(
-      h_flex()
-        .gap_2()
-        .justify_between()
-        .child(div().id(id).child(status).test_support())
-        .child(
-          Button::new("check-launch-option")
-            .label(text::CHECK_AGAIN)
-            .small()
-            .disabled(steam.status == OptionStatus::Checking)
-            .on_click(
-              cx.listener(|this, _, _, cx| this.dispatch(Msg::SteamOptionCheckPressed, cx)),
-            ),
-        ),
-    )
-    .into_any_element()
+  Some(
+    v_flex()
+      .id("launch-option")
+      .gap_2()
+      .p_3()
+      .border_1()
+      .border_color(palette.border)
+      .child(text::STEAM_OPTION_LEAD)
+      .children(line)
+      .child(
+        h_flex()
+          .gap_2()
+          .justify_between()
+          .child(div().id(id).flex_1().min_w_0().child(status).test_support())
+          .child(
+            Button::new("check-launch-option")
+              .label(text::CHECK_AGAIN)
+              .small()
+              .disabled(steam.checking)
+              .on_click(
+                cx.listener(|this, _, _, cx| this.dispatch(Msg::SteamOptionCheckPressed, cx)),
+              ),
+          ),
+      )
+      .test_support()
+      .into_any_element(),
+  )
 }
 
 fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> AnyElement {

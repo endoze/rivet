@@ -42,13 +42,29 @@ pub struct Launcher {
 pub struct SteamOption {
   /// `None` until it has been worked out.
   pub line: Option<String>,
-  pub status: OptionStatus,
+  /// What the last read of Steam's launch options found, kept while another
+  /// read runs. `None` until the first read ends.
+  pub found: Option<OptionStatus>,
+  /// Whether a read of Steam's launch options is running.
+  pub checking: bool,
+}
+
+impl SteamOption {
+  /// Whether the user must be shown the line: the last read found Steam
+  /// without it, or could not tell. Nothing needs showing before the first
+  /// read ends or once the line is set, so a game set up for mods opens
+  /// without it flashing up.
+  pub fn needs_attention(&self) -> bool {
+    matches!(
+      self.found,
+      Some(OptionStatus::NotSet | OptionStatus::Unknown(_))
+    )
+  }
 }
 
 /// Whether Steam's launch options for the game hold the line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OptionStatus {
-  Checking,
   Set,
   NotSet,
   /// Steam's settings could not be read, with the reason.
@@ -108,7 +124,8 @@ pub(crate) fn open(state: &mut State, game: &str) -> Vec<Effect> {
     game: game.to_string(),
     steam: app_id.map(|_| SteamOption {
       line: None,
-      status: OptionStatus::Checking,
+      found: None,
+      checking: true,
     }),
   });
 
@@ -301,6 +318,9 @@ pub(crate) fn copy_line(state: &State) -> Vec<Effect> {
 
 /// Applies what Steam's launch options for a game were found to be. The line
 /// is set when the options hold it anywhere, beside any of the user's own.
+///
+/// A line found set after the last read found it missing, or could not tell,
+/// tells the user Steam is now set up.
 pub(crate) fn steam_option_read(state: &mut State, read: SteamOptionRead) -> Vec<Effect> {
   let Some(steam) = state
     .launcher
@@ -310,19 +330,43 @@ pub(crate) fn steam_option_read(state: &mut State, read: SteamOptionRead) -> Vec
   else {
     return Vec::new();
   };
-
-  steam.status = match read.current {
+  let found = match read.current {
     Ok(Some(options)) if options.contains(&read.line) => OptionStatus::Set,
     Ok(_) => OptionStatus::NotSet,
     Err(reason) => OptionStatus::Unknown(reason),
   };
+  let now_set = found == OptionStatus::Set && steam.needs_attention();
+
+  steam.found = Some(found);
+  steam.checking = false;
   steam.line = Some(read.line);
 
-  Vec::new()
+  if !now_set {
+    return Vec::new();
+  }
+
+  vec![Effect::Notify(Notice::SteamOptionSet(read.game))]
+}
+
+/// Reads Steam's launch options again when the window comes back into focus
+/// and the last read found them without the line, since the user may have
+/// left to paste it into Steam.
+pub(crate) fn window_focused(state: &mut State) -> Vec<Effect> {
+  let waiting = state
+    .launcher
+    .as_ref()
+    .and_then(|launcher| launcher.steam.as_ref())
+    .is_some_and(|steam| !steam.checking && steam.found == Some(OptionStatus::NotSet));
+
+  if !waiting {
+    return Vec::new();
+  }
+
+  check_steam_option(state)
 }
 
 /// Reads Steam's launch options for the open game again, when it has a line
-/// to set.
+/// to set, keeping what the last read found until this one ends.
 pub(crate) fn check_steam_option(state: &mut State) -> Vec<Effect> {
   let Some(launcher) = state.launcher.as_mut() else {
     return Vec::new();
@@ -334,7 +378,7 @@ pub(crate) fn check_steam_option(state: &mut State) -> Vec<Effect> {
     return Vec::new();
   };
 
-  steam.status = OptionStatus::Checking;
+  steam.checking = true;
 
   vec![Effect::Run(Command::ReadSteamOption {
     game: launcher.game.clone(),
@@ -445,7 +489,8 @@ mod tests {
       state.launcher.and_then(|launcher| launcher.steam),
       Some(SteamOption {
         line: None,
-        status: OptionStatus::Checking,
+        found: None,
+        checking: true,
       })
     );
   }
@@ -482,10 +527,21 @@ mod tests {
       .and_then(|launcher| launcher.steam.clone())
   }
 
-  fn shown(status: OptionStatus) -> Option<SteamOption> {
+  /// The line, worked out, with what the last read found and no read
+  /// running.
+  fn shown(found: OptionStatus) -> Option<SteamOption> {
     Some(SteamOption {
       line: Some(LINE.to_string()),
-      status,
+      found: Some(found),
+      checking: false,
+    })
+  }
+
+  /// As [`shown`], with another read running.
+  fn rechecking(found: OptionStatus) -> Option<SteamOption> {
+    shown(found).map(|steam| SteamOption {
+      checking: true,
+      ..steam
     })
   }
 
@@ -532,7 +588,8 @@ mod tests {
       steam_option(&state),
       Some(SteamOption {
         line: None,
-        status: OptionStatus::Checking,
+        found: None,
+        checking: true,
       })
     );
   }
@@ -546,7 +603,103 @@ mod tests {
     let effects = update(&mut state, Msg::SteamOptionCheckPressed);
 
     assert_eq!(effects, vec![read_steam_option("valheim", VALHEIM)]);
-    assert_eq!(steam_option(&state), shown(OptionStatus::Checking));
+    assert_eq!(steam_option(&state), rechecking(OptionStatus::NotSet));
+  }
+
+  fn needs_attention(state: &State) -> bool {
+    steam_option(state).is_some_and(|steam| steam.needs_attention())
+  }
+
+  #[test]
+  fn the_line_needs_attention_only_when_steam_lacks_it_or_cannot_be_read() {
+    let (mut state, _) = opened("valheim");
+
+    assert!(!needs_attention(&state), "before the first read ends");
+
+    for (current, attention) in [
+      (Ok(Some(LINE)), false),
+      (Ok(None), true),
+      (Err("Steam was not found"), true),
+    ] {
+      update(&mut state, read("valheim", current));
+
+      assert_eq!(needs_attention(&state), attention, "{current:?}");
+
+      update(&mut state, Msg::SteamOptionCheckPressed);
+
+      assert_eq!(
+        needs_attention(&state),
+        attention,
+        "{current:?}, checking again"
+      );
+    }
+  }
+
+  fn steam_set_up() -> Effect {
+    Effect::Notify(Notice::SteamOptionSet("valheim".to_string()))
+  }
+
+  #[test]
+  fn a_line_found_set_after_being_found_missing_says_steam_is_set_up() {
+    for missing in [Ok(None), Err("Steam was not found")] {
+      let (mut state, _) = opened("valheim");
+
+      update(&mut state, read("valheim", missing));
+      update(&mut state, Msg::SteamOptionCheckPressed);
+
+      assert_eq!(
+        update(&mut state, read("valheim", Ok(Some(LINE)))),
+        vec![steam_set_up()],
+        "{missing:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn a_line_already_set_is_not_announced() {
+    let (mut state, _) = opened("valheim");
+
+    assert_eq!(update(&mut state, read("valheim", Ok(Some(LINE)))), vec![]);
+
+    update(&mut state, Msg::SteamOptionCheckPressed);
+
+    assert_eq!(update(&mut state, read("valheim", Ok(Some(LINE)))), vec![]);
+  }
+
+  #[test]
+  fn regaining_focus_checks_again_only_while_steam_lacks_the_line() {
+    let (mut state, _) = opened("valheim");
+
+    assert_eq!(
+      update(&mut state, Msg::WindowFocused),
+      vec![],
+      "while checking"
+    );
+
+    update(&mut state, read("valheim", Ok(None)));
+
+    assert_eq!(
+      update(&mut state, Msg::WindowFocused),
+      vec![read_steam_option("valheim", VALHEIM)]
+    );
+    assert_eq!(
+      update(&mut state, Msg::WindowFocused),
+      vec![],
+      "while checking again"
+    );
+
+    update(&mut state, read("valheim", Ok(Some(LINE))));
+
+    assert_eq!(update(&mut state, Msg::WindowFocused), vec![], "once set");
+
+    update(&mut state, Msg::SteamOptionCheckPressed);
+    update(&mut state, read("valheim", Err("Steam was not found")));
+
+    assert_eq!(
+      update(&mut state, Msg::WindowFocused),
+      vec![],
+      "when unreadable"
+    );
   }
 
   /// A Linux state with `game` open and its profile holding `packages`.
@@ -846,7 +999,7 @@ mod tests {
         read_steam_option("valheim", VALHEIM),
       ]
     );
-    assert_eq!(steam_option(&state), shown(OptionStatus::Checking));
+    assert_eq!(steam_option(&state), rechecking(OptionStatus::NotSet));
   }
 
   #[test]

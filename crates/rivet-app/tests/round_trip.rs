@@ -718,6 +718,16 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
 
   assert!(read.is_some(), "Steam's launch options were not read");
 
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(
+      window.try_find("launch-option").is_none(),
+      "the line showed before Steam was read"
+    );
+  })
+  .unwrap();
+
   for msg in [
     Msg::ProfileOpened {
       game: "valheim".to_string(),
@@ -763,6 +773,27 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
 
   assert_eq!(launch.context.mode, LaunchMode::Vanilla);
   assert_eq!(launch.folder, PathBuf::from("/games/Valheim"));
+
+  answers
+    .unbounded_send(Msg::SteamOptionRead(SteamOptionRead {
+      game: "valheim".to_string(),
+      line: line.to_string(),
+      current: Ok(Some(line.to_string())),
+    }))
+    .unwrap();
+  cx.run_until_parked();
+
+  assert!(
+    toasted(cx, window, "notice-success"),
+    "Steam being set up was not told"
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("launch-option").is_none());
+  })
+  .unwrap();
 }
 
 #[gpui_kit::test]
