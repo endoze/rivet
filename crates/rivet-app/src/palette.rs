@@ -7,11 +7,13 @@ use gpui_kit::{App, Hsla};
 
 /// WCAG 2 level AA for normal-size text.
 const AA: f32 = 4.5;
+/// WCAG 2 level AA for icons and outlines.
+const NON_TEXT: f32 = 3.0;
 
 /// The active theme's colors as the shell uses them, each opaque.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
-  /// Text on any panel, row, or the launch option line.
+  /// Text on any panel, row, toast, or the launch option line.
   pub text: Hsla,
   /// Secondary text: bylines, descriptions, and status lines.
   pub muted_text: Hsla,
@@ -27,24 +29,39 @@ pub struct Palette {
   pub border: Hsla,
   /// The outline of a panel reporting a failure or asking about one.
   pub danger_border: Hsla,
+  /// The background of a toast.
+  pub toast: Hsla,
+  /// The icon and outline of an info toast.
+  pub info: Hsla,
+  /// The icon and outline of a success toast.
+  pub success: Hsla,
+  /// The icon and outline of a warning toast.
+  pub warning: Hsla,
+  /// The icon and outline of an error toast.
+  pub error: Hsla,
 }
 
 impl Palette {
   /// The palette of the active theme. `muted_text` is the theme's muted
   /// foreground, moved toward `text` only as far as it takes to reach WCAG AA
-  /// on every background here.
+  /// on every background here. The toast accents are the theme's info,
+  /// success, warning, and danger colors, moved the same way only as far as
+  /// it takes to reach the WCAG AA contrast for icons on a toast.
   pub fn new(cx: &App) -> Self {
     let theme = cx.theme();
     let panel = theme.background;
     let row_hover = panel.blend(theme.list_hover);
     let row_selected = panel.blend(theme.secondary);
     let code = panel.blend(theme.muted);
+    let toast = panel.blend(theme.popover);
     let text = theme.foreground;
-    let muted_text = readable(
+    let muted_text = reaching(
+      AA,
       panel.blend(theme.muted_foreground),
       text,
       &[panel, row_hover, row_selected, code],
     );
+    let accent = |color: Hsla| reaching(NON_TEXT, toast.blend(color), text, &[toast]);
 
     Self {
       text,
@@ -55,6 +72,11 @@ impl Palette {
       code,
       border: theme.border,
       danger_border: theme.danger,
+      toast,
+      info: accent(theme.info),
+      success: accent(theme.success),
+      warning: accent(theme.warning),
+      error: accent(theme.danger),
     }
   }
 }
@@ -89,15 +111,15 @@ fn luminance(color: Hsla) -> f32 {
   0.2126 * linear(rgb.r) + 0.7152 * linear(rgb.g) + 0.0722 * linear(rgb.b)
 }
 
-/// `muted` blended toward `text` in tenths until it reaches AA on all of
+/// `color` blended toward `text` in tenths until it reaches `ratio` on all of
 /// `backgrounds`, or `text` when no blend does.
-fn readable(muted: Hsla, text: Hsla, backgrounds: &[Hsla]) -> Hsla {
+fn reaching(ratio: f32, color: Hsla, text: Hsla, backgrounds: &[Hsla]) -> Hsla {
   (0..=10)
-    .map(|tenths| muted.blend(text.opacity(tenths as f32 / 10.0)))
+    .map(|tenths| color.blend(text.opacity(tenths as f32 / 10.0)))
     .find(|candidate| {
       backgrounds
         .iter()
-        .all(|background| contrast(*candidate, *background) >= AA)
+        .all(|background| contrast(*candidate, *background) >= ratio)
     })
     .unwrap_or(text)
 }

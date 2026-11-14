@@ -1,6 +1,7 @@
 //! The open game's package list: which index it shows, and whether the cache
 //! is being read, a refresh is running, or the last refresh failed.
 
+use crate::notice::Notice;
 use crate::{Command, Effect, State};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -214,9 +215,6 @@ pub enum View<'a> {
   List {
     /// A refresh is running behind the list.
     refreshing: bool,
-    /// The last refresh failed, with the reason, so the list may be out of
-    /// date.
-    stale: Option<&'a str>,
   },
 }
 
@@ -242,10 +240,7 @@ impl Browse {
     };
 
     match (&self.index, failure) {
-      (Some(_), stale) => View::List {
-        refreshing: busy,
-        stale,
-      },
+      (Some(_), _) => View::List { refreshing: busy },
       (None, Some(reason)) => View::Unavailable(reason),
       (None, None) => View::Loading,
     }
@@ -352,7 +347,8 @@ pub(crate) fn refresh_pressed(state: &mut State) -> Vec<Effect> {
 }
 
 /// Applies the answer to `refresh`: a new index, `None` when the cached one
-/// is current, or why the fetch failed.
+/// is current, or why the fetch failed. A failure with a list still shown is
+/// told in passing, as that list stays usable.
 pub(crate) fn refreshed(
   state: &mut State,
   refresh: Refresh,
@@ -373,7 +369,16 @@ pub(crate) fn refreshed(
       return browse.refresh(&mut state.refreshes, Fetch::Always);
     }
     Ok(None) => browse.status = Status::Refreshed,
-    Err(reason) => browse.status = Status::Failed(reason),
+    Err(reason) => {
+      let stale = browse
+        .index
+        .is_some()
+        .then(|| Effect::Notify(Notice::IndexStale(reason.clone())));
+
+      browse.status = Status::Failed(reason);
+
+      return stale.into_iter().collect();
+    }
   }
 
   Vec::new()
@@ -515,13 +520,7 @@ mod tests {
 
     assert_eq!(effects, vec![]);
     assert_eq!(listed(&state), ["Owner-Newer", "Owner-Older"]);
-    assert_eq!(
-      view(&state),
-      Some(View::List {
-        refreshing: false,
-        stale: None
-      })
-    );
+    assert_eq!(view(&state), Some(View::List { refreshing: false }));
   }
 
   #[test]
@@ -551,23 +550,11 @@ mod tests {
     let earlier = update(&mut state, refreshed("valheim", 1, Err("offline")));
 
     assert_eq!(earlier, vec![]);
-    assert_eq!(
-      view(&state),
-      Some(View::List {
-        refreshing: true,
-        stale: None
-      })
-    );
+    assert_eq!(view(&state), Some(View::List { refreshing: true }));
 
     update(&mut state, refreshed("valheim", 2, Ok(two_packages())));
 
-    assert_eq!(
-      view(&state),
-      Some(View::List {
-        refreshing: false,
-        stale: None
-      })
-    );
+    assert_eq!(view(&state), Some(View::List { refreshing: false }));
   }
 
   #[test]
@@ -584,13 +571,7 @@ mod tests {
     let effects = update(&mut state, cache_read("valheim", Ok(Some(two_packages()))));
 
     assert_eq!(listed(&state), ["Owner-Newer", "Owner-Older"]);
-    assert_eq!(
-      view(&state),
-      Some(View::List {
-        refreshing: true,
-        stale: None
-      })
-    );
+    assert_eq!(view(&state), Some(View::List { refreshing: true }));
     assert_eq!(effects, vec![refresh_if_stale("valheim", 1)]);
   }
 
@@ -606,13 +587,7 @@ mod tests {
     let effects = update(&mut state, refreshed("valheim", 1, Ok(two_packages())));
 
     assert_eq!(listed(&state), ["Owner-Newer", "Owner-Older"]);
-    assert_eq!(
-      view(&state),
-      Some(View::List {
-        refreshing: false,
-        stale: None
-      })
-    );
+    assert_eq!(view(&state), Some(View::List { refreshing: false }));
     assert_eq!(effects, vec![]);
   }
 
@@ -621,15 +596,26 @@ mod tests {
     let mut state = opened("valheim");
 
     update(&mut state, cache_read("valheim", Ok(Some(two_packages()))));
-    update(&mut state, refreshed("valheim", 1, Err("offline")));
+
+    let effects = update(&mut state, refreshed("valheim", 1, Err("offline")));
 
     assert_eq!(listed(&state), ["Owner-Newer", "Owner-Older"]);
+    assert_eq!(view(&state), Some(View::List { refreshing: false }));
     assert_eq!(
-      view(&state),
-      Some(View::List {
-        refreshing: false,
-        stale: Some("offline")
-      })
+      effects,
+      vec![Effect::Notify(Notice::IndexStale("offline".to_string()))]
+    );
+  }
+
+  #[test]
+  fn a_failed_first_fetch_is_not_announced_as_the_list_says_why() {
+    let mut state = opened("valheim");
+
+    update(&mut state, cache_read("valheim", Ok(None)));
+
+    assert_eq!(
+      update(&mut state, refreshed("valheim", 1, Err("offline"))),
+      vec![]
     );
   }
 
@@ -653,13 +639,7 @@ mod tests {
     let effects = update(&mut state, Msg::RefreshPressed);
 
     assert_eq!(effects, vec![refresh("valheim", 2)]);
-    assert_eq!(
-      view(&state),
-      Some(View::List {
-        refreshing: true,
-        stale: None
-      })
-    );
+    assert_eq!(view(&state), Some(View::List { refreshing: true }));
   }
 
   #[test]

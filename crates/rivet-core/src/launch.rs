@@ -3,6 +3,7 @@
 //! profile has the mod loader those packages need.
 
 use crate::install::Profile;
+use crate::notice::Notice;
 use crate::{Command, Effect, Screen, State};
 use std::path::{Path, PathBuf};
 use thunderstore_engine::Error;
@@ -247,8 +248,9 @@ pub(crate) fn launch_pressed(state: &mut State, mode: LaunchMode) -> Vec<Effect>
   vec![Effect::Run(Command::Launch(launch))]
 }
 
-/// Applies the result of launch `id`, then reads Steam's launch option again,
-/// since the user may have set it since it was last read.
+/// Applies the result of launch `id`, saying so when it started the game,
+/// then reads Steam's launch option again, since the user may have set it
+/// since it was last read.
 pub(crate) fn launch_finished(
   state: &mut State,
   id: u64,
@@ -262,12 +264,39 @@ pub(crate) fn launch_finished(
     return Vec::new();
   };
 
+  let launched = result.is_ok().then(|| Notice::Launched {
+    game: attempt.game.clone(),
+    mode: attempt.mode,
+  });
+
   attempt.status = match result {
     Ok(()) => AttemptStatus::Started,
     Err(failure) => AttemptStatus::Failed(failure),
   };
 
-  check_steam_option(state)
+  let mut effects: Vec<Effect> = launched.map(Effect::Notify).into_iter().collect();
+
+  effects.extend(check_steam_option(state));
+
+  effects
+}
+
+/// Puts the open game's Steam launch option line on the clipboard, once it
+/// has been worked out, and says so.
+pub(crate) fn copy_line(state: &State) -> Vec<Effect> {
+  let Some(line) = state
+    .launcher
+    .as_ref()
+    .and_then(|launcher| launcher.steam.as_ref())
+    .and_then(|steam| steam.line.clone())
+  else {
+    return Vec::new();
+  };
+
+  vec![
+    Effect::CopyToClipboard(line),
+    Effect::Notify(Notice::LaunchLineCopied),
+  ]
 }
 
 /// Applies what Steam's launch options for a game were found to be. The line
@@ -807,8 +836,56 @@ mod tests {
       },
     );
 
-    assert_eq!(effects, vec![read_steam_option("valheim", VALHEIM)]);
+    assert_eq!(
+      effects,
+      vec![
+        Effect::Notify(Notice::Launched {
+          game: "valheim".to_string(),
+          mode: LaunchMode::Modded,
+        }),
+        read_steam_option("valheim", VALHEIM),
+      ]
+    );
     assert_eq!(steam_option(&state), shown(OptionStatus::Checking));
+  }
+
+  #[test]
+  fn a_failed_launch_is_not_announced() {
+    let mut state = ready("valheim", &[]);
+
+    update(&mut state, Msg::LaunchPressed(LaunchMode::Modded));
+
+    let effects = update(
+      &mut state,
+      Msg::LaunchFinished {
+        launch: 1,
+        result: Err(LaunchFailure::NoModLoader(LoaderKind::BepInEx)),
+      },
+    );
+
+    assert!(
+      !effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::Notify(_))),
+      "{effects:?}"
+    );
+  }
+
+  #[test]
+  fn copying_the_launch_option_line_puts_it_on_the_clipboard_and_says_so() {
+    let (mut state, _) = opened("valheim");
+
+    assert_eq!(update(&mut state, Msg::LaunchLineCopyPressed), vec![]);
+
+    update(&mut state, read("valheim", Ok(None)));
+
+    assert_eq!(
+      update(&mut state, Msg::LaunchLineCopyPressed),
+      vec![
+        Effect::CopyToClipboard(LINE.to_string()),
+        Effect::Notify(Notice::LaunchLineCopied),
+      ]
+    );
   }
 
   #[test]

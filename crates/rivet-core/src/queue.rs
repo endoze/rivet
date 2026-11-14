@@ -6,6 +6,7 @@ use crate::install::{
   Action, FailedPackage, Install, Operation, OperationStatus, Outcome, ProfileStatus, Progress,
 };
 use crate::manage::{SetEnabled, Uninstall};
+use crate::notice::Notice;
 use crate::switcher::ProfileChange;
 use crate::{Command, Effect, State};
 
@@ -214,6 +215,9 @@ pub(crate) fn progressed(state: &mut State, id: u64, progress: Progress) -> Vec<
 
 /// Applies the result of operation `id`: what it did, or why it could not run
 /// at all, which leaves the profile as it was. Then starts the next one.
+///
+/// One that went through leaves the queue at once, telling the user what it
+/// did. One that failed or was cancelled stays, so it can be retried.
 pub(crate) fn finished(
   state: &mut State,
   id: u64,
@@ -243,15 +247,25 @@ pub(crate) fn finished(
     }
   };
 
-  operation.status = if !failed.is_empty() {
-    OperationStatus::Failed { failed, changed }
-  } else if !cancelled.is_empty() {
-    OperationStatus::Cancelled { changed }
-  } else {
-    OperationStatus::Finished { changed }
-  };
-
   let (game, name) = (operation.game.clone(), operation.profile.clone());
+  let mut effects = Vec::new();
+
+  if !failed.is_empty() {
+    operation.status = OperationStatus::Failed { failed, changed };
+  } else if !cancelled.is_empty() {
+    operation.status = OperationStatus::Cancelled { changed };
+  } else {
+    effects.push(Effect::Notify(Notice::OperationFinished {
+      game: game.clone(),
+      profile: name.clone(),
+      action: operation.action.clone(),
+      changed,
+    }));
+    state
+      .queue
+      .operations
+      .retain(|operation| operation.id != id);
+  }
 
   if let Some(open) = state
     .profile
@@ -264,7 +278,9 @@ pub(crate) fn finished(
     };
   }
 
-  advance(state)
+  effects.extend(advance(state));
+
+  effects
 }
 
 /// Cancels operation `id` when [`Operation::can_cancel`] says it can: one
@@ -475,6 +491,28 @@ mod tests {
     }))
   }
 
+  /// The notice of a finished operation on valheim's `profile`.
+  fn notified(profile: &str, action: Action, changed: &[&str]) -> Effect {
+    Effect::Notify(Notice::OperationFinished {
+      game: "valheim".to_string(),
+      profile: profile.to_string(),
+      action,
+      changed: names(changed),
+    })
+  }
+
+  /// The notice of disabling `package` in valheim's `profile`.
+  fn disabled(profile: &str, package: &str) -> Effect {
+    notified(
+      profile,
+      Action::SetEnabled {
+        packages: names(&[package]),
+        enabled: false,
+      },
+      &[package],
+    )
+  }
+
   fn statuses(state: &State) -> Vec<(u64, OperationStatus)> {
     state
       .queue
@@ -585,19 +623,14 @@ mod tests {
 
     let next = update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"]))));
 
-    assert_eq!(next, vec![set_enabled(2, "Modded", "Owner-Other", false)]);
     assert_eq!(
-      statuses(&state),
+      next,
       vec![
-        (
-          1,
-          OperationStatus::Finished {
-            changed: names(&["Owner-Solo"]),
-          }
-        ),
-        (2, OperationStatus::Running(None)),
+        disabled(DEFAULT_PROFILE, "Owner-Solo"),
+        set_enabled(2, "Modded", "Owner-Other", false)
       ]
     );
+    assert_eq!(statuses(&state), vec![(2, OperationStatus::Running(None))]);
   }
 
   #[test]
@@ -623,7 +656,13 @@ mod tests {
 
     let next = update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"]))));
 
-    assert_eq!(next, vec![set_enabled(2, "Modded", "Owner-Other", false)]);
+    assert_eq!(
+      next,
+      vec![
+        disabled(DEFAULT_PROFILE, "Owner-Solo"),
+        set_enabled(2, "Modded", "Owner-Other", false)
+      ]
+    );
   }
 
   #[test]
@@ -670,10 +709,10 @@ mod tests {
 
     let next = update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"]))));
 
-    assert_eq!(next, vec![]);
+    assert_eq!(next, vec![disabled(DEFAULT_PROFILE, "Owner-Solo")]);
     assert_eq!(
-      statuses(&state)[1],
-      (2, OperationStatus::Cancelled { changed: vec![] })
+      statuses(&state),
+      vec![(2, OperationStatus::Cancelled { changed: vec![] })]
     );
   }
 
@@ -795,17 +834,21 @@ mod tests {
     let mut state = installing_then_queued();
 
     update(&mut state, Msg::OperationCancelPressed(1));
-    update(&mut state, finished_with(1, Ok(outcome(&["Owner-Pack"]))));
+
+    let effects = update(&mut state, finished_with(1, Ok(outcome(&["Owner-Pack"]))));
 
     assert_eq!(
-      statuses(&state)[0],
-      (
-        1,
-        OperationStatus::Finished {
-          changed: names(&["Owner-Pack"]),
-        }
-      )
+      effects,
+      vec![
+        notified(
+          DEFAULT_PROFILE,
+          Action::Install("Owner-Pack".to_string()),
+          &["Owner-Pack"]
+        ),
+        set_enabled(2, "Modded", "Owner-Other", false)
+      ]
     );
+    assert_eq!(statuses(&state), vec![(2, OperationStatus::Running(None))]);
   }
 
   #[test]
@@ -882,7 +925,10 @@ mod tests {
 
     assert_eq!(
       next,
-      vec![set_enabled(3, DEFAULT_PROFILE, "Owner-Solo", false)]
+      vec![
+        disabled("Modded", "Owner-Other"),
+        set_enabled(3, DEFAULT_PROFILE, "Owner-Solo", false)
+      ]
     );
   }
 
@@ -927,7 +973,7 @@ mod tests {
 
     assert_eq!(statuses(&state).len(), 2);
 
-    update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"]))));
+    update(&mut state, finished_with(1, Err("offline")));
     update(&mut state, Msg::OperationDismissed(1));
 
     assert_eq!(statuses(&state), vec![(2, OperationStatus::Running(None))]);
@@ -969,7 +1015,13 @@ mod tests {
 
     let next = update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"]))));
 
-    assert_eq!(next, vec![set_enabled(2, "Modded", "Owner-Other", false)]);
+    assert_eq!(
+      next,
+      vec![
+        disabled(DEFAULT_PROFILE, "Owner-Solo"),
+        set_enabled(2, "Modded", "Owner-Other", false)
+      ]
+    );
   }
 
   #[test]
@@ -1155,11 +1207,14 @@ mod tests {
     assert_eq!(state.closing, Some(Closing::Waiting));
     assert_eq!(
       update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"])))),
-      vec![set_enabled(2, "Modded", "Owner-Other", false)]
+      vec![
+        disabled(DEFAULT_PROFILE, "Owner-Solo"),
+        set_enabled(2, "Modded", "Owner-Other", false)
+      ]
     );
     assert_eq!(
       update(&mut state, finished_with(2, Ok(outcome(&["Owner-Other"])))),
-      vec![Effect::CloseWindow]
+      vec![disabled("Modded", "Owner-Other"), Effect::CloseWindow]
     );
   }
 
@@ -1181,7 +1236,14 @@ mod tests {
     );
     assert_eq!(
       update(&mut state, finished_with(1, Ok(outcome(&["Owner-Pack"])))),
-      vec![Effect::CloseWindow]
+      vec![
+        notified(
+          DEFAULT_PROFILE,
+          Action::Install("Owner-Pack".to_string()),
+          &["Owner-Pack"]
+        ),
+        Effect::CloseWindow
+      ]
     );
   }
 
@@ -1203,7 +1265,7 @@ mod tests {
     );
     assert_eq!(
       update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"])))),
-      vec![Effect::CloseWindow]
+      vec![disabled(DEFAULT_PROFILE, "Owner-Solo"), Effect::CloseWindow]
     );
   }
 
@@ -1218,7 +1280,7 @@ mod tests {
 
     assert_eq!(
       update(&mut state, finished_with(2, Ok(outcome(&["Owner-Other"])))),
-      vec![]
+      vec![disabled("Modded", "Owner-Other")]
     );
   }
 }

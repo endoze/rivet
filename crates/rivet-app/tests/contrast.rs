@@ -4,6 +4,8 @@ use rivet_app::palette::{Palette, contrast};
 
 /// WCAG 2 level AA for normal-size text.
 const AA: f32 = 4.5;
+/// WCAG 2 level AA for icons and outlines.
+const NON_TEXT: f32 = 3.0;
 
 #[test]
 fn contrast_matches_the_wcag_reference_values() {
@@ -68,6 +70,36 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
       assert!(
         ratio >= AA,
         "{mode:?}: {text_name} on {background_name} is {ratio:.2}:1, under {AA}:1"
+      );
+    }
+  }
+
+  let toast_text = contrast(palette.text, palette.toast);
+
+  assert!(
+    toast_text >= AA,
+    "{mode:?}: text on a toast is {toast_text:.2}:1, under {AA}:1"
+  );
+
+  let accents = [
+    ("info", palette.info),
+    ("success", palette.success),
+    ("warning", palette.warning),
+    ("error", palette.error),
+  ];
+
+  for (name, accent) in accents {
+    let ratio = contrast(accent, palette.toast);
+
+    assert!(
+      ratio >= NON_TEXT,
+      "{mode:?}: the {name} toast's icon is {ratio:.2}:1 on the toast, under {NON_TEXT}:1"
+    );
+
+    for (other_name, other) in accents {
+      assert!(
+        name == other_name || accent != other,
+        "{mode:?}: the {name} and {other_name} toasts look alike"
       );
     }
   }

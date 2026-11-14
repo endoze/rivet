@@ -6,8 +6,9 @@ use rivet_core::browse::{SortDirection, SortKey};
 use rivet_core::install::{Action, FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
 use rivet_core::manage::Removal;
+use rivet_core::notice::Notice;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal};
-use rivet_core::switcher::{NameRefusal, Naming, ProfileChange, SwitcherFailure};
+use rivet_core::switcher::{NameRefusal, Naming, ProfileChange};
 use std::path::Path;
 use thunderstore_engine::ecosystem::LoaderKind;
 use thunderstore_engine::profile::launch::LaunchMode;
@@ -637,30 +638,85 @@ pub fn changing(change: &ProfileChange) -> String {
   }
 }
 
-/// The profiles could not be listed, or a change to them could not be made.
-pub fn switcher_failed(failure: &SwitcherFailure) -> Failure {
-  let next = "Check that the app's data folder can be written to, then try again.".to_string();
+const CHECK_DATA_FOLDER: &str =
+  "Check that the app's data folder can be written to, then try again.";
 
-  match failure {
-    SwitcherFailure::List(reason) => Failure {
-      headline: "Your profiles could not be listed".to_string(),
-      detail: reason.clone(),
-      next,
+/// The profiles could not be listed.
+pub fn profiles_unlisted(reason: &str) -> Failure {
+  Failure {
+    headline: "Your profiles could not be listed".to_string(),
+    detail: reason.to_string(),
+    next: CHECK_DATA_FOLDER.to_string(),
+  }
+}
+
+/// A change to the profiles that was made, such as `Renamed Modded to
+/// Heavy`.
+pub fn profile_changed(change: &ProfileChange) -> String {
+  match change {
+    ProfileChange::Create(name) => format!("Created the {name} profile"),
+    ProfileChange::Rename { from, to } => format!("Renamed {from} to {to}"),
+    ProfileChange::Duplicate { from, to } => format!("Copied {from} to {to}"),
+    ProfileChange::Delete(name) => format!("Deleted the {name} profile"),
+  }
+}
+
+/// A change to the profiles that could not be made, such as `The Modded
+/// profile could not be renamed`.
+pub fn profile_change_failed(change: &ProfileChange) -> String {
+  match change {
+    ProfileChange::Create(name) => format!("The {name} profile could not be created"),
+    ProfileChange::Rename { from, .. } => format!("The {from} profile could not be renamed"),
+    ProfileChange::Duplicate { from, .. } => format!("The {from} profile could not be copied"),
+    ProfileChange::Delete(name) => format!("The {name} profile could not be deleted"),
+  }
+}
+
+pub const LAUNCH_LINE_COPIED: &str = "Launch option copied";
+pub const PASTE_IN_STEAM: &str = "Paste it into the game's launch options in Steam.";
+
+/// A notice as shown to the user: a headline, then any lines of detail.
+pub struct Told {
+  pub title: String,
+  pub detail: Vec<String>,
+}
+
+/// What `notice` tells the user, naming games through `game_name`.
+pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
+  match notice {
+    Notice::OperationFinished {
+      game,
+      profile,
+      action,
+      changed,
+    } => Told {
+      title: finished(action, changed),
+      detail: vec![place(&game_name(game), profile)],
     },
-    SwitcherFailure::Change { change, reason } => {
-      let headline = match change {
-        ProfileChange::Create(name) => format!("The {name} profile could not be created"),
-        ProfileChange::Rename { from, .. } => format!("The {from} profile could not be renamed"),
-        ProfileChange::Duplicate { from, .. } => format!("The {from} profile could not be copied"),
-        ProfileChange::Delete(name) => format!("The {name} profile could not be deleted"),
-      };
+    Notice::ProfileChanged(change) => Told {
+      title: profile_changed(change),
+      detail: Vec::new(),
+    },
+    Notice::ProfileChangeFailed { change, reason } => Told {
+      title: profile_change_failed(change),
+      detail: vec![reason.clone(), CHECK_DATA_FOLDER.to_string()],
+    },
+    Notice::IndexStale(reason) => {
+      let stale = stale(reason);
 
-      Failure {
-        headline,
-        detail: reason.clone(),
-        next,
+      Told {
+        title: stale.headline,
+        detail: vec![stale.detail, stale.next],
       }
     }
+    Notice::Launched { game, mode } => Told {
+      title: launched(&game_name(game), *mode),
+      detail: Vec::new(),
+    },
+    Notice::LaunchLineCopied => Told {
+      title: LAUNCH_LINE_COPIED.to_string(),
+      detail: vec![PASTE_IN_STEAM.to_string()],
+    },
   }
 }
 

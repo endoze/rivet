@@ -159,8 +159,6 @@ pub enum OperationStatus {
   Running(Option<Progress>),
   /// Running, and asked to stop after the package it is on.
   Cancelling(Option<Progress>),
-  /// Everything went through. `changed` lists the packages that changed.
-  Finished { changed: Vec<String> },
   /// Something failed. `changed` lists the packages that changed before or
   /// despite the failure, and is empty when the profile is as it was.
   Failed {
@@ -397,6 +395,7 @@ pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
 mod tests {
   use super::*;
   use crate::browse::Index;
+  use crate::notice::Notice;
   use crate::settings::{GameSettings, Settings};
   use crate::{Command, Effect, Msg, State, test_ecosystem, update};
   use std::path::PathBuf;
@@ -703,7 +702,7 @@ mod tests {
   }
 
   #[test]
-  fn a_finished_install_marks_the_new_packages_installed() {
+  fn a_finished_install_marks_the_new_packages_installed_and_says_what_it_installed() {
     let mut state = installing();
     let profile = installed(&[
       ("Owner-Core", "1.0.0"),
@@ -724,13 +723,16 @@ mod tests {
       ),
     );
 
-    assert_eq!(effects, vec![]);
     assert_eq!(
-      status(&state),
-      Some(OperationStatus::Finished {
+      effects,
+      vec![Effect::Notify(Notice::OperationFinished {
+        game: "valheim".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        action: Action::Install("Owner-Pack".to_string()),
         changed: names(&["Owner-Core", "Owner-Lib", "Owner-Pack"]),
-      })
+      })]
     );
+    assert_eq!(status(&state), None);
     assert!(state.is_installed("Owner-Pack"));
     assert!(state.is_installed("Owner-Core"));
   }
@@ -794,7 +796,8 @@ mod tests {
 
     press(&mut state, "Owner-Pack");
     update(&mut state, Msg::InstallConfirmed);
-    update(
+
+    let effects = update(
       &mut state,
       finished(
         1,
@@ -808,11 +811,15 @@ mod tests {
     );
 
     assert_eq!(
-      status(&state),
-      Some(OperationStatus::Finished {
+      effects,
+      vec![Effect::Notify(Notice::OperationFinished {
+        game: "valheim".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        action: Action::Install("Owner-Pack".to_string()),
         changed: names(&["Owner-Lib", "Owner-Pack"]),
-      })
+      })]
     );
+    assert_eq!(status(&state), None);
     assert_eq!(
       state.profile.map(|profile| profile.status),
       Some(ProfileStatus::Failed(
@@ -839,12 +846,7 @@ mod tests {
       ),
     );
 
-    assert_eq!(
-      status(&state),
-      Some(OperationStatus::Finished {
-        changed: names(&["Owner-Pack"]),
-      })
-    );
+    assert_eq!(status(&state), None);
     assert_eq!(state.profile, None);
   }
 

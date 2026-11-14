@@ -20,25 +20,27 @@ fn main() {
     cancels: rivet_commands::Cancels::default(),
   };
 
-  gpui_kit::application().run(move |cx| {
-    gpui_kit::init(cx);
+  gpui_kit::application()
+    .with_assets(gpui_kit::assets::Assets)
+    .run(move |cx| {
+      gpui_kit::init(cx);
 
-    let images =
-      ReqwestClient::user_agent(rivet_commands::USER_AGENT).expect("the image HTTP client");
+      let images =
+        ReqwestClient::user_agent(rivet_commands::USER_AGENT).expect("the image HTTP client");
 
-    cx.set_http_client(Arc::new(images));
+      cx.set_http_client(Arc::new(images));
 
-    let state = State::new(config.ecosystem.clone());
-    let (commands, inbox) = rivet_commands::spawn(config);
+      let state = State::new(config.ecosystem.clone());
+      let (commands, inbox) = rivet_commands::spawn(config);
 
-    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-      Theme::sync_system_appearance(Some(window), cx);
-      window
-        .observe_window_appearance(|window, cx| Theme::sync_system_appearance(Some(window), cx))
-        .detach();
+      gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+        Theme::sync_system_appearance(Some(window), cx);
+        window
+          .observe_window_appearance(|window, cx| Theme::sync_system_appearance(Some(window), cx))
+          .detach();
 
-      cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
-    })
-    .expect("failed to open window");
-  });
+        cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
+      })
+      .expect("failed to open window");
+    });
 }

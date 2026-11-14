@@ -1,6 +1,8 @@
 use futures::channel::mpsc::unbounded;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, WindowOptions};
+use gpui_kit::{
+  AnyWindowHandle, AppContext as _, TestAppContext, VisualTestContext, WindowOptions,
+};
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
@@ -17,6 +19,20 @@ fn mock_index() -> Index {
   let packages: Vec<Package> = serde_json::from_str(&index_json("http://mock")).unwrap();
 
   PackageIndex::from(packages).into()
+}
+
+/// Whether a toast holding the element `id` is up, drawing the window twice:
+/// once to raise any toast waiting, and once to show it.
+fn toasted(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) -> bool {
+  cx.update_window(window, |_, window, cx| window.render_frame(cx))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    window.try_find(id).is_some()
+  })
+  .unwrap()
 }
 
 #[gpui_kit::test]
@@ -79,11 +95,16 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
     })
     .unwrap();
   cx.run_until_parked();
+
+  assert!(
+    toasted(cx, window, "notice-warning"),
+    "a failed refresh was not told"
+  );
+
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
 
     assert!(window.try_find("Owner-ModA").is_some());
-    assert!(window.try_find("stale").is_some());
 
     window.click("refresh", cx);
   })
@@ -256,9 +277,14 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
 
     assert!(window.try_find("installed-Owner-ModC").is_some());
     assert!(window.try_find("install-Owner-ModC").is_none());
-    assert!(window.try_find("dismiss-operation-1").is_some());
+    assert!(window.try_find("operation-1").is_none());
   })
   .unwrap();
+
+  assert!(
+    toasted(cx, window, "notice-success"),
+    "the finished install was not told"
+  );
 }
 
 #[gpui_kit::test]
@@ -723,6 +749,10 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
     cx.read_from_clipboard().and_then(|item| item.text()),
     Some(line.to_string())
   );
+  assert!(
+    toasted(cx, window, "notice-info"),
+    "copying the line was not told"
+  );
 
   let launch = std::iter::from_fn(|| sent.try_recv().ok())
     .find_map(|command| match command {
@@ -826,6 +856,12 @@ fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext
 
   cx.run_until_parked();
   drain();
+
+  assert!(
+    toasted(cx, window, "notice-success"),
+    "creating the profile was not told"
+  );
+
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
 
@@ -843,6 +879,20 @@ fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext
       game: "valheim".to_string(),
       change: ProfileChange::Delete("Fresh".to_string()),
     }]
+  );
+
+  answers
+    .unbounded_send(Msg::ProfileChanged {
+      game: "valheim".to_string(),
+      change: ProfileChange::Delete("Fresh".to_string()),
+      result: Err("busy".to_string()),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert!(
+    toasted(cx, window, "notice-error"),
+    "the failed delete was not told"
   );
 }
 

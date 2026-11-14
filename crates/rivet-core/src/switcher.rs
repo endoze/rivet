@@ -2,6 +2,7 @@
 //! creating, renaming, duplicating, and deleting them.
 
 use crate::install::{self, DEFAULT_PROFILE, ProfileStatus};
+use crate::notice::Notice;
 use crate::{Command, Effect, State};
 use thunderstore_engine::profile::layout::{BadName, BadProfile, validate_name};
 
@@ -18,8 +19,8 @@ pub struct Switcher {
   pub deleting: Option<String>,
   /// The change being made on disk. No other starts until it ends.
   pub changing: Option<ProfileChange>,
-  /// The last listing or change that failed, until the next one starts.
-  pub failure: Option<SwitcherFailure>,
+  /// Why the profiles could not be listed, until they are.
+  pub list_failure: Option<String>,
 }
 
 impl Switcher {
@@ -30,7 +31,7 @@ impl Switcher {
       form: None,
       deleting: None,
       changing: None,
-      failure: None,
+      list_failure: None,
     }
   }
 }
@@ -81,18 +82,6 @@ pub enum ProfileChange {
     to: String,
   },
   Delete(String),
-}
-
-/// A failure the switcher shows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SwitcherFailure {
-  /// The game's profiles could not be listed, with the reason.
-  List(String),
-  /// A change could not be made, with the reason.
-  Change {
-    change: ProfileChange,
-    reason: String,
-  },
 }
 
 /// Whether `name` can be given to a profile of a game that has `names`,
@@ -232,12 +221,9 @@ pub(crate) fn listed(
       names.sort();
 
       switcher.names = names;
-
-      if matches!(switcher.failure, Some(SwitcherFailure::List(_))) {
-        switcher.failure = None;
-      }
+      switcher.list_failure = None;
     }
-    Err(reason) => switcher.failure = Some(SwitcherFailure::List(reason)),
+    Err(reason) => switcher.list_failure = Some(reason),
   }
 
   Vec::new()
@@ -310,7 +296,6 @@ pub(crate) fn name_pressed(state: &mut State, naming: Naming) -> Vec<Effect> {
   };
 
   switcher.deleting = None;
-  switcher.failure = None;
   switcher.form = Some(NameForm {
     naming,
     from,
@@ -391,7 +376,6 @@ pub(crate) fn delete_pressed(state: &mut State) -> Vec<Effect> {
 
   if let Some(switcher) = state.switcher.as_mut() {
     switcher.form = None;
-    switcher.failure = None;
     switcher.deleting = selected;
   }
 
@@ -430,9 +414,10 @@ fn start(switcher: &mut Switcher, change: ProfileChange) -> Vec<Effect> {
   })]
 }
 
-/// Applies the result of `change` to `game`'s profiles. A created or
-/// duplicated profile is selected, a renamed one keeps its place, and
-/// deleting the selected profile selects the default one.
+/// Applies the result of `change` to `game`'s profiles, telling the user
+/// whether it was made. A created or duplicated profile is selected, a
+/// renamed one keeps its place, and deleting the selected profile selects
+/// the default one.
 ///
 /// What `game` opens with next, and the profile ended operations retry on,
 /// are kept right even when the game was left while the change ran.
@@ -447,13 +432,15 @@ pub(crate) fn changed(
     .as_ref()
     .is_some_and(|switcher| switcher.game == game && switcher.changing.as_ref() == Some(&change));
 
-  if let Err(reason) = result {
-    if let Some(switcher) = state.switcher.as_mut().filter(|_| showing) {
-      switcher.changing = None;
-      switcher.failure = Some(SwitcherFailure::Change { change, reason });
-    }
+  if let Some(switcher) = state.switcher.as_mut().filter(|_| showing) {
+    switcher.changing = None;
+  }
 
-    return Vec::new();
+  if let Err(reason) = result {
+    return vec![Effect::Notify(Notice::ProfileChangeFailed {
+      change,
+      reason,
+    })];
   }
 
   crate::queue::profile_changed(state, &game, &change);
@@ -463,7 +450,9 @@ pub(crate) fn changed(
     .games
     .get(&game)
     .and_then(|settings| settings.profile.clone());
-  let mut effects = match &change {
+  let mut effects = vec![Effect::Notify(Notice::ProfileChanged(change.clone()))];
+
+  effects.extend(match &change {
     ProfileChange::Rename { from, to } if remembered.as_ref() == Some(from) => {
       remember(state, &game, Some(to))
     }
@@ -471,7 +460,7 @@ pub(crate) fn changed(
       remember(state, &game, None)
     }
     _ => Vec::new(),
-  };
+  });
 
   if !showing {
     return effects;
@@ -480,9 +469,6 @@ pub(crate) fn changed(
   let Some(switcher) = state.switcher.as_mut() else {
     return effects;
   };
-
-  switcher.changing = None;
-
   let selected = state.profile.as_ref().map(|profile| profile.name.clone());
 
   match change {
@@ -642,6 +628,11 @@ mod tests {
     ProfileChange::Delete(name.to_string())
   }
 
+  /// The notice that `change` was made.
+  fn made(change: ProfileChange) -> Effect {
+    Effect::Notify(Notice::ProfileChanged(change))
+  }
+
   fn submit(state: &mut State, naming: Naming, name: &str) -> Vec<Effect> {
     update(state, Msg::ProfileNamePressed(naming));
     update(state, Msg::ProfileNameSubmitted(name.to_string()))
@@ -693,8 +684,8 @@ mod tests {
     );
 
     assert_eq!(
-      switcher(&state).failure,
-      Some(SwitcherFailure::List("permission denied".to_string()))
+      switcher(&state).list_failure.as_deref(),
+      Some("permission denied")
     );
     assert_eq!(state.profile_names(), vec!["Default"]);
   }
@@ -743,7 +734,10 @@ mod tests {
 
     assert_eq!(state.profile_names(), vec!["Default", "Modded"]);
     assert_eq!(selected(&state), Some(("Modded", &ProfileStatus::Opening)));
-    assert_eq!(effects, vec![save(&state), open_profile("Modded")]);
+    assert_eq!(
+      effects,
+      vec![made(create("Modded")), save(&state), open_profile("Modded")]
+    );
     assert!(state.can_switch_profile());
   }
 
@@ -811,7 +805,7 @@ mod tests {
       Some(("Heavy", &ProfileStatus::Ready(Installed::new())))
     );
     assert_eq!(remembered(&state), Some("Heavy"));
-    assert_eq!(effects, vec![save(&state)]);
+    assert_eq!(effects, vec![made(rename("Modded", "Heavy")), save(&state)]);
   }
 
   #[test]
@@ -851,7 +845,14 @@ mod tests {
       vec!["Default", "Modded", "Modded copy"]
     );
     assert_eq!(remembered(&state), Some("Modded copy"));
-    assert_eq!(effects, vec![save(&state), open_profile("Modded copy")]);
+    assert_eq!(
+      effects,
+      vec![
+        made(duplicate("Modded", "Modded copy")),
+        save(&state),
+        open_profile("Modded copy")
+      ]
+    );
   }
 
   #[test]
@@ -884,7 +885,14 @@ mod tests {
     assert_eq!(state.profile_names(), vec!["Default"]);
     assert_eq!(selected(&state), Some(("Default", &ProfileStatus::Opening)));
     assert_eq!(remembered(&state), None);
-    assert_eq!(effects, vec![save(&state), open_profile("Default")]);
+    assert_eq!(
+      effects,
+      vec![
+        made(delete("Modded")),
+        save(&state),
+        open_profile("Default")
+      ]
+    );
   }
 
   #[test]
@@ -910,14 +918,14 @@ mod tests {
 
     let effects = update(&mut state, changed(delete("Modded"), Err("busy")));
 
-    assert_eq!(effects, vec![]);
     assert_eq!(
-      switcher(&state).failure,
-      Some(SwitcherFailure::Change {
+      effects,
+      vec![Effect::Notify(Notice::ProfileChangeFailed {
         change: delete("Modded"),
         reason: "busy".to_string(),
-      })
+      })]
     );
+    assert_eq!(switcher(&state).changing, None);
     assert_eq!(state.profile_names(), vec!["Default", "Modded"]);
     assert_eq!(selected(&state).map(|(name, _)| name), Some("Modded"));
     assert!(state.can_switch_profile());
@@ -1061,7 +1069,7 @@ mod tests {
 
     assert_eq!(state.switcher, None);
     assert_eq!(remembered(&state), Some("Heavy"));
-    assert_eq!(effects, vec![save(&state)]);
+    assert_eq!(effects, vec![made(rename("Modded", "Heavy")), save(&state)]);
   }
 
   #[test]

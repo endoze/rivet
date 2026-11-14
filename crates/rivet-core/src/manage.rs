@@ -478,7 +478,7 @@ fn set_enabled(state: &mut State, packages: Vec<String>, enabled: bool) -> Vec<E
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::install::{DEFAULT_PROFILE, OperationStatus, Outcome};
+  use crate::install::{DEFAULT_PROFILE, Outcome};
   use crate::settings::{GameSettings, Settings};
   use crate::{Msg, test_ecosystem, update};
 
@@ -890,16 +890,7 @@ mod tests {
       },
     );
 
-    assert_eq!(
-      state
-        .queue
-        .operations
-        .last()
-        .map(|operation| operation.status.clone()),
-      Some(OperationStatus::Finished {
-        changed: names(&["Owner-Solo"]),
-      })
-    );
+    assert!(state.queue.operations.is_empty());
     assert_eq!(
       state.profile.as_ref().and_then(Profile::installed),
       Some(&after)

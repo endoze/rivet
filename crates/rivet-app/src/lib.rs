@@ -11,11 +11,14 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::text::TextView;
-use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+  Disableable as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-  AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, FontWeight, Hsla,
+  Anchor, AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, FontWeight, Hsla,
   InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
   SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
   TestSupportExt as _, Window, div, img, px, uniform_list,
@@ -28,6 +31,7 @@ use rivet_core::install::{
 };
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::manage::{Folders, Pending, Scope, Sort, Tab};
+use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::queue::{CloseChoice, Closing};
 use rivet_core::readme::{Package, Readme, Status};
@@ -50,6 +54,9 @@ pub struct Shell {
   /// Set when the window should close, which it does on the next render or
   /// as the answer to its close button, since closing needs the window.
   close_window: bool,
+  /// Notices shown as toasts on the next render, since showing one needs the
+  /// window.
+  notices: Vec<Notice>,
   installed_search: Entity<InputState>,
   icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
@@ -137,6 +144,7 @@ impl Shell {
       profile_name,
       fill_profile_name: None,
       close_window: false,
+      notices: Vec::new(),
       installed_search,
       icons: cx.new(|_| IconCache::new()),
       _subscriptions: vec![searched, package_searched, named, installed_searched],
@@ -162,6 +170,10 @@ impl Shell {
         Effect::FillProfileName(text) => self.fill_profile_name = Some(text),
         Effect::OpenUrl(url) => cx.open_url(&url),
         Effect::CloseWindow => self.close_window = true,
+        Effect::CopyToClipboard(text) => {
+          cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+        Effect::Notify(notice) => self.notices.push(notice),
       }
     }
 
@@ -212,6 +224,39 @@ impl Shell {
       .map_or(game, |definition| definition.display_name())
       .to_string()
       .into()
+  }
+
+  /// `notice` as a toast: an icon and outline for its level, its headline,
+  /// and its detail. Errors stay until closed, and the rest go on their own.
+  /// Toasts rise in the bottom corner, clear of the buttons along the top.
+  fn toast(&self, notice: &Notice, cx: &mut Context<Self>) -> Notification {
+    let palette = Palette::new(cx);
+    let level = notice.level();
+    let (id, icon, accent) = match level {
+      Level::Info => ("notice-info", IconName::Info, palette.info),
+      Level::Success => ("notice-success", IconName::CircleCheck, palette.success),
+      Level::Warning => ("notice-warning", IconName::TriangleAlert, palette.warning),
+      Level::Error => ("notice-error", IconName::CircleX, palette.error),
+    };
+    let told = text::notice(notice, |game| self.game_name(game).to_string());
+    let detail = told.detail;
+
+    Notification::new()
+      .placement(Anchor::BottomRight)
+      .title(told.title)
+      .icon(Icon::new(icon).text_color(accent))
+      .bg(palette.toast)
+      .text_color(palette.text)
+      .border_color(accent)
+      .autohide(level != Level::Error)
+      .content(move |_, _, _| {
+        v_flex()
+          .id(id)
+          .text_sm()
+          .children(detail.iter().map(|line| div().child(line.clone())))
+          .test_support()
+          .into_any_element()
+      })
   }
 
   fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -705,9 +750,9 @@ impl Shell {
         .children(deleting)
         .children(
           switcher
-            .failure
+            .list_failure
             .as_ref()
-            .map(|switcher_failure| failure(palette, text::switcher_failed(switcher_failure))),
+            .map(|reason| failure(palette, text::profiles_unlisted(reason))),
         )
         .into_any_element(),
     )
@@ -719,21 +764,23 @@ impl Shell {
     let palette = Palette::new(cx);
     let can_launch = self.state.can_launch();
     let launcher = self.state.launcher.as_ref();
-    let attempt = self.state.launch.as_ref().map(|attempt| {
+    let attempt = self.state.launch.as_ref().and_then(|attempt| {
       let launched = self.game_name(&attempt.game);
 
       match &attempt.status {
-        AttemptStatus::Preparing => div()
-          .child(text::launching(&launched, attempt.mode))
+        AttemptStatus::Preparing => Some(
+          div()
+            .child(text::launching(&launched, attempt.mode))
+            .into_any_element(),
+        ),
+        AttemptStatus::Started => None,
+        AttemptStatus::Failed(launch_failure) => Some(
+          failure(
+            palette,
+            text::launch_failed(&launched, attempt.mode, launch_failure),
+          )
           .into_any_element(),
-        AttemptStatus::Started => div()
-          .child(text::launched(&launched, attempt.mode))
-          .into_any_element(),
-        AttemptStatus::Failed(launch_failure) => failure(
-          palette,
-          text::launch_failed(&launched, attempt.mode, launch_failure),
-        )
-        .into_any_element(),
+        ),
       }
     });
     let missing_loader = self.state.missing_loader().and_then(|loader| {
@@ -800,8 +847,6 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyEleme
     OptionStatus::Unknown(reason) => ("launch-option-unknown", text::steam_option_unknown(reason)),
   };
   let line = steam.line.clone().map(|line| {
-    let copied = line.clone();
-
     h_flex()
       .gap_2()
       .child(
@@ -815,9 +860,7 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyEleme
       .child(
         Button::new("copy-launch-option")
           .label(text::COPY)
-          .on_click(move |_, _, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
-          }),
+          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::LaunchLineCopyPressed, cx))),
       )
   });
 
@@ -922,9 +965,6 @@ fn render_operation(operation: &Operation, game: &str, cx: &mut Context<Shell>) 
     ),
     OperationStatus::Cancelling(progress) => {
       (line(text::stopping(action, progress.as_ref())), vec![])
-    }
-    OperationStatus::Finished { changed } => {
-      (line(text::finished(action, changed)), vec![dismiss()])
     }
     OperationStatus::Failed { failed, changed } => (
       failure(palette, text::operation_failed(action, failed, changed)).into_any_element(),
@@ -1421,7 +1461,7 @@ fn render_browse(
       .child(text::LOADING_PACKAGES)
       .into_any_element(),
     View::Unavailable(reason) => failure(palette, text::unavailable(reason)).into_any_element(),
-    View::List { refreshing, stale } => {
+    View::List { refreshing } => {
       let count = browse.rows.len();
       let rows = uniform_list(
         "packages",
@@ -1464,12 +1504,6 @@ fn render_browse(
         .gap_2()
         .overflow_hidden()
         .image_cache(icons.clone())
-        .children(stale.map(|reason| {
-          div()
-            .id("stale")
-            .child(failure(palette, text::stale(reason)))
-            .test_support()
-        }))
         .when(refreshing, |list| list.child(text::REFRESHING))
         .child(filters)
         .when(count == 0, |list| list.child(empty))
@@ -1565,6 +1599,12 @@ impl Render for Shell {
 
     if std::mem::take(&mut self.close_window) {
       window.remove_window();
+    }
+
+    for notice in std::mem::take(&mut self.notices) {
+      let toast = self.toast(&notice, cx);
+
+      window.defer(cx, move |window, cx| window.push_notification(toast, cx));
     }
 
     let screen = match self.state.screen.clone() {

@@ -5,6 +5,7 @@ pub mod browse;
 pub mod install;
 pub mod launch;
 pub mod manage;
+pub mod notice;
 pub mod picker;
 pub mod queue;
 pub mod readme;
@@ -15,6 +16,7 @@ use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
 use install::{Confirmation, Install, Installed, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
+use notice::Notice;
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use queue::{CloseChoice, Closing, Queue};
 use readme::Readme;
@@ -253,6 +255,8 @@ pub enum Msg {
   SteamOptionRead(SteamOptionRead),
   /// Asked to check Steam's launch options again.
   SteamOptionCheckPressed,
+  /// Copy was pressed beside the Steam launch option line.
+  LaunchLineCopyPressed,
   /// A game's profiles were listed by name, or why they could not be.
   ProfilesListed {
     game: String,
@@ -292,6 +296,12 @@ pub enum Effect {
   OpenUrl(String),
   /// Close the window. Needs the window, so the shell runs it. Not answered.
   CloseWindow,
+  /// Put this text on the clipboard. Needs the platform's clipboard, which
+  /// the shell holds. Not answered.
+  CopyToClipboard(String),
+  /// Tell the user this in passing, over the window. Needs the window, so
+  /// the shell runs it. Not answered.
+  Notify(Notice),
   /// Work for the commands thread.
   Run(Command),
 }
@@ -502,6 +512,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
     Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),
     Msg::SteamOptionCheckPressed => launch::check_steam_option(state),
+    Msg::LaunchLineCopyPressed => launch::copy_line(state),
     Msg::ProfilesListed { game, names } => switcher::listed(state, game, names),
     Msg::ProfilePicked(name) => switcher::picked(state, name),
     Msg::ProfileNamePressed(naming) => switcher::name_pressed(state, naming),
