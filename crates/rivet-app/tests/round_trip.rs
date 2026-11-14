@@ -36,6 +36,7 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
       "valheim".to_string(),
       GameSettings {
         folder: PathBuf::from("/games/Valheim"),
+        profile: None,
       },
     )]
     .into(),
@@ -173,6 +174,7 @@ fn valheim_settings() -> Settings {
       "valheim".to_string(),
       GameSettings {
         folder: PathBuf::from("/games/Valheim"),
+        profile: None,
       },
     )]
     .into(),
@@ -543,4 +545,115 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
 
   assert_eq!(launch.context.mode, LaunchMode::Vanilla);
   assert_eq!(launch.folder, PathBuf::from("/games/Valheim"));
+}
+
+#[gpui_kit::test]
+fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
+  use rivet_core::switcher::ProfileChange;
+
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let opened = |profile: &str| Msg::ProfileOpened {
+    game: "valheim".to_string(),
+    profile: profile.to_string(),
+    installed: Ok(Installed::new()),
+  };
+  let mut drain = move || std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>();
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    opened(DEFAULT_PROFILE),
+    Msg::ProfilesListed {
+      game: "valheim".to_string(),
+      names: Ok(vec![DEFAULT_PROFILE.to_string(), "Modded".to_string()]),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  drain();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("profile-Modded", cx);
+  })
+  .unwrap();
+
+  assert!(
+    drain().contains(&Command::OpenProfile {
+      game: "valheim".to_string(),
+      profile: "Modded".to_string(),
+    }),
+    "picking a profile did not open it"
+  );
+
+  answers.unbounded_send(opened("Modded")).unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("new-profile", cx);
+    window.render_frame(cx);
+    window.input("CON", cx);
+    window.click("save-profile-name", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-name-refused").is_some());
+
+    window.click("cancel-profile-name", cx);
+    window.click("new-profile", cx);
+    window.render_frame(cx);
+    window.input("Fresh", cx);
+    window.press("enter", cx);
+  })
+  .unwrap();
+
+  let created = ProfileChange::Create("Fresh".to_string());
+
+  assert!(
+    drain().contains(&Command::ChangeProfile {
+      game: "valheim".to_string(),
+      change: created.clone(),
+    }),
+    "the typed name was not submitted"
+  );
+
+  for msg in [
+    Msg::ProfileChanged {
+      game: "valheim".to_string(),
+      change: created,
+      result: Ok(()),
+    },
+    opened("Fresh"),
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  drain();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-Fresh").is_some());
+
+    window.click("delete-profile", cx);
+    window.render_frame(cx);
+    window.click("confirm-delete-profile", cx);
+  })
+  .unwrap();
+
+  assert_eq!(
+    drain(),
+    vec![Command::ChangeProfile {
+      game: "valheim".to_string(),
+      change: ProfileChange::Delete("Fresh".to_string()),
+    }]
+  );
 }

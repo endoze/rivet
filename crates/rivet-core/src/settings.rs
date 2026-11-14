@@ -1,6 +1,7 @@
 //! What the app remembers between runs. The shell stores it as TOML in the
 //! platform's config location.
 
+use crate::install::DEFAULT_PROFILE;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,10 @@ pub struct Settings {
 pub struct GameSettings {
   /// The folder the game is installed in.
   pub folder: PathBuf,
+  /// The profile selected when the game was last open, or `None` for the
+  /// default profile.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub profile: Option<String>,
 }
 
 impl Settings {
@@ -29,5 +34,21 @@ impl Settings {
       .games
       .get(game)
       .map(|settings| settings.folder.as_path())
+  }
+
+  /// The profile to open `game` with: the one last selected, or
+  /// [`DEFAULT_PROFILE`].
+  ///
+  /// ```
+  /// use rivet_core::settings::Settings;
+  ///
+  /// assert_eq!(Settings::default().profile("valheim"), "Default");
+  /// ```
+  pub fn profile(&self, game: &str) -> &str {
+    self
+      .games
+      .get(game)
+      .and_then(|settings| settings.profile.as_deref())
+      .unwrap_or(DEFAULT_PROFILE)
   }
 }

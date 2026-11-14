@@ -373,6 +373,7 @@ mod tests {
         game.to_string(),
         GameSettings {
           folder: PathBuf::from("/games").join(game),
+          profile: None,
         },
       )]
       .into(),

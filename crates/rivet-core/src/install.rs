@@ -177,29 +177,32 @@ impl State {
   }
 
   /// Whether an install can start: the open profile has been read, and no
-  /// install is running and no launch is being prepared.
+  /// install is running, no launch is being prepared, and no profile change
+  /// is being made.
   pub fn can_install(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
-    ready && !self.is_busy() && !self.is_launching()
+    ready && !self.is_busy() && !self.is_launching() && !self.is_changing_profile()
   }
 }
 
-/// Opens `game`'s default profile, creating it if the game has none.
-pub(crate) fn open_profile(state: &mut State, game: &str) -> Vec<Effect> {
+/// Opens `game`'s `name` profile as the selected one, creating it if the game
+/// does not have it.
+pub(crate) fn open_profile(state: &mut State, game: &str, name: &str) -> Vec<Effect> {
   state.profile = Some(Profile {
     game: game.to_string(),
-    name: DEFAULT_PROFILE.to_string(),
+    name: name.to_string(),
     status: ProfileStatus::Opening,
   });
 
   vec![Effect::Run(Command::OpenProfile {
     game: game.to_string(),
-    profile: DEFAULT_PROFILE.to_string(),
+    profile: name.to_string(),
   })]
 }
 
-/// Applies the answer to opening `game`'s `name` profile.
+/// Applies the answer to opening `game`'s `name` profile, then lists the
+/// game's profiles if they are not listed yet.
 pub(crate) fn profile_opened(
   state: &mut State,
   game: String,
@@ -217,7 +220,7 @@ pub(crate) fn profile_opened(
     Err(reason) => ProfileStatus::Failed(reason),
   };
 
-  Vec::new()
+  crate::switcher::profile_opened(state, &game)
 }
 
 /// Asks to confirm installing `full_name` with everything it needs. Ignored
@@ -416,6 +419,7 @@ mod tests {
         game.to_string(),
         GameSettings {
           folder: PathBuf::from("/games").join(game),
+          profile: None,
         },
       )]
       .into(),
@@ -886,7 +890,10 @@ mod tests {
       profile_opened("valheim", Ok(installed(&[("Owner-ModA", "1.0.0")]))),
     );
 
-    assert_eq!(effects, vec![]);
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::ListProfiles("valheim".to_string()))]
+    );
     assert!(state.is_installed("Owner-ModA"));
     assert!(!state.is_installed("Owner-ModB"));
   }

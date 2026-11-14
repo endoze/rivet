@@ -169,11 +169,15 @@ impl State {
   }
 
   /// Whether a launch button would start a launch: the open profile has been
-  /// read, and no install or other launch is running.
+  /// read, and no install, other launch, or profile change is running.
   pub fn can_launch(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
-    self.host.is_some() && ready && !self.is_launching() && !self.is_busy()
+    self.host.is_some()
+      && ready
+      && !self.is_launching()
+      && !self.is_busy()
+      && !self.is_changing_profile()
   }
 
   /// The mod loader the open game's packages load through, when the open
@@ -375,6 +379,7 @@ mod tests {
         game.to_string(),
         GameSettings {
           folder: PathBuf::from("/games").join(game),
+          profile: None,
         },
       )]
       .into(),

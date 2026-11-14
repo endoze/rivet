@@ -23,6 +23,7 @@ use rivet_core::browse::{Browse, SortKey, View};
 use rivet_core::install::{Confirmation, Operation, OperationStatus, ProfileStatus};
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::picker::Step;
+use rivet_core::switcher::Naming;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
 use thunderstore_engine::profile::launch::LaunchMode;
@@ -34,6 +35,10 @@ pub struct Shell {
   commands: UnboundedSender<Command>,
   search: Entity<InputState>,
   package_search: Entity<InputState>,
+  profile_name: Entity<InputState>,
+  /// Text for the profile name field, put there and focused on the next
+  /// render, since setting it needs the window.
+  fill_profile_name: Option<String>,
   icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
   _inbox: Task<()>,
@@ -74,6 +79,16 @@ impl Shell {
         }
       },
     );
+    let profile_name = cx.new(|cx| InputState::new(window, cx));
+    let named = cx.subscribe_in(
+      &profile_name,
+      window,
+      |this: &mut Self, _, event: &InputEvent, _, cx| {
+        if let InputEvent::PressEnter { .. } = event {
+          this.submit_profile_name(cx);
+        }
+      },
+    );
     let _inbox = cx.spawn(async move |this, cx| {
       while let Some(msg) = inbox.next().await {
         if this.update(cx, |this, cx| this.dispatch(msg, cx)).is_err() {
@@ -86,8 +101,10 @@ impl Shell {
       commands,
       search,
       package_search,
+      profile_name,
+      fill_profile_name: None,
       icons: cx.new(|_| IconCache::new()),
-      _subscriptions: vec![searched, package_searched],
+      _subscriptions: vec![searched, package_searched, named],
       _inbox,
     };
 
@@ -107,6 +124,7 @@ impl Shell {
           self.commands.unbounded_send(command).ok();
         }
         Effect::ChooseFolder => self.choose_folder(cx),
+        Effect::FillProfileName(text) => self.fill_profile_name = Some(text),
       }
     }
 
@@ -118,6 +136,12 @@ impl Shell {
     self
       .package_search
       .update(cx, |input, cx| input.set_value("", window, cx));
+  }
+
+  fn submit_profile_name(&mut self, cx: &mut Context<Self>) {
+    let name = self.profile_name.read(cx).value().to_string();
+
+    self.dispatch(Msg::ProfileNameSubmitted(name), cx);
   }
 
   fn choose_folder(&mut self, cx: &mut Context<Self>) {
@@ -248,6 +272,7 @@ impl Shell {
           ),
       )
       .children(folder)
+      .children(self.render_switcher(cx))
       .child(self.render_launch(cx))
       .children(
         self
@@ -290,6 +315,156 @@ impl Shell {
           .map(|browse| render_browse(browse, &self.package_search, &self.icons, cx)),
       )
       .into_any_element()
+  }
+
+  /// The profile switcher, which is always shown in a game: a button per
+  /// profile, the actions on the selected one, and any name being asked for,
+  /// deletion being confirmed, or failure.
+  fn render_switcher(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let state = &self.state;
+    let switcher = state.switcher.as_ref()?;
+    let selected = state.profile.as_ref().map(|profile| profile.name.as_str());
+    let can_switch = state.can_switch_profile();
+    let can_rename_or_delete = state.can_rename_or_delete_profile();
+    let profiles: Vec<_> = state
+      .profile_names()
+      .into_iter()
+      .map(|name| {
+        let picked = name.to_string();
+
+        Button::new(SharedString::from(format!("profile-{name}")))
+          .label(name.to_string())
+          .small()
+          .when(Some(name) == selected, |button| button.primary())
+          .disabled(!can_switch)
+          .on_click(cx.listener(move |this, _, _, cx| {
+            this.dispatch(Msg::ProfilePicked(picked.clone()), cx);
+          }))
+      })
+      .collect();
+    let naming = |id: &'static str, label: &'static str, naming: Naming, enabled: bool| {
+      Button::new(id)
+        .label(label)
+        .small()
+        .disabled(!enabled)
+        .on_click(cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::ProfileNamePressed(naming), cx);
+        }))
+    };
+    let actions = h_flex()
+      .gap_2()
+      .child(naming(
+        "new-profile",
+        text::NEW_PROFILE,
+        Naming::Create,
+        can_switch,
+      ))
+      .child(naming(
+        "rename-profile",
+        text::RENAME,
+        Naming::Rename,
+        can_rename_or_delete,
+      ))
+      .child(naming(
+        "duplicate-profile",
+        text::DUPLICATE,
+        Naming::Duplicate,
+        state.can_duplicate_profile(),
+      ))
+      .child(
+        Button::new("delete-profile")
+          .label(text::DELETE)
+          .small()
+          .disabled(!can_rename_or_delete)
+          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::DeleteProfilePressed, cx))),
+      );
+    let form = switcher.form.as_ref().map(|form| {
+      v_flex()
+        .gap_2()
+        .p_3()
+        .border_1()
+        .border_color(rgb(0x606060))
+        .child(text::name_prompt(form.naming, &form.from))
+        .child(Input::new(&self.profile_name))
+        .children(form.refusal.as_ref().map(|refusal| {
+          div()
+            .id("profile-name-refused")
+            .child(failure(text::name_refused(refusal)))
+            .test_support()
+        }))
+        .child(
+          h_flex()
+            .gap_2()
+            .child(
+              Button::new("save-profile-name")
+                .label(text::SAVE)
+                .primary()
+                .on_click(cx.listener(|this, _, _, cx| this.submit_profile_name(cx))),
+            )
+            .child(
+              Button::new("cancel-profile-name")
+                .label(text::CANCEL)
+                .on_click(
+                  cx.listener(|this, _, _, cx| this.dispatch(Msg::ProfileNameDismissed, cx)),
+                ),
+            ),
+        )
+    });
+    let deleting = switcher.deleting.as_ref().map(|name| {
+      v_flex()
+        .gap_2()
+        .p_3()
+        .border_1()
+        .border_color(rgb(0xb04040))
+        .child(
+          div()
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(text::confirm_delete(name)),
+        )
+        .child(text::DELETE_WARNING)
+        .child(
+          h_flex()
+            .gap_2()
+            .child(
+              Button::new("confirm-delete-profile")
+                .label(text::DELETE)
+                .primary()
+                .on_click(
+                  cx.listener(|this, _, _, cx| this.dispatch(Msg::DeleteProfileConfirmed, cx)),
+                ),
+            )
+            .child(
+              Button::new("cancel-delete-profile")
+                .label(text::CANCEL)
+                .on_click(
+                  cx.listener(|this, _, _, cx| this.dispatch(Msg::DeleteProfileDismissed, cx)),
+                ),
+            ),
+        )
+    });
+
+    Some(
+      v_flex()
+        .gap_2()
+        .child(
+          h_flex()
+            .gap_2()
+            .flex_wrap()
+            .child(text::PROFILE)
+            .children(profiles),
+        )
+        .child(actions)
+        .children(switcher.changing.as_ref().map(text::changing))
+        .children(form)
+        .children(deleting)
+        .children(
+          switcher
+            .failure
+            .as_ref()
+            .map(|switcher_failure| failure(text::switcher_failed(switcher_failure))),
+        )
+        .into_any_element(),
+    )
   }
 
   /// The launch buttons, which are always shown, with what the user should
@@ -751,7 +926,14 @@ fn failure(failure: text::Failure) -> impl IntoElement {
 }
 
 impl Render for Shell {
-  fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+  fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    if let Some(text) = self.fill_profile_name.take() {
+      self.profile_name.update(cx, |input, cx| {
+        input.set_value(text, window, cx);
+        input.focus(window, cx);
+      });
+    }
+
     match self.state.screen.clone() {
       Screen::Starting => v_flex()
         .size_full()

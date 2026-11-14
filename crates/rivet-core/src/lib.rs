@@ -6,6 +6,7 @@ pub mod install;
 pub mod launch;
 pub mod picker;
 pub mod settings;
+pub mod switcher;
 
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
 use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Progress};
@@ -13,6 +14,7 @@ use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
+use switcher::{Naming, ProfileChange, Switcher};
 use thunderstore_engine::ecosystem::Ecosystem;
 use thunderstore_engine::profile::launch::{HostOs, LaunchMode};
 
@@ -49,6 +51,8 @@ pub struct State {
   pub launch: Option<Attempt>,
   /// How many launches have been started, so each gets its own id.
   pub launches: u64,
+  /// The open game's profiles. `None` outside a game.
+  pub switcher: Option<Switcher>,
 }
 
 impl State {
@@ -60,6 +64,7 @@ impl State {
       launcher: None,
       launch: None,
       launches: 0,
+      switcher: None,
       ecosystem,
       settings: Settings::default(),
       screen: Screen::Starting,
@@ -179,6 +184,28 @@ pub enum Msg {
   SteamOptionRead(SteamOptionRead),
   /// Asked to check Steam's launch options again.
   SteamOptionCheckPressed,
+  /// A game's profiles were listed by name, or why they could not be.
+  ProfilesListed {
+    game: String,
+    names: Result<Vec<String>, String>,
+  },
+  /// A profile in the switcher was picked, by name.
+  ProfilePicked(String),
+  /// A button that asks for a profile name was pressed.
+  ProfileNamePressed(Naming),
+  /// A profile name was entered.
+  ProfileNameSubmitted(String),
+  ProfileNameDismissed,
+  /// Delete was pressed on the selected profile.
+  DeleteProfilePressed,
+  DeleteProfileConfirmed,
+  DeleteProfileDismissed,
+  /// A [`ProfileChange`] to a game's profiles ended: made, or why it was not.
+  ProfileChanged {
+    game: String,
+    change: ProfileChange,
+    result: Result<(), String>,
+  },
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -188,6 +215,9 @@ pub enum Effect {
   /// Ask the user for a folder. Needs the window, so the shell runs it.
   /// Answered with [`Msg::FolderChosen`].
   ChooseFolder,
+  /// Put this text in the profile name field. Needs the window, so the shell
+  /// runs it. Not answered.
+  FillProfileName(String),
   /// Work for the commands thread.
   Run(Command),
 }
@@ -221,6 +251,10 @@ pub enum Command {
   /// Write the game's Steam wrapper and read Steam's launch options for
   /// `app_id`, never changing them. Answered with [`Msg::SteamOptionRead`].
   ReadSteamOption { game: String, app_id: u32 },
+  /// List a game's profiles. Answered with [`Msg::ProfilesListed`].
+  ListProfiles(String),
+  /// Answered with [`Msg::ProfileChanged`].
+  ChangeProfile { game: String, change: ProfileChange },
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -280,6 +314,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.profile = None;
       state.confirmation = None;
       state.launcher = None;
+      state.switcher = None;
 
       if !state.is_launching() {
         state.launch = None;
@@ -327,6 +362,19 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
     Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),
     Msg::SteamOptionCheckPressed => launch::check_steam_option(state),
+    Msg::ProfilesListed { game, names } => switcher::listed(state, game, names),
+    Msg::ProfilePicked(name) => switcher::picked(state, name),
+    Msg::ProfileNamePressed(naming) => switcher::name_pressed(state, naming),
+    Msg::ProfileNameSubmitted(name) => switcher::name_submitted(state, name),
+    Msg::ProfileNameDismissed => switcher::name_dismissed(state),
+    Msg::DeleteProfilePressed => switcher::delete_pressed(state),
+    Msg::DeleteProfileConfirmed => switcher::delete_confirmed(state),
+    Msg::DeleteProfileDismissed => switcher::delete_dismissed(state),
+    Msg::ProfileChanged {
+      game,
+      change,
+      result,
+    } => switcher::changed(state, game, change, result),
   }
 }
 
@@ -450,10 +498,13 @@ fn folder_listed(
 
   match verdict {
     Ok(()) => {
-      state
-        .settings
-        .games
-        .insert(game.clone(), GameSettings { folder });
+      state.settings.games.insert(
+        game.clone(),
+        GameSettings {
+          folder,
+          profile: None,
+        },
+      );
 
       open_game(state, game)
     }
@@ -486,15 +537,19 @@ fn open_game(state: &mut State, game: String) -> Vec<Effect> {
   effects
 }
 
-/// Shows `game` and starts loading its package list and its profile.
+/// Shows `game` and starts loading its package list and the profile last
+/// selected for it.
 fn show_game(state: &mut State, game: String) -> Vec<Effect> {
   let community = state
     .ecosystem
     .game(&game)
     .and_then(|definition| definition.community())
     .map(str::to_string);
-  let profile = install::open_profile(state, &game);
+  let selected = state.settings.profile(&game).to_string();
+  let profile = install::open_profile(state, &game, &selected);
   let launcher = launch::open(state, &game);
+
+  switcher::open(state, &game);
 
   state.screen = Screen::Game(game);
   state.browse = community.clone().map(Browse::new);
@@ -580,6 +635,7 @@ mod tests {
         game.to_string(),
         GameSettings {
           folder: PathBuf::from(folder),
+          profile: None,
         },
       )]
       .into(),
@@ -844,6 +900,7 @@ mod tests {
       "riskofrain2".to_string(),
       GameSettings {
         folder: PathBuf::from("/games/ror2"),
+        profile: None,
       },
     );
     update(&mut state, Msg::SettingsLoaded(Ok(settings)));

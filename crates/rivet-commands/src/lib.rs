@@ -8,6 +8,7 @@ use rivet_core::install::{FailedPackage, Install, Installed, Outcome, Progress, 
 use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
 use rivet_core::picker::NotFound;
 use rivet_core::settings::Settings;
+use rivet_core::switcher::ProfileChange;
 use rivet_core::{Command, Msg};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -136,7 +137,45 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
         current,
       })
     }
+    Command::ListProfiles(game) => {
+      let names = list_profiles(config, &game).await;
+
+      Msg::ProfilesListed { game, names }
+    }
+    Command::ChangeProfile { game, change } => {
+      let result = change_profile(config, &game, &change).await;
+
+      Msg::ProfileChanged {
+        game,
+        change,
+        result,
+      }
+    }
   }
+}
+
+async fn list_profiles(config: &Config, game: &str) -> Result<Vec<String>, String> {
+  let (data, game) = (config.data.clone(), game.to_string());
+
+  tokio::task::spawn_blocking(move || layout::list(&data, &game))
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+/// Makes `change` to `game`'s profiles with the engine.
+async fn change_profile(config: &Config, game: &str, change: &ProfileChange) -> Result<(), String> {
+  let (data, game, change) = (config.data.clone(), game.to_string(), change.clone());
+
+  tokio::task::spawn_blocking(move || match change {
+    ProfileChange::Create(name) => layout::create(&data, &game, &name).map(drop),
+    ProfileChange::Rename { from, to } => layout::rename(&data, &game, &from, &to),
+    ProfileChange::Duplicate { from, to } => layout::duplicate(&data, &game, &from, &to).map(drop),
+    ProfileChange::Delete(name) => layout::delete(&data, &game, &name),
+  })
+  .await
+  .map_err(|error| error.to_string())?
+  .map_err(|error| error.to_string())
 }
 
 /// Prepares `launch` with the engine, then starts the game.
@@ -658,6 +697,7 @@ mod tests {
         "valheim".to_string(),
         GameSettings {
           folder: PathBuf::from("/games/Valheim"),
+          profile: None,
         },
       )]
       .into(),
@@ -839,6 +879,212 @@ mod tests {
       outcome.failed[0].reason.contains("ModE"),
       "{:?}",
       outcome.failed[0].reason
+    );
+  }
+
+  fn change(change: ProfileChange) -> Command {
+    Command::ChangeProfile {
+      game: "valheim".to_string(),
+      change,
+    }
+  }
+
+  fn changed(change: ProfileChange, result: Result<(), String>) -> Msg {
+    Msg::ProfileChanged {
+      game: "valheim".to_string(),
+      change,
+      result,
+    }
+  }
+
+  fn list(config: &Config) -> Msg {
+    run_now(Command::ListProfiles("valheim".to_string()), config)
+  }
+
+  fn listed(profiles: &[&str]) -> Msg {
+    Msg::ProfilesListed {
+      game: "valheim".to_string(),
+      names: Ok(names(profiles)),
+    }
+  }
+
+  fn profile_folder(config: &Config, name: &str) -> PathBuf {
+    config.data.join("valheim").join("profiles").join(name)
+  }
+
+  #[test]
+  fn a_created_profile_is_listed_with_the_others() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    run_now(open_profile("valheim"), &config);
+
+    let created = ProfileChange::Create("Modded".to_string());
+    let answer = run_now(change(created.clone()), &config);
+
+    assert_eq!(answer, changed(created, Ok(())));
+    assert_eq!(list(&config), listed(&["Default", "Modded"]));
+  }
+
+  #[test]
+  fn listing_a_game_with_no_profiles_finds_none() {
+    let dir = TempDir::new().unwrap();
+
+    assert_eq!(list(&config_in(&dir)), listed(&[]));
+  }
+
+  #[test]
+  fn an_invalid_name_creates_nothing_and_says_why() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    run_now(open_profile("valheim"), &config);
+
+    let answer = run_now(change(ProfileChange::Create("CON".to_string())), &config);
+
+    assert!(
+      matches!(&answer, Msg::ProfileChanged { result: Err(reason), .. } if reason.contains("CON")),
+      "{answer:?}"
+    );
+    assert_eq!(list(&config), listed(&["Default"]));
+  }
+
+  #[test]
+  fn renaming_a_profile_moves_its_files_to_the_new_name() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    run_now(change(ProfileChange::Create("Modded".to_string())), &config);
+    std::fs::write(profile_folder(&config, "Modded").join("notes.txt"), "kept").unwrap();
+
+    let renamed = ProfileChange::Rename {
+      from: "Modded".to_string(),
+      to: "Heavy".to_string(),
+    };
+    let answer = run_now(change(renamed.clone()), &config);
+
+    assert_eq!(answer, changed(renamed, Ok(())));
+    assert_eq!(list(&config), listed(&["Heavy"]));
+    assert_eq!(
+      std::fs::read_to_string(profile_folder(&config, "Heavy").join("notes.txt")).unwrap(),
+      "kept"
+    );
+  }
+
+  #[test]
+  fn renaming_onto_an_existing_profile_is_refused_and_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(change(ProfileChange::Create("Modded".to_string())), &config);
+
+    let answer = run_now(
+      change(ProfileChange::Rename {
+        from: "Modded".to_string(),
+        to: DEFAULT_PROFILE.to_string(),
+      }),
+      &config,
+    );
+
+    assert!(
+      matches!(&answer, Msg::ProfileChanged { result: Err(_), .. }),
+      "{answer:?}"
+    );
+    assert_eq!(list(&config), listed(&["Default", "Modded"]));
+  }
+
+  #[test]
+  fn a_duplicated_profile_holds_the_same_packages() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install("Owner-ModC", &index), &config);
+
+    let duplicated = ProfileChange::Duplicate {
+      from: DEFAULT_PROFILE.to_string(),
+      to: "Copy".to_string(),
+    };
+    let answer = run_now(change(duplicated.clone()), &config);
+    let copy = run_now(
+      Command::OpenProfile {
+        game: "valheim".to_string(),
+        profile: "Copy".to_string(),
+      },
+      &config,
+    );
+
+    assert_eq!(answer, changed(duplicated, Ok(())));
+    assert_eq!(list(&config), listed(&["Copy", "Default"]));
+    assert_eq!(
+      copy,
+      Msg::ProfileOpened {
+        game: "valheim".to_string(),
+        profile: "Copy".to_string(),
+        installed: Ok(installed(&[
+          ("Owner-ModA", "1.0.0"),
+          ("Owner-ModC", "1.0.0")
+        ])),
+      }
+    );
+    assert!(
+      profile_folder(&config, "Copy")
+        .join("BepInEx/plugins/Owner-ModC/ModC.dll")
+        .is_file()
+    );
+  }
+
+  #[test]
+  fn deleting_a_profile_removes_its_folder() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(change(ProfileChange::Create("Modded".to_string())), &config);
+
+    let deleted = ProfileChange::Delete("Modded".to_string());
+    let answer = run_now(change(deleted.clone()), &config);
+
+    assert_eq!(answer, changed(deleted, Ok(())));
+    assert_eq!(list(&config), listed(&["Default"]));
+    assert!(!profile_folder(&config, "Modded").exists());
+  }
+
+  #[test]
+  fn deleting_a_missing_profile_says_why() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    let answer = run_now(change(ProfileChange::Delete("Gone".to_string())), &config);
+
+    assert!(
+      matches!(&answer, Msg::ProfileChanged { result: Err(reason), .. } if reason.contains("Gone")),
+      "{answer:?}"
+    );
+  }
+
+  #[test]
+  fn the_selected_profile_is_remembered_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+    let mut settings = valheim_settings();
+
+    if let Some(valheim) = settings.games.get_mut("valheim") {
+      valheim.profile = Some("Modded".to_string());
+    }
+
+    run_now(Command::SaveSettings(settings.clone()), &config);
+
+    let loaded = run_now(Command::LoadSettings, &config);
+
+    assert_eq!(loaded, Msg::SettingsLoaded(Ok(settings)));
+    assert!(
+      std::fs::read_to_string(&config.settings)
+        .unwrap()
+        .contains("profile = \"Modded\"")
     );
   }
 

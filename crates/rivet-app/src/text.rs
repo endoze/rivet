@@ -6,9 +6,11 @@ use rivet_core::browse::{SortDirection, SortKey};
 use rivet_core::install::{FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal};
+use rivet_core::switcher::{NameRefusal, Naming, ProfileChange, SwitcherFailure};
 use std::path::Path;
 use thunderstore_engine::ecosystem::LoaderKind;
 use thunderstore_engine::profile::launch::LaunchMode;
+use thunderstore_engine::profile::layout::BadName;
 
 pub const LOADING: &str = "Loading";
 pub const PICKER_TITLE: &str = "Choose your game";
@@ -319,5 +321,97 @@ pub fn launch_failed(game: &str, launch: LaunchMode, failure: &LaunchFailure) ->
       detail: reason.clone(),
       next: "Check that the game is installed and Steam is running, then try again.".to_string(),
     },
+  }
+}
+
+pub const PROFILE: &str = "Profile:";
+pub const NEW_PROFILE: &str = "New profile";
+pub const RENAME: &str = "Rename";
+pub const DUPLICATE: &str = "Duplicate";
+pub const DELETE: &str = "Delete";
+pub const SAVE: &str = "Save";
+pub const DELETE_WARNING: &str =
+  "Its mods and their config files are deleted with it. This cannot be undone.";
+
+/// What the profile name field asks for.
+pub fn name_prompt(naming: Naming, from: &str) -> String {
+  match naming {
+    Naming::Create => "Name the new profile".to_string(),
+    Naming::Rename => format!("Rename the {from} profile"),
+    Naming::Duplicate => format!("Name the copy of the {from} profile"),
+  }
+}
+
+/// A profile name that was refused, with the rule it breaks.
+pub fn name_refused(refusal: &NameRefusal) -> Failure {
+  let detail = match refusal {
+    NameRefusal::Taken(existing) => format!("There is already a profile named {existing}."),
+    NameRefusal::Invalid(BadName::Empty) => "The name is empty.".to_string(),
+    NameRefusal::Invalid(BadName::Escapes) => {
+      "A name cannot be . or .. or contain / or \\.".to_string()
+    }
+    NameRefusal::Invalid(BadName::DrivePrefix) => {
+      "A name cannot start with a drive letter and a colon, such as C:.".to_string()
+    }
+    NameRefusal::Invalid(BadName::Reserved) => {
+      "Windows keeps this name for a device, such as CON, NUL, or COM1.".to_string()
+    }
+    NameRefusal::Invalid(BadName::ForbiddenChar(found)) if found.is_control() => {
+      "A name cannot contain a control character.".to_string()
+    }
+    NameRefusal::Invalid(BadName::ForbiddenChar(found)) => {
+      format!("A name cannot contain {found}. Windows does not allow < > : \" | ? * in names.")
+    }
+    NameRefusal::Invalid(BadName::TrailingDotOrSpace) => {
+      "A name cannot end with a dot or a space.".to_string()
+    }
+  };
+
+  Failure {
+    headline: "That name cannot be used".to_string(),
+    detail,
+    next: "Choose another name.".to_string(),
+  }
+}
+
+/// The question asked before deleting a profile.
+pub fn confirm_delete(name: &str) -> String {
+  format!("Delete the {name} profile?")
+}
+
+/// A change to the profiles being made, such as `Renaming Modded to Heavy`.
+pub fn changing(change: &ProfileChange) -> String {
+  match change {
+    ProfileChange::Create(name) => format!("Creating {name}"),
+    ProfileChange::Rename { from, to } => format!("Renaming {from} to {to}"),
+    ProfileChange::Duplicate { from, to } => format!("Copying {from} to {to}"),
+    ProfileChange::Delete(name) => format!("Deleting {name}"),
+  }
+}
+
+/// The profiles could not be listed, or a change to them could not be made.
+pub fn switcher_failed(failure: &SwitcherFailure) -> Failure {
+  let next = "Check that the app's data folder can be written to, then try again.".to_string();
+
+  match failure {
+    SwitcherFailure::List(reason) => Failure {
+      headline: "Your profiles could not be listed".to_string(),
+      detail: reason.clone(),
+      next,
+    },
+    SwitcherFailure::Change { change, reason } => {
+      let headline = match change {
+        ProfileChange::Create(name) => format!("The {name} profile could not be created"),
+        ProfileChange::Rename { from, .. } => format!("The {from} profile could not be renamed"),
+        ProfileChange::Duplicate { from, .. } => format!("The {from} profile could not be copied"),
+        ProfileChange::Delete(name) => format!("The {name} profile could not be deleted"),
+      };
+
+      Failure {
+        headline,
+        detail: reason.clone(),
+        next,
+      }
+    }
   }
 }
