@@ -3,6 +3,7 @@
 //! thread.
 
 mod icons;
+pub mod palette;
 pub mod text;
 
 use futures::StreamExt as _;
@@ -14,12 +15,13 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-  AnyElement, AppContext as _, ClipboardItem, Context, Entity, FontWeight, InteractiveElement as _,
-  IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
-  StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
-  div, img, px, rgb, uniform_list,
+  AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, FontWeight, Hsla,
+  InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+  SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+  TestSupportExt as _, Window, div, img, px, uniform_list,
 };
 use icons::IconCache;
+use palette::Palette;
 use rivet_core::browse::{Browse, SortKey, View};
 use rivet_core::install::{
   Confirmation, InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus,
@@ -213,6 +215,7 @@ impl Shell {
   }
 
   fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+    let palette = Palette::new(cx);
     let picker = &self.state.picker;
     let games = rivet_core::picker::games(&self.state.ecosystem, &picker.query);
     let refusal = picker
@@ -242,7 +245,7 @@ impl Shell {
           .id(SharedString::from(game.slug.clone()))
           .px_3()
           .py_2()
-          .hover(|row| row.bg(rgb(0x2a2a2a)))
+          .map(|row| paint_row(row, false, palette))
           .child(SharedString::from(game.display_name().to_string()))
           .on_click(cx.listener(move |this, _, _, cx| {
             this.dispatch(Msg::GamePicked(slug.clone()), cx);
@@ -267,10 +270,10 @@ impl Shell {
           .state
           .settings_error
           .as_ref()
-          .map(|error| failure(text::settings_error(error))),
+          .map(|error| failure(palette, text::settings_error(error))),
       )
       .children(fallback)
-      .children(refusal.map(failure))
+      .children(refusal.map(|refusal| failure(palette, refusal)))
       .children(checking)
       .children(self.render_queue(cx))
       .child(Input::new(&self.search))
@@ -281,6 +284,7 @@ impl Shell {
   /// Every operation in the queue, on any game or profile, or `None` when it
   /// is empty.
   fn render_queue(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let palette = Palette::new(cx);
     let operations = &self.state.queue.operations;
 
     if operations.is_empty() {
@@ -306,7 +310,7 @@ impl Shell {
         .gap_2()
         .p_3()
         .border_1()
-        .border_color(rgb(0x606060))
+        .border_color(palette.border)
         .child(
           h_flex()
             .justify_between()
@@ -332,6 +336,7 @@ impl Shell {
   /// What closing the window is waiting on: the question asked when work is
   /// in progress, or that the window closes once it ends.
   fn render_closing(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let palette = Palette::new(cx);
     let closing = self.state.closing?;
     let keep_open = Button::new("close-dismiss")
       .label(text::KEEP_OPEN)
@@ -341,7 +346,7 @@ impl Shell {
       .gap_2()
       .p_3()
       .border_1()
-      .border_color(rgb(0xb04040));
+      .border_color(palette.danger_border);
     let panel = match closing {
       Closing::Asking => panel
         .child(
@@ -391,6 +396,7 @@ impl Shell {
   }
 
   fn render_game(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
+    let palette = Palette::new(cx);
     let folder = self.state.settings.folder(game).map(text::installed_in);
 
     v_flex()
@@ -427,7 +433,7 @@ impl Shell {
           .state
           .settings_error
           .as_ref()
-          .map(|error| failure(text::settings_error(error))),
+          .map(|error| failure(palette, text::settings_error(error))),
       )
       .children(
         self
@@ -435,9 +441,10 @@ impl Shell {
           .profile
           .as_ref()
           .and_then(|profile| match &profile.status {
-            ProfileStatus::Failed(reason) => {
-              Some(failure(text::profile_failed(&profile.name, reason)))
-            }
+            ProfileStatus::Failed(reason) => Some(failure(
+              palette,
+              text::profile_failed(&profile.name, reason),
+            )),
             _ => None,
           }),
       )
@@ -559,6 +566,7 @@ impl Shell {
   /// profile, the actions on the selected one, and any name being asked for,
   /// deletion being confirmed, or failure.
   fn render_switcher(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let palette = Palette::new(cx);
     let state = &self.state;
     let switcher = state.switcher.as_ref()?;
     let selected = state.profile.as_ref().map(|profile| profile.name.as_str());
@@ -621,13 +629,13 @@ impl Shell {
         .gap_2()
         .p_3()
         .border_1()
-        .border_color(rgb(0x606060))
+        .border_color(palette.border)
         .child(text::name_prompt(form.naming, &form.from))
         .child(Input::new(&self.profile_name))
         .children(form.refusal.as_ref().map(|refusal| {
           div()
             .id("profile-name-refused")
-            .child(failure(text::name_refused(refusal)))
+            .child(failure(palette, text::name_refused(refusal)))
             .test_support()
         }))
         .child(
@@ -653,7 +661,7 @@ impl Shell {
         .gap_2()
         .p_3()
         .border_1()
-        .border_color(rgb(0xb04040))
+        .border_color(palette.danger_border)
         .child(
           div()
             .font_weight(FontWeight::SEMIBOLD)
@@ -699,7 +707,7 @@ impl Shell {
           switcher
             .failure
             .as_ref()
-            .map(|switcher_failure| failure(text::switcher_failed(switcher_failure))),
+            .map(|switcher_failure| failure(palette, text::switcher_failed(switcher_failure))),
         )
         .into_any_element(),
     )
@@ -708,6 +716,7 @@ impl Shell {
   /// The launch buttons, which are always shown, with what the user should
   /// know before or after pressing one.
   fn render_launch(&self, cx: &mut Context<Self>) -> AnyElement {
+    let palette = Palette::new(cx);
     let can_launch = self.state.can_launch();
     let launcher = self.state.launcher.as_ref();
     let attempt = self.state.launch.as_ref().map(|attempt| {
@@ -720,9 +729,11 @@ impl Shell {
         AttemptStatus::Started => div()
           .child(text::launched(&launched, attempt.mode))
           .into_any_element(),
-        AttemptStatus::Failed(launch_failure) => {
-          failure(text::launch_failed(&launched, attempt.mode, launch_failure)).into_any_element()
-        }
+        AttemptStatus::Failed(launch_failure) => failure(
+          palette,
+          text::launch_failed(&launched, attempt.mode, launch_failure),
+        )
+        .into_any_element(),
       }
     });
     let missing_loader = self.state.missing_loader().and_then(|loader| {
@@ -731,7 +742,10 @@ impl Shell {
       Some(
         div()
           .id("missing-loader")
-          .child(failure(text::missing_loader(&profile.name, loader)))
+          .child(failure(
+            palette,
+            text::missing_loader(&profile.name, loader),
+          ))
           .test_support(),
       )
     });
@@ -772,6 +786,7 @@ impl Shell {
 /// The line to paste into Steam's launch options, with a copy button, and
 /// whether Steam holds it.
 fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyElement {
+  let palette = Palette::new(cx);
   let (id, status) = match &steam.status {
     OptionStatus::Checking => (
       "launch-option-checking",
@@ -794,7 +809,7 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyEleme
           .flex_1()
           .p_2()
           .font_family("monospace")
-          .bg(rgb(0x1e1e1e))
+          .bg(palette.code)
           .child(SharedString::from(line)),
       )
       .child(
@@ -810,7 +825,7 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyEleme
     .gap_2()
     .p_3()
     .border_1()
-    .border_color(rgb(0x606060))
+    .border_color(palette.border)
     .child(text::STEAM_OPTION_LEAD)
     .children(line)
     .child(
@@ -832,6 +847,7 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyEleme
 }
 
 fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> AnyElement {
+  let palette = Palette::new(cx);
   let dependencies: Vec<_> = confirmation
     .dependencies
     .iter()
@@ -848,7 +864,7 @@ fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> 
     .gap_2()
     .p_3()
     .border_1()
-    .border_color(rgb(0x606060))
+    .border_color(palette.border)
     .child(
       div()
         .font_weight(FontWeight::SEMIBOLD)
@@ -857,7 +873,10 @@ fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> 
     .child(lead)
     .children(dependencies)
     .when(!can_confirm, |panel| {
-      panel.child(failure(text::missing_dependencies(&confirmation.missing)))
+      panel.child(failure(
+        palette,
+        text::missing_dependencies(&confirmation.missing),
+      ))
     })
     .child(
       h_flex()
@@ -882,6 +901,7 @@ fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> 
 /// One operation of the queue: the game and profile it changes, what it is
 /// doing or how it ended, and the buttons that act on it.
 fn render_operation(operation: &Operation, game: &str, cx: &mut Context<Shell>) -> AnyElement {
+  let palette = Palette::new(cx);
   let id = operation.id;
   let action = &operation.action;
   let button = |name: &str, label: &'static str, msg: Msg| {
@@ -907,7 +927,7 @@ fn render_operation(operation: &Operation, game: &str, cx: &mut Context<Shell>) 
       (line(text::finished(action, changed)), vec![dismiss()])
     }
     OperationStatus::Failed { failed, changed } => (
-      failure(text::operation_failed(action, failed, changed)).into_any_element(),
+      failure(palette, text::operation_failed(action, failed, changed)).into_any_element(),
       vec![retry(), dismiss()],
     ),
     OperationStatus::Cancelled { changed } => (
@@ -922,7 +942,7 @@ fn render_operation(operation: &Operation, game: &str, cx: &mut Context<Shell>) 
     .child(
       div()
         .text_sm()
-        .text_color(rgb(0x999999))
+        .text_color(palette.muted_text)
         .child(text::place(game, &operation.profile)),
     )
     .child(
@@ -956,6 +976,7 @@ fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
 
 /// The question or refusal a change in the Installed tab is waiting on.
 fn render_pending(pending: &Pending, cx: &mut Context<Shell>) -> AnyElement {
+  let palette = Palette::new(cx);
   let cancel = Button::new("dismiss-pending")
     .label(text::CANCEL)
     .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::PendingDismissed, cx)));
@@ -964,7 +985,7 @@ fn render_pending(pending: &Pending, cx: &mut Context<Shell>) -> AnyElement {
       .gap_2()
       .p_3()
       .border_1()
-      .border_color(rgb(0x606060))
+      .border_color(palette.border)
   };
   let list = |items: Vec<String>| {
     items
@@ -1045,7 +1066,7 @@ fn render_pending(pending: &Pending, cx: &mut Context<Shell>) -> AnyElement {
       .into_any_element(),
     Pending::Refused { packages, reason } => v_flex()
       .gap_2()
-      .child(failure(text::uninstall_refused(packages, reason)))
+      .child(failure(palette, text::uninstall_refused(packages, reason)))
       .child(
         Button::new("dismiss-pending")
           .label(text::DISMISS)
@@ -1066,7 +1087,8 @@ fn installed_row(
   cx: &mut Context<Shell>,
 ) -> AnyElement {
   let selection = Package::installed(full_name, package);
-  let muted = rgb(0x999999);
+  let palette = Palette::new(cx);
+  let muted = palette.muted_text;
   let (state_id, state_label) = match (can_toggle, package.enabled) {
     (false, _) => ("loader", text::MOD_LOADER),
     (true, true) => ("enabled", text::ENABLED),
@@ -1094,35 +1116,24 @@ fn installed_row(
       .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
   });
   let uninstall = full_name.to_string();
-
-  h_flex()
+  let item = h_flex()
     .id(SharedString::from(format!("profile-{full_name}")))
-    .w_full()
+    .size_full()
+    .overflow_hidden()
     .px_3()
-    .py_2()
     .gap_3()
-    .hover(|row| row.bg(rgb(ROW_HOVER)))
-    .when(selected, |row| row.bg(rgb(ROW_SELECTED)))
+    .map(|row| paint_row(row, selected, palette))
     .when(!package.enabled, |row| row.opacity(0.6))
     .on_click(cx.listener(move |this, _, _, cx| {
       this.dispatch(Msg::PackageSelected(selection.clone()), cx);
     }))
     .child(
-      h_flex()
-        .flex_1()
-        .gap_2()
-        .overflow_hidden()
-        .child(
-          div()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(SharedString::from(package.name(full_name).to_string())),
-        )
-        .child(
-          div()
-            .text_sm()
-            .text_color(muted)
-            .child(text::byline(&package.author, &package.version)),
-        ),
+      headline(
+        package.name(full_name).to_string(),
+        text::byline(&package.author, &package.version),
+        muted,
+      )
+      .flex_1(),
     )
     .child(
       div()
@@ -1142,8 +1153,45 @@ fn installed_row(
           this.dispatch(Msg::UninstallPressed(uninstall.clone()), cx);
         })),
     )
-    .test_support()
-    .into_any_element()
+    .test_support();
+
+  row_slot(INSTALLED_ROW_HEIGHT, item).into_any_element()
+}
+
+/// A row's name and byline on one line, each cut short with an ellipsis
+/// when the row is too narrow for it.
+fn headline(name: String, byline: String, muted: Hsla) -> Div {
+  h_flex()
+    .gap_2()
+    .overflow_hidden()
+    .child(
+      div()
+        .id("name")
+        .truncate()
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(name)
+        .test_support(),
+    )
+    .child(
+      div()
+        .id("byline")
+        .truncate()
+        .text_sm()
+        .text_color(muted)
+        .child(byline)
+        .test_support(),
+    )
+}
+
+/// Puts a row in a slot `height` tall that leaves a [`ROW_GAP`] to the
+/// next, so every row is the same height and the row paints only its own
+/// background.
+fn row_slot(height: f32, row: impl IntoElement) -> Div {
+  div()
+    .flex_none()
+    .h(px(height))
+    .py(px(ROW_GAP / 2.))
+    .child(row)
 }
 
 /// The install button of a package row, or a mark when the open profile
@@ -1177,28 +1225,46 @@ fn install_action(
 }
 
 /// Fixed so the list can be virtualized: only the rows in view are built.
-const ROW_HEIGHT: f32 = 64.0;
+/// Tall enough for the name line and two description lines.
+const ROW_HEIGHT: f32 = 96.0;
+const INSTALLED_ROW_HEIGHT: f32 = 56.0;
+/// The space between two rows of a list.
+const ROW_GAP: f32 = 6.0;
 const ICON_SIZE: f32 = 48.0;
-const ROW_HOVER: u32 = 0x2a2a2a;
-const ROW_SELECTED: u32 = 0x353535;
 
 /// Whether the readme shown is `full_name`'s.
 fn is_selected(readme: Option<&Readme>, full_name: &str) -> bool {
   readme.is_some_and(|readme| readme.package.full_name() == full_name)
 }
 
+/// Paints a list row's text, and its background for whether it is selected
+/// and under the pointer. Hovering the selected row keeps it selected.
+fn paint_row(row: Stateful<Div>, selected: bool, palette: Palette) -> Stateful<Div> {
+  let hovered = if selected {
+    palette.row_selected
+  } else {
+    palette.row_hover
+  };
+
+  row
+    .text_color(palette.text)
+    .when(selected, |row| row.bg(palette.row_selected))
+    .hover(move |row| row.bg(hovered))
+}
+
 /// The readme of the selected package, or why it is not shown.
 fn render_readme(readme: Option<&Readme>, cx: &mut Context<Shell>) -> AnyElement {
+  let palette = Palette::new(cx);
   let panel = v_flex()
     .flex_1()
     .overflow_hidden()
     .p_3()
     .border_1()
-    .border_color(rgb(0x606060));
+    .border_color(palette.border);
   let message = |id: &'static str, message: String| {
     div()
       .id(id)
-      .text_color(rgb(0x999999))
+      .text_color(palette.muted_text)
       .child(message)
       .test_support()
       .into_any_element()
@@ -1344,12 +1410,14 @@ fn render_browse(
   icons: &Entity<IconCache>,
   cx: &mut Context<Shell>,
 ) -> AnyElement {
+  let palette = Palette::new(cx);
+
   match browse.view() {
     View::Loading => div()
       .flex_1()
       .child(text::LOADING_PACKAGES)
       .into_any_element(),
-    View::Unavailable(reason) => failure(text::unavailable(reason)).into_any_element(),
+    View::Unavailable(reason) => failure(palette, text::unavailable(reason)).into_any_element(),
     View::List { refreshing, stale } => {
       let count = browse.rows.len();
       let rows = uniform_list(
@@ -1396,7 +1464,7 @@ fn render_browse(
         .children(stale.map(|reason| {
           div()
             .id("stale")
-            .child(failure(text::stale(reason)))
+            .child(failure(palette, text::stale(reason)))
             .test_support()
         }))
         .when(refreshing, |list| list.child(text::REFRESHING))
@@ -1414,7 +1482,8 @@ fn package_row(
   selected: bool,
   cx: &mut Context<Shell>,
 ) -> AnyElement {
-  let muted = rgb(0x999999);
+  let palette = Palette::new(cx);
+  let muted = palette.muted_text;
   let icon = match row.icon() {
     Some(url) => img(SharedString::from(url.to_string()))
       .size(px(ICON_SIZE))
@@ -1425,14 +1494,13 @@ fn package_row(
   let text = |field: Option<&str>| SharedString::from(field.unwrap_or_default().to_string());
   let selection = Package::listed(row);
 
-  h_flex()
+  let item = h_flex()
     .id(text(row.full_name()))
-    .h(px(ROW_HEIGHT))
-    .w_full()
+    .size_full()
+    .overflow_hidden()
     .px_3()
     .gap_3()
-    .hover(|row| row.bg(rgb(ROW_HOVER)))
-    .when(selected, |row| row.bg(rgb(ROW_SELECTED)))
+    .map(|row| paint_row(row, selected, palette))
     .when_some(selection, |row, selection| {
       row.on_click(cx.listener(move |this, _, _, cx| {
         this.dispatch(Msg::PackageSelected(selection.clone()), cx);
@@ -1443,38 +1511,37 @@ fn package_row(
       v_flex()
         .flex_1()
         .overflow_hidden()
-        .child(
-          h_flex()
-            .gap_2()
-            .child(
-              div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(text(row.name())),
-            )
-            .child(div().text_sm().text_color(muted).child(text::byline(
-              row.owner().unwrap_or_default(),
-              row.version_number().unwrap_or_default(),
-            ))),
-        )
+        .child(headline(
+          row.name().unwrap_or_default().to_string(),
+          text::byline(
+            row.owner().unwrap_or_default(),
+            row.version_number().unwrap_or_default(),
+          ),
+          muted,
+        ))
         .child(
           div()
-            .truncate()
+            .id("description")
+            .line_clamp(2)
+            .text_ellipsis()
             .text_sm()
             .text_color(muted)
-            .child(text(row.description())),
+            .child(text::one_paragraph(row.description().unwrap_or_default()))
+            .test_support(),
         ),
     )
     .child(action)
-    .test_support()
-    .into_any_element()
+    .test_support();
+
+  row_slot(ROW_HEIGHT, item).into_any_element()
 }
 
-fn failure(failure: text::Failure) -> impl IntoElement {
+fn failure(palette: Palette, failure: text::Failure) -> impl IntoElement {
   v_flex()
     .gap_1()
     .p_3()
     .border_1()
-    .border_color(rgb(0xb04040))
+    .border_color(palette.danger_border)
     .child(
       div()
         .font_weight(FontWeight::SEMIBOLD)

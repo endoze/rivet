@@ -1,0 +1,270 @@
+use futures::channel::mpsc::unbounded;
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{
+  AnyWindowHandle, AppContext as _, Bounds, Pixels, TestAppContext, Window, WindowOptions, px,
+};
+use rivet_app::Shell;
+use rivet_core::browse::Index;
+use rivet_core::install::{DEFAULT_PROFILE, InstalledPackage};
+use rivet_core::settings::{GameSettings, Settings};
+use rivet_core::{Command, Msg, State};
+use std::path::PathBuf;
+use thunderstore_engine::ecosystem::Ecosystem;
+use thunderstore_engine::models::{Package, PackageIndex};
+
+/// Many lines' worth of words, broken by newlines, with a URL too long to
+/// fit on any line.
+const LONG_DESCRIPTION: &str = "Adds a great many things to the game.\n\nFeatures:\n- \
+  more items\n- more enemies\n- more biomes\r\n\tSee https://example.com/a/really/long/\
+  path/that/never/breaks/anywhere/because/it/has/no/spaces/at/all/and/keeps/going/and/going \
+  for the full list of everything this mod changes, adds, removes, and rebalances, which \
+  is far longer than a single row could ever show.";
+const LONG_OWNER: &str = "SomeoneWithAnAuthorNameFarTooLongForAnyRowToShowInFull";
+const LONG_NAME: &str = "AModWhoseNameKeepsGoingWellPastTheEdgeOfTheRowItSitsIn";
+
+#[gpui_kit::test]
+fn a_package_row_keeps_long_text_inside_one_uniform_row(cx: &mut TestAppContext) {
+  let window = open_valheim(cx, vec![]);
+  let rows = [
+    "Owner-Plain".to_string(),
+    "Owner-Wordy".to_string(),
+    format!("{LONG_OWNER}-{LONG_NAME}"),
+  ];
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert_rows_hold_their_text(window, &rows);
+
+    let description = |window: &mut Window, row: &str| {
+      window
+        .within(row.to_string())
+        .find("description")
+        .bounds()
+        .size
+        .height
+    };
+    let one_line = description(window, &rows[0]);
+    let wordy = description(window, &rows[1]);
+
+    assert!(
+      wordy <= one_line * 2.,
+      "a description is {wordy:?} tall, more than two lines of {one_line:?}"
+    );
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn an_installed_row_keeps_long_text_inside_one_uniform_row(cx: &mut TestAppContext) {
+  let long = format!("{LONG_OWNER}-{LONG_NAME}");
+  let window = open_valheim(
+    cx,
+    vec![
+      installed("Owner-Plain", "Owner"),
+      installed("Owner-Other", "Owner"),
+      installed(&long, LONG_OWNER),
+    ],
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    let rows = ["Owner-Plain", "Owner-Other", long.as_str()].map(|name| format!("profile-{name}"));
+
+    assert_rows_hold_their_text(window, &rows);
+  })
+  .unwrap();
+}
+
+/// Asserts that each of `rows` is as tall as the first, is apart from the
+/// next, and holds its name, byline, and any description inside its bounds,
+/// its name and byline as tall as the first row's, so on one line.
+fn assert_rows_hold_their_text(window: &mut Window, rows: &[String]) {
+  let plain = &rows[0];
+  let height = window.find(plain.clone()).bounds().size.height;
+  let mut part_height = |row: &str, part: &'static str| {
+    window
+      .within(row.to_string())
+      .find(part)
+      .bounds()
+      .size
+      .height
+  };
+  let name = part_height(plain, "name");
+  let byline = part_height(plain, "byline");
+  let mut bounds: Vec<Bounds<Pixels>> = Vec::new();
+
+  for row in rows {
+    let outer = window.find(row.clone()).bounds();
+
+    assert_eq!(outer.size.height, height, "{row} is not as tall as {plain}");
+
+    for part in ["name", "byline", "description"] {
+      let Some(inner) = window.within(row.clone()).try_find(part) else {
+        continue;
+      };
+      let inner = inner.bounds();
+
+      assert!(
+        inside(inner, outer),
+        "{row}'s {part} at {inner:?} spills out of its row at {outer:?}"
+      );
+    }
+
+    let mut part_height =
+      |part: &'static str| window.within(row.clone()).find(part).bounds().size.height;
+
+    assert_eq!(part_height("name"), name, "{row}'s name is not one line");
+    assert_eq!(
+      part_height("byline"),
+      byline,
+      "{row}'s byline is not one line"
+    );
+
+    bounds.push(outer);
+  }
+
+  bounds.sort_by(|a, b| a.origin.y.partial_cmp(&b.origin.y).unwrap());
+
+  for pair in bounds.windows(2) {
+    let gap = pair[1].origin.y - pair[0].bottom_left().y;
+
+    assert!(gap >= px(2.), "rows {pair:?} are {gap:?} apart, too close");
+  }
+}
+
+fn inside(inner: Bounds<Pixels>, outer: Bounds<Pixels>) -> bool {
+  let (top_left, bottom_right) = (inner.origin, inner.bottom_right());
+
+  top_left.x >= outer.origin.x
+    && top_left.y >= outer.origin.y
+    && bottom_right.x <= outer.bottom_right().x
+    && bottom_right.y <= outer.bottom_right().y
+}
+
+/// Opens Valheim on [`index`], with its default profile holding `installed`.
+fn open_valheim(
+  cx: &mut TestAppContext,
+  installed: Vec<(String, InstalledPackage)>,
+) -> AnyWindowHandle {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let settings = Settings {
+    last_game: Some("valheim".to_string()),
+    games: [(
+      "valheim".to_string(),
+      GameSettings {
+        folder: PathBuf::from("/games/Valheim"),
+        profile: None,
+      },
+    )]
+    .into(),
+  };
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(settings)),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(installed.into_iter().collect()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+
+  window
+}
+
+/// A plain package, one with [`LONG_DESCRIPTION`], and one with
+/// [`LONG_OWNER`] and [`LONG_NAME`].
+fn index() -> Index {
+  let package = |owner: &str, name: &str, description: &str| {
+    serde_json::json!({
+      "name": name,
+      "full_name": format!("{owner}-{name}"),
+      "owner": owner,
+      "package_url": format!("https://example.com/{name}"),
+      "date_created": "2024-01-01T12:00:00Z",
+      "date_updated": "2024-01-02T12:00:00Z",
+      "uuid4": format!("pkg-{name}"),
+      "rating_score": 1,
+      "is_pinned": false,
+      "is_deprecated": false,
+      "has_nsfw_content": false,
+      "categories": [],
+      "versions": [{
+        "name": name,
+        "full_name": format!("{owner}-{name}"),
+        "description": description,
+        "icon": "icon.png",
+        "version_number": "1.0.0",
+        "dependencies": [],
+        "download_url": format!("http://mock/dl/{name}.zip"),
+        "downloads": 1,
+        "date_created": "2024-01-01T12:00:00Z",
+        "website_url": "",
+        "is_active": true,
+        "uuid4": format!("ver-{name}"),
+        "file_size": 1024,
+      }],
+    })
+  };
+  let packages = serde_json::json!([
+    package("Owner", "Plain", "A mod"),
+    package("Owner", "Wordy", LONG_DESCRIPTION),
+    package(LONG_OWNER, LONG_NAME, "A mod"),
+  ]);
+  let packages: Vec<Package> = serde_json::from_value(packages).unwrap();
+
+  PackageIndex::from(packages).into()
+}
+
+/// An enabled 1.0.0 package by `author`.
+fn installed(full_name: &str, author: &str) -> (String, InstalledPackage) {
+  (
+    full_name.to_string(),
+    InstalledPackage {
+      author: author.to_string(),
+      version: "1.0.0".to_string(),
+      enabled: true,
+      dependencies: vec![],
+      installed_at: 0,
+    },
+  )
+}
+
+fn one_game() -> Ecosystem {
+  Ecosystem::from_json(
+    r#"{
+      "games": {
+        "valheim": {
+          "label": "valheim",
+          "meta": { "displayName": "Valheim" },
+          "r2modman": [{
+            "gameInstanceType": "game",
+            "exeNames": ["valheim.x86_64"],
+            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+          }]
+        }
+      }
+    }"#,
+  )
+  .unwrap()
+}

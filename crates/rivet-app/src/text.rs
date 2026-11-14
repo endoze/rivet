@@ -139,6 +139,18 @@ pub fn byline(owner: &str, version: &str) -> String {
   format!("by {owner}, {version}")
 }
 
+/// `text` as one paragraph: every run of whitespace, line breaks included,
+/// becomes a single space, so only wrapping decides where lines break.
+///
+/// ```
+/// use rivet_app::text::one_paragraph;
+///
+/// assert_eq!(one_paragraph(" Adds\n\n- more\titems "), "Adds - more items");
+/// ```
+pub fn one_paragraph(text: &str) -> String {
+  text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub const INSTALL: &str = "Install";
 pub const INSTALLED: &str = "Installed";
 pub const CANCEL: &str = "Cancel";

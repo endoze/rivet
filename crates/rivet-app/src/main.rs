@@ -1,3 +1,4 @@
+use gpui_kit::component::Theme;
 use gpui_kit::{AppContext as _, WindowOptions};
 use reqwest_client::ReqwestClient;
 use rivet_app::Shell;
@@ -31,6 +32,11 @@ fn main() {
     let (commands, inbox) = rivet_commands::spawn(config);
 
     gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      Theme::sync_system_appearance(Some(window), cx);
+      window
+        .observe_window_appearance(|window, cx| Theme::sync_system_appearance(Some(window), cx))
+        .detach();
+
       cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
     })
     .expect("failed to open window");
