@@ -6,3 +6,6 @@ publish.workspace = true
 
 [dependencies]
 dirs.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

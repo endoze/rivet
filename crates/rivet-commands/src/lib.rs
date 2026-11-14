@@ -5,6 +5,7 @@ use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use rivet_core::browse::{Fetch, Index};
 use rivet_core::install::{FailedPackage, Install, Installed, Outcome, Progress, Stage};
+use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
 use rivet_core::settings::Settings;
 use rivet_core::{Command, Msg};
 use std::path::{Path, PathBuf};
@@ -12,7 +13,8 @@ use std::sync::Arc;
 use thunderstore_engine::client::{Refreshed, ThunderstoreClient};
 use thunderstore_engine::ecosystem::Ecosystem;
 use thunderstore_engine::profile::modlist::{self, ProfileMod};
-use thunderstore_engine::profile::{self, layout};
+use thunderstore_engine::profile::target::InstallTarget;
+use thunderstore_engine::profile::{self, launch, layout};
 use thunderstore_engine::progress::{self as engine, OperationId, ProgressEvent, StageUpdate};
 
 /// Where commands read and write the app's files, and the Thunderstore host
@@ -31,6 +33,25 @@ pub struct Config {
   pub thunderstore: String,
   /// The game definitions installs are routed by.
   pub ecosystem: Ecosystem,
+  /// The Steam install whose launch options are read, or `None` when none
+  /// was found.
+  pub steam: Option<PathBuf>,
+  /// Starts a prepared game, such as [`spawn_detached`].
+  pub spawn: fn(std::process::Command) -> std::io::Result<()>,
+}
+
+/// Starts `command` without waiting for it to exit.
+///
+/// # Errors
+///
+/// Why the process could not be started.
+pub fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()> {
+  let mut child = command.spawn()?;
+
+  // Waited on aside so the exited process is reaped rather than left a zombie.
+  std::thread::spawn(move || child.wait());
+
+  Ok(())
 }
 
 /// The public Thunderstore host.
@@ -92,7 +113,72 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
         outcome: outcome.map_err(|error| error.to_string()),
       }
     }
+    Command::Launch(launch) => Msg::LaunchFinished {
+      launch: launch.id,
+      result: start(config, launch).await,
+    },
+    Command::ReadSteamOption { game, app_id } => {
+      let script = launch::wrapper_path(&config.data, &game);
+      let line = launch::steam_launch_options(&script);
+      let current = read_steam_option(config, script, app_id).await;
+
+      Msg::SteamOptionRead(SteamOptionRead {
+        game,
+        line,
+        current,
+      })
+    }
   }
+}
+
+/// Prepares `launch` with the engine, then starts the game.
+async fn start(config: &Config, launch: Launch) -> Result<(), LaunchFailure> {
+  let (data, ecosystem, spawn) = (config.data.clone(), config.ecosystem.clone(), config.spawn);
+
+  tokio::task::spawn_blocking(move || {
+    let target = InstallTarget::resolve(data, launch.folder, &launch.game, Some(&launch.profile))
+      .map_err(launch_failure)?;
+    let prepared =
+      launch::prepare_launch(&target, &ecosystem, &launch.context).map_err(launch_failure)?;
+    let program = prepared
+      .command
+      .get_program()
+      .to_string_lossy()
+      .into_owned();
+
+    spawn(prepared.command)
+      .map_err(|error| LaunchFailure::Other(format!("{program} could not be started: {error}")))
+  })
+  .await
+  .map_err(|error| LaunchFailure::Other(error.to_string()))?
+}
+
+fn launch_failure(error: thunderstore_engine::Error) -> LaunchFailure {
+  match error {
+    thunderstore_engine::Error::NoModLoader { loader } => LaunchFailure::NoModLoader(loader),
+    thunderstore_engine::Error::MissingGameDir { path } => LaunchFailure::MissingGameFolder(path),
+    other => LaunchFailure::Other(other.to_string()),
+  }
+}
+
+/// Writes the game's Steam wrapper at `script`, so the line naming it works
+/// once pasted, then reads Steam's launch options for `app_id`.
+async fn read_steam_option(
+  config: &Config,
+  script: PathBuf,
+  app_id: u32,
+) -> Result<Option<String>, String> {
+  let steam = config.steam.clone();
+
+  tokio::task::spawn_blocking(move || {
+    launch::write_wrapper_script(&script).map_err(|error| error.to_string())?;
+
+    let steam = steam.ok_or_else(|| "No Steam install was found".to_string())?;
+
+    rivet_platform::steam::launch_options(&steam, app_id)
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 /// Reads `game`'s `name` profile, creating it first if it does not exist.
@@ -339,9 +425,14 @@ mod tests {
   use super::*;
   use rivet_core::browse::{Fetch, Refresh};
   use rivet_core::install::{DEFAULT_PROFILE, Install, Installed, Outcome, Stage};
+  use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
   use rivet_core::settings::GameSettings;
   use tempfile::TempDir;
+  use thunderstore_engine::ecosystem::LoaderKind;
   use thunderstore_engine::models::PackageIndex;
+  use thunderstore_engine::profile::launch::{
+    HostOs, LaunchContext, LaunchMode, Runtime, StorePlatform,
+  };
   use thunderstore_engine::test_support::{MockThunderstore, index_json};
 
   /// A config whose files sit in `dir`, against the public Thunderstore.
@@ -352,6 +443,8 @@ mod tests {
       data: dir.path().join("data"),
       thunderstore: THUNDERSTORE.to_string(),
       ecosystem: Ecosystem::bundled(),
+      steam: None,
+      spawn: |_| panic!("a test tried to start a game"),
     }
   }
 
@@ -720,6 +813,271 @@ mod tests {
       outcome.failed[0].reason.contains("ModE"),
       "{:?}",
       outcome.failed[0].reason
+    );
+  }
+
+  const VALHEIM: u32 = 892970;
+
+  /// A Steam install in `dir` whose user set `options` as Valheim's launch
+  /// options.
+  fn steam_with(dir: &TempDir, options: &str) -> PathBuf {
+    let root = dir.path().join("Steam");
+    let config = root.join("userdata/14502031/config");
+
+    std::fs::create_dir_all(root.join("config")).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+      root.join("config/loginusers.vdf"),
+      r#""users" { "76561197974767759" { "MostRecent" "1" } }"#,
+    )
+    .unwrap();
+    std::fs::write(
+      config.join("localconfig.vdf"),
+      format!(
+        r#""UserLocalConfigStore" {{ "Software" {{ "Valve" {{ "Steam" {{ "apps" {{ "{VALHEIM}" {{ "LaunchOptions" "{}" }} }} }} }} }} }}"#,
+        options.replace('\\', "\\\\").replace('"', "\\\"")
+      ),
+    )
+    .unwrap();
+
+    root
+  }
+
+  fn read_steam_option() -> Command {
+    Command::ReadSteamOption {
+      game: "valheim".to_string(),
+      app_id: VALHEIM,
+    }
+  }
+
+  #[test]
+  fn reading_the_steam_option_writes_the_wrapper_and_reads_steams_options() {
+    let dir = TempDir::new().unwrap();
+    let script = dir.path().join("data/valheim/steam-wrapper.sh");
+    let line = format!("\"{}\" %command%", script.display());
+    let config = Config {
+      steam: Some(steam_with(&dir, &format!("gamemoderun {line}"))),
+      ..config_in(&dir)
+    };
+
+    let answer = run_now(read_steam_option(), &config);
+
+    assert_eq!(
+      answer,
+      Msg::SteamOptionRead(SteamOptionRead {
+        game: "valheim".to_string(),
+        line: line.clone(),
+        current: Ok(Some(format!("gamemoderun {line}"))),
+      })
+    );
+    assert!(script.is_file());
+  }
+
+  #[test]
+  fn reading_the_steam_option_without_steam_still_gives_the_line() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    let answer = run_now(read_steam_option(), &config);
+
+    let Msg::SteamOptionRead(read) = answer else {
+      panic!("unexpected answer {answer:?}");
+    };
+
+    assert!(read.line.contains("steam-wrapper.sh"), "{}", read.line);
+    assert!(read.current.is_err(), "{:?}", read.current);
+  }
+
+  /// Every command [`record_spawn`] was asked to start, as its program and
+  /// arguments.
+  static SPAWNED: std::sync::Mutex<Vec<Vec<String>>> = std::sync::Mutex::new(Vec::new());
+
+  /// Records `command` instead of starting it, so tests never start a game.
+  fn record_spawn(command: std::process::Command) -> std::io::Result<()> {
+    let argv = std::iter::once(command.get_program())
+      .chain(command.get_args())
+      .map(|arg| arg.to_string_lossy().into_owned())
+      .collect();
+
+    SPAWNED.lock().unwrap().push(argv);
+
+    Ok(())
+  }
+
+  /// The commands started for a launch from `profile`.
+  fn spawned_from(profile: &Path) -> Vec<Vec<String>> {
+    let profile = profile.to_string_lossy();
+
+    SPAWNED
+      .lock()
+      .unwrap()
+      .iter()
+      .filter(|argv| argv.iter().any(|arg| arg.contains(profile.as_ref())))
+      .cloned()
+      .collect()
+  }
+
+  /// A config in `dir` that records launches, with Valheim installed in a
+  /// `game` folder there, and its Default profile created.
+  fn launchable(dir: &TempDir) -> Config {
+    let config = Config {
+      spawn: record_spawn,
+      ..config_in(dir)
+    };
+    let game = dir.path().join("game");
+    let exe = config
+      .ecosystem
+      .require_profile("valheim")
+      .unwrap()
+      .exe_names
+      .iter()
+      .find(|name| name.ends_with(".x86_64"))
+      .unwrap()
+      .clone();
+
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::write(game.join(exe), "game").unwrap();
+    run_now(open_profile("valheim"), &config);
+
+    config
+  }
+
+  /// Puts BepInEx and its Linux start script into the Default profile.
+  fn with_bepinex(config: &Config) {
+    let profile = default_profile(config);
+
+    std::fs::create_dir_all(profile.join("BepInEx/core")).unwrap();
+    std::fs::write(profile.join("BepInEx/core/BepInEx.Preloader.dll"), "x").unwrap();
+    std::fs::write(profile.join("run_bepinex.sh"), "#!/bin/sh\n").unwrap();
+  }
+
+  fn launch_from(dir: &TempDir, mode: LaunchMode) -> Command {
+    Command::Launch(Launch {
+      id: 4,
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      folder: dir.path().join("game"),
+      context: LaunchContext::new(HostOs::Linux, StorePlatform::Steam, Runtime::Native, mode),
+    })
+  }
+
+  #[test]
+  fn a_modded_launch_starts_the_game_through_steam_with_the_profiles_loader() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    with_bepinex(&config);
+
+    let answer = run_now(launch_from(&dir, LaunchMode::Modded), &config);
+    let spawned = spawned_from(&default_profile(&config));
+
+    assert_eq!(
+      answer,
+      Msg::LaunchFinished {
+        launch: 4,
+        result: Ok(()),
+      }
+    );
+    assert_eq!(spawned.len(), 1, "{spawned:?}");
+    assert!(
+      spawned[0]
+        .windows(2)
+        .any(|pair| pair == ["-applaunch", "892970"]),
+      "{spawned:?}"
+    );
+    assert!(
+      spawned[0]
+        .iter()
+        .any(|arg| arg.ends_with("BepInEx.Preloader.dll")),
+      "{spawned:?}"
+    );
+    assert!(config.data.join("valheim/steam-wrapper.sh").is_file());
+  }
+
+  #[test]
+  fn a_vanilla_launch_starts_the_game_without_the_loader_and_leaves_the_profile_alone() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    with_bepinex(&config);
+
+    let before = run_now(open_profile("valheim"), &config);
+    let answer = run_now(launch_from(&dir, LaunchMode::Vanilla), &config);
+    let after = run_now(open_profile("valheim"), &config);
+    let spawned = spawned_from(&default_profile(&config));
+
+    assert_eq!(
+      answer,
+      Msg::LaunchFinished {
+        launch: 4,
+        result: Ok(()),
+      }
+    );
+    assert_eq!(before, after);
+    assert_eq!(spawned.len(), 1, "{spawned:?}");
+    assert!(
+      !spawned[0]
+        .iter()
+        .any(|arg| arg.ends_with("BepInEx.Preloader.dll")),
+      "{spawned:?}"
+    );
+  }
+
+  #[test]
+  fn a_modded_launch_from_a_profile_with_no_mod_loader_names_the_loader() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    let answer = run_now(launch_from(&dir, LaunchMode::Modded), &config);
+
+    assert_eq!(
+      answer,
+      Msg::LaunchFinished {
+        launch: 4,
+        result: Err(LaunchFailure::NoModLoader(LoaderKind::BepInEx)),
+      }
+    );
+    assert_eq!(
+      spawned_from(&default_profile(&config)),
+      Vec::<Vec<String>>::new()
+    );
+  }
+
+  #[test]
+  fn a_launch_into_a_missing_game_folder_names_the_folder() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    std::fs::remove_dir_all(dir.path().join("game")).unwrap();
+
+    let answer = run_now(launch_from(&dir, LaunchMode::Vanilla), &config);
+
+    assert_eq!(
+      answer,
+      Msg::LaunchFinished {
+        launch: 4,
+        result: Err(LaunchFailure::MissingGameFolder(dir.path().join("game"))),
+      }
+    );
+  }
+
+  #[test]
+  fn a_game_that_cannot_be_started_says_why() {
+    let dir = TempDir::new().unwrap();
+    let config = Config {
+      spawn: |_| Err(std::io::Error::other("no such program")),
+      ..launchable(&dir)
+    };
+
+    let answer = run_now(launch_from(&dir, LaunchMode::Vanilla), &config);
+
+    assert!(
+      matches!(
+        &answer,
+        Msg::LaunchFinished { launch: 4, result: Err(LaunchFailure::Other(reason)) }
+          if reason.contains("no such program")
+      ),
+      "{answer:?}"
     );
   }
 

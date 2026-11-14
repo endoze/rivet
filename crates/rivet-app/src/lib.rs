@@ -12,16 +12,19 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-  AnyElement, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
-  ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
-  Styled as _, Subscription, Task, TestSupportExt as _, Window, div, img, px, rgb, uniform_list,
+  AnyElement, AppContext as _, ClipboardItem, Context, Entity, FontWeight, InteractiveElement as _,
+  IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
+  StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
+  div, img, px, rgb, uniform_list,
 };
 use icons::IconCache;
 use rivet_core::browse::{Browse, View};
-use rivet_core::install::{Confirmation, Operation, OperationStatus, Profile, ProfileStatus};
+use rivet_core::install::{Confirmation, Operation, OperationStatus, ProfileStatus};
+use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::picker::Step;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
+use thunderstore_engine::profile::launch::LaunchMode;
 use thunderstore_engine::query::PackageRow;
 
 /// The root view. It owns the state and is the only place `update` is called.
@@ -210,6 +213,7 @@ impl Shell {
           ),
       )
       .children(folder)
+      .child(self.render_launch(cx))
       .children(
         self
           .state
@@ -252,6 +256,131 @@ impl Shell {
       )
       .into_any_element()
   }
+
+  /// The launch buttons, which are always shown, with what the user should
+  /// know before or after pressing one.
+  fn render_launch(&self, cx: &mut Context<Self>) -> AnyElement {
+    let can_launch = self.state.can_launch();
+    let launcher = self.state.launcher.as_ref();
+    let attempt = self.state.launch.as_ref().map(|attempt| {
+      let launched = self.game_name(&attempt.game);
+
+      match &attempt.status {
+        AttemptStatus::Preparing => div()
+          .child(text::launching(&launched, attempt.mode))
+          .into_any_element(),
+        AttemptStatus::Started => div()
+          .child(text::launched(&launched, attempt.mode))
+          .into_any_element(),
+        AttemptStatus::Failed(launch_failure) => {
+          failure(text::launch_failed(&launched, attempt.mode, launch_failure)).into_any_element()
+        }
+      }
+    });
+    let missing_loader = self.state.missing_loader().and_then(|loader| {
+      let profile = self.state.profile.as_ref()?;
+
+      Some(
+        div()
+          .id("missing-loader")
+          .child(failure(text::missing_loader(&profile.name, loader)))
+          .test_support(),
+      )
+    });
+    let steam = launcher
+      .and_then(|launcher| launcher.steam.as_ref())
+      .map(|steam| render_steam_option(steam, cx));
+
+    v_flex()
+      .gap_2()
+      .child(
+        h_flex()
+          .gap_2()
+          .child(
+            Button::new("launch-modded")
+              .label(text::LAUNCH_MODDED)
+              .primary()
+              .disabled(!can_launch)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::LaunchPressed(LaunchMode::Modded), cx);
+              })),
+          )
+          .child(
+            Button::new("launch-vanilla")
+              .label(text::LAUNCH_VANILLA)
+              .disabled(!can_launch)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::LaunchPressed(LaunchMode::Vanilla), cx);
+              })),
+          ),
+      )
+      .children(attempt)
+      .children(missing_loader)
+      .children(steam)
+      .into_any_element()
+  }
+}
+
+/// The line to paste into Steam's launch options, with a copy button, and
+/// whether Steam holds it.
+fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> AnyElement {
+  let (id, status) = match &steam.status {
+    OptionStatus::Checking => (
+      "launch-option-checking",
+      text::STEAM_OPTION_CHECKING.to_string(),
+    ),
+    OptionStatus::Set => ("launch-option-set", text::STEAM_OPTION_SET.to_string()),
+    OptionStatus::NotSet => (
+      "launch-option-not-set",
+      text::STEAM_OPTION_NOT_SET.to_string(),
+    ),
+    OptionStatus::Unknown(reason) => ("launch-option-unknown", text::steam_option_unknown(reason)),
+  };
+  let line = steam.line.clone().map(|line| {
+    let copied = line.clone();
+
+    h_flex()
+      .gap_2()
+      .child(
+        div()
+          .flex_1()
+          .p_2()
+          .font_family("monospace")
+          .bg(rgb(0x1e1e1e))
+          .child(SharedString::from(line)),
+      )
+      .child(
+        Button::new("copy-launch-option")
+          .label(text::COPY)
+          .on_click(move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()));
+          }),
+      )
+  });
+
+  v_flex()
+    .gap_2()
+    .p_3()
+    .border_1()
+    .border_color(rgb(0x606060))
+    .child(text::STEAM_OPTION_LEAD)
+    .children(line)
+    .child(
+      h_flex()
+        .gap_2()
+        .justify_between()
+        .child(div().id(id).child(status).test_support())
+        .child(
+          Button::new("check-launch-option")
+            .label(text::CHECK_AGAIN)
+            .small()
+            .disabled(steam.status == OptionStatus::Checking)
+            .on_click(
+              cx.listener(|this, _, _, cx| this.dispatch(Msg::SteamOptionCheckPressed, cx)),
+            ),
+        ),
+    )
+    .into_any_element()
 }
 
 fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> AnyElement {
@@ -384,12 +513,7 @@ fn render_browse(
           let Some(index) = browse.index.as_ref() else {
             return Vec::new();
           };
-          let can_install = state
-            .profile
-            .as_ref()
-            .and_then(Profile::installed)
-            .is_some()
-            && !state.is_busy();
+          let can_install = state.can_install();
 
           browse.rows[range]
             .iter()

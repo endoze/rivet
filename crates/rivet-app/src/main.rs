@@ -13,6 +13,8 @@ fn main() {
     data: rivet_platform::paths::data_folder().expect("the platform reports no data location"),
     thunderstore: rivet_commands::THUNDERSTORE.to_string(),
     ecosystem: Ecosystem::bundled(),
+    steam: rivet_platform::steam::root(),
+    spawn: rivet_commands::spawn_detached,
   };
 
   gpui_kit::application().run(move |cx| {

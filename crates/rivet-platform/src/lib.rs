@@ -2,3 +2,4 @@
 //! prefixes, and standard directories.
 
 pub mod paths;
+pub mod steam;

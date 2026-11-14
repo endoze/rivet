@@ -6318,6 +6318,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "rivet-core",
+ "rivet-platform",
  "serde_json",
  "tempfile",
  "thunderstore-engine",
@@ -6339,6 +6340,7 @@ name = "rivet-platform"
 version = "0.1.0"
 dependencies = [
  "dirs 6.0.0",
+ "tempfile",
 ]
 
 [[package]]

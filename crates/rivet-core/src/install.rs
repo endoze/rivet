@@ -175,6 +175,14 @@ impl State {
       .as_ref()
       .is_some_and(|operation| matches!(operation.status, OperationStatus::Running(_)))
   }
+
+  /// Whether an install can start: the open profile has been read, and no
+  /// install is running and no launch is being prepared.
+  pub fn can_install(&self) -> bool {
+    let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
+
+    ready && !self.is_busy() && !self.is_launching()
+  }
 }
 
 /// Opens `game`'s default profile, creating it if the game has none.
@@ -216,7 +224,7 @@ pub(crate) fn profile_opened(
 /// until the list and the profile are loaded, and for a package the list
 /// does not have.
 pub(crate) fn install_pressed(state: &mut State, full_name: String) -> Vec<Effect> {
-  if state.is_busy() {
+  if !state.can_install() {
     return Vec::new();
   }
 
@@ -265,13 +273,15 @@ fn plan(index: &PackageIndex, installed: &Installed, full_name: &str) -> Option<
   })
 }
 
-/// Starts the confirmed install, unless something it needs is missing.
+/// Starts the confirmed install, unless something it needs is missing or
+/// [`State::can_install`] says it cannot.
 pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
-  if !state
+  let confirmed = state
     .confirmation
     .as_ref()
-    .is_some_and(Confirmation::can_confirm)
-  {
+    .is_some_and(Confirmation::can_confirm);
+
+  if !confirmed || !state.can_install() {
     return Vec::new();
   }
 

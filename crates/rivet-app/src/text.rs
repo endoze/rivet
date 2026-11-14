@@ -3,8 +3,11 @@
 
 use rivet_core::SettingsError;
 use rivet_core::install::{FailedPackage, Planned, Progress, Stage};
+use rivet_core::launch::LaunchFailure;
 use rivet_core::picker::{FolderRefusal, Refusal};
 use std::path::Path;
+use thunderstore_engine::ecosystem::LoaderKind;
+use thunderstore_engine::profile::launch::LaunchMode;
 
 pub const LOADING: &str = "Loading";
 pub const PICKER_TITLE: &str = "Choose your game";
@@ -180,5 +183,95 @@ pub fn profile_failed(profile: &str, reason: &str) -> Failure {
     headline: format!("The {profile} profile could not be opened"),
     detail: reason.to_string(),
     next: "Mods cannot be installed until it opens. Check that the app's data folder can be written to, then switch game and back.".to_string(),
+  }
+}
+
+pub const LAUNCH_MODDED: &str = "Launch modded";
+pub const LAUNCH_VANILLA: &str = "Launch vanilla";
+pub const COPY: &str = "Copy";
+pub const CHECK_AGAIN: &str = "Check again";
+pub const STEAM_OPTION_LEAD: &str = "Steam must start this game through Rivet for mods to load. Paste this line into the game's launch options in Steam, under Properties:";
+pub const STEAM_OPTION_CHECKING: &str = "Checking Steam's launch options";
+pub const STEAM_OPTION_SET: &str = "The launch option is set.";
+pub const STEAM_OPTION_NOT_SET: &str = "Steam's saved launch options do not have this line. Steam saves them when it closes, so after pasting it, restart Steam and press Check again.";
+
+/// Steam's launch options could not be read, so whether the line is set is
+/// unknown.
+pub fn steam_option_unknown(reason: &str) -> String {
+  format!("Could not tell whether the launch option is set: {reason}")
+}
+
+fn mode(mode: LaunchMode) -> &'static str {
+  match mode {
+    LaunchMode::Vanilla => "vanilla",
+    _ => "modded",
+  }
+}
+
+/// A launch being prepared, such as `Starting Valheim modded`.
+pub fn launching(game: &str, launch: LaunchMode) -> String {
+  format!("Starting {game} {}", mode(launch))
+}
+
+/// A launch that started the game, such as `Started Valheim vanilla.`.
+pub fn launched(game: &str, launch: LaunchMode) -> String {
+  format!("Started {game} {}.", mode(launch))
+}
+
+/// A mod loader's name as its authors write it.
+fn loader_name(loader: LoaderKind) -> &'static str {
+  match loader {
+    LoaderKind::BepInEx => "BepInEx",
+    LoaderKind::BepisLoader => "BepisLoader",
+    LoaderKind::GdWeave => "GDWeave",
+    LoaderKind::GodotMl => "Godot Mod Loader",
+    LoaderKind::Lovely => "Lovely",
+    LoaderKind::MelonLoader | LoaderKind::RecursiveMelonLoader => "MelonLoader",
+    LoaderKind::Northstar => "Northstar",
+    LoaderKind::ReturnOfModding => "ReturnOfModding",
+    LoaderKind::Rivet => "Rivet",
+    LoaderKind::Shimloader => "Shimloader",
+    LoaderKind::Umm => "Unity Mod Manager",
+    _ => "its mod loader",
+  }
+}
+
+/// The open profile lacks the mod loader its game's packages load through.
+pub fn missing_loader(profile: &str, loader: LoaderKind) -> Failure {
+  let loader = loader_name(loader);
+
+  Failure {
+    headline: format!("The {profile} profile has no mod loader"),
+    detail: format!(
+      "This game's mods load through {loader}, which is not installed, so a modded launch would start the game without them."
+    ),
+    next: format!("Install {loader}, or any mod that needs it, from the list."),
+  }
+}
+
+/// A launch that did not start the game.
+pub fn launch_failed(game: &str, launch: LaunchMode, failure: &LaunchFailure) -> Failure {
+  let headline = format!("{game} could not be started {}", mode(launch));
+
+  match failure {
+    LaunchFailure::NoModLoader(loader) => {
+      let loader = loader_name(*loader);
+
+      Failure {
+        headline,
+        detail: format!("Mods load through {loader}, which this profile does not have."),
+        next: format!("Install {loader} from the list, or launch vanilla."),
+      }
+    }
+    LaunchFailure::MissingGameFolder(folder) => Failure {
+      headline,
+      detail: format!("{} does not exist.", folder.display()),
+      next: "Switch game and choose the folder the game is installed in.".to_string(),
+    },
+    LaunchFailure::Other(reason) => Failure {
+      headline,
+      detail: reason.clone(),
+      next: "Check that the game is installed and Steam is running, then try again.".to_string(),
+    },
   }
 }

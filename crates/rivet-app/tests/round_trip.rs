@@ -274,3 +274,100 @@ fn picking_a_game_and_its_folder_opens_the_game(cx: &mut TestAppContext) {
     Screen::Picker
   );
 }
+
+/// Valheim as a native BepInEx game on Steam.
+fn native_steam_game() -> Ecosystem {
+  Ecosystem::from_json(
+    r#"{
+      "games": {
+        "valheim": {
+          "label": "valheim",
+          "meta": { "displayName": "Valheim" },
+          "r2modman": [{
+            "gameInstanceType": "game",
+            "packageLoader": "bepinex",
+            "exeNames": ["valheim.x86_64"],
+            "distributions": [{ "platform": "steam", "identifier": "892970" }],
+            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+          }]
+        }
+      },
+      "modloaderPackages": [
+        { "packageId": "denikson-BepInExPack_Valheim", "rootFolder": "BepInExPack_Valheim", "loader": "bepinex" }
+      ]
+    }"#,
+  )
+  .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+#[gpui_kit::test]
+fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppContext) {
+  use rivet_core::launch::SteamOptionRead;
+  use thunderstore_engine::profile::launch::LaunchMode;
+
+  cx.update(gpui_kit::init);
+
+  let line = r#""/data/valheim/steam-wrapper.sh" %command%"#;
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(native_steam_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(valheim_settings())))
+    .unwrap();
+  cx.run_until_parked();
+
+  let read = std::iter::from_fn(|| sent.try_recv().ok()).find(|command| {
+    matches!(command, Command::ReadSteamOption { game, app_id: 892970 } if game == "valheim")
+  });
+
+  assert!(read.is_some(), "Steam's launch options were not read");
+
+  for msg in [
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(Installed::new()),
+    },
+    Msg::SteamOptionRead(SteamOptionRead {
+      game: "valheim".to_string(),
+      line: line.to_string(),
+      current: Ok(None),
+    }),
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("launch-option-not-set").is_some());
+    assert!(window.try_find("missing-loader").is_some());
+
+    window.click("copy-launch-option", cx);
+    window.click("launch-vanilla", cx);
+  })
+  .unwrap();
+
+  assert_eq!(
+    cx.read_from_clipboard().and_then(|item| item.text()),
+    Some(line.to_string())
+  );
+
+  let launch = std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::Launch(launch) => Some(launch),
+      _ => None,
+    })
+    .expect("a launch was sent");
+
+  assert_eq!(launch.context.mode, LaunchMode::Vanilla);
+  assert_eq!(launch.folder, PathBuf::from("/games/Valheim"));
+}

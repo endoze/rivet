@@ -3,15 +3,18 @@
 
 pub mod browse;
 pub mod install;
+pub mod launch;
 pub mod picker;
 pub mod settings;
 
 use browse::{Browse, Fetch, Index, Refresh};
 use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Progress};
+use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use picker::{FolderRefusal, Picker, Refusal, Step};
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
 use thunderstore_engine::ecosystem::Ecosystem;
+use thunderstore_engine::profile::launch::{HostOs, LaunchMode};
 
 /// Everything the app knows.
 #[derive(Debug)]
@@ -36,12 +39,27 @@ pub struct State {
   pub operation: Option<Operation>,
   /// How many operations have been started, so each gets its own id.
   pub operations: u64,
+  /// The operating system games launch on, or `None` where launching is not
+  /// supported.
+  pub host: Option<HostOs>,
+  /// Launching the open game. `None` outside a game.
+  pub launcher: Option<Launcher>,
+  /// The latest launch, kept after it ends so its result can be shown. One
+  /// still being prepared outlives leaving the game it belongs to.
+  pub launch: Option<Attempt>,
+  /// How many launches have been started, so each gets its own id.
+  pub launches: u64,
 }
 
 impl State {
-  /// A state that has not loaded its settings yet.
+  /// A state that has not loaded its settings yet, launching games on the
+  /// operating system it was built for.
   pub fn new(ecosystem: Ecosystem) -> Self {
     Self {
+      host: HostOs::detect(),
+      launcher: None,
+      launch: None,
+      launches: 0,
       ecosystem,
       settings: Settings::default(),
       screen: Screen::Starting,
@@ -132,6 +150,16 @@ pub enum Msg {
   },
   /// The result of the last install was closed.
   OperationDismissed,
+  /// A launch button was pressed.
+  LaunchPressed(LaunchMode),
+  /// A [`Launch`] ended, by its id: the game started, or why it did not.
+  LaunchFinished {
+    launch: u64,
+    result: Result<(), LaunchFailure>,
+  },
+  SteamOptionRead(SteamOptionRead),
+  /// Asked to check Steam's launch options again.
+  SteamOptionCheckPressed,
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -166,6 +194,11 @@ pub enum Command {
   /// Answered with any number of [`Msg::InstallProgress`], then
   /// [`Msg::InstallFinished`].
   Install(Install),
+  /// Prepare and start the game. Answered with [`Msg::LaunchFinished`].
+  Launch(Launch),
+  /// Write the game's Steam wrapper and read Steam's launch options for
+  /// `app_id`, never changing them. Answered with [`Msg::SteamOptionRead`].
+  ReadSteamOption { game: String, app_id: u32 },
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -222,6 +255,11 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.browse = None;
       state.profile = None;
       state.confirmation = None;
+      state.launcher = None;
+
+      if !state.is_launching() {
+        state.launch = None;
+      }
 
       Vec::new()
     }
@@ -253,6 +291,10 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       install::install_finished(state, operation, outcome)
     }
     Msg::OperationDismissed => install::operation_dismissed(state),
+    Msg::LaunchPressed(mode) => launch::launch_pressed(state, mode),
+    Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
+    Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),
+    Msg::SteamOptionCheckPressed => launch::check_steam_option(state),
   }
 }
 
@@ -369,6 +411,7 @@ fn show_game(state: &mut State, game: String) -> Vec<Effect> {
     .and_then(|definition| definition.community())
     .map(str::to_string);
   let profile = install::open_profile(state, &game);
+  let launcher = launch::open(state, &game);
 
   state.screen = Screen::Game(game);
   state.browse = community.clone().map(Browse::new);
@@ -377,6 +420,7 @@ fn show_game(state: &mut State, game: String) -> Vec<Effect> {
     .map(|community| Effect::Run(Command::ReadCachedIndex(community)))
     .into_iter()
     .chain(profile)
+    .chain(launcher)
     .collect()
 }
 
