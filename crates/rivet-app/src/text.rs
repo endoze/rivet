@@ -193,17 +193,25 @@ pub fn installing(package: &str, progress: Option<&Progress>) -> String {
   let Some(progress) = progress else {
     return format!("Installing {package}: {STARTING_INSTALL}");
   };
-  let stage = match progress.stage {
-    Stage::Downloading => "downloading",
-    Stage::Extracting => "unpacking",
-    Stage::Installing => "copying",
-  };
+  let stage = stage(progress.stage);
   let amount = match progress.total {
     Some(total) if total > 0 => format!(", {}%", progress.done.saturating_mul(100) / total),
     _ => String::new(),
   };
 
   format!("Installing {package}: {stage} {}{amount}", progress.package)
+}
+
+/// What an operation is doing to one package, such as `unpacking`.
+fn stage(stage: Stage) -> &'static str {
+  match stage {
+    Stage::Downloading => "downloading",
+    Stage::Extracting => "unpacking",
+    Stage::Installing => "copying",
+    Stage::Uninstalling => "uninstalling",
+    Stage::Enabling => "enabling",
+    Stage::Disabling => "disabling",
+  }
 }
 
 /// A finished install, such as `Installed Owner-Mod and 2 dependencies.`.
@@ -334,10 +342,47 @@ pub fn queued(action: &Action) -> String {
 }
 
 /// A running operation, with the package and stage it is on when known.
+///
+/// ```
+/// use rivet_app::text::running;
+/// use rivet_core::install::{Action, Progress, Stage};
+///
+/// let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect();
+/// let on = |package: &str, stage| Progress {
+///   package: package.to_string(),
+///   stage,
+///   done: 0,
+///   total: None,
+/// };
+/// let disable_one = Action::SetEnabled {
+///   packages: names(&["Owner-Mod"]),
+///   enabled: false,
+/// };
+/// let uninstall_two = Action::Uninstall(names(&["Owner-Mod", "Owner-Lib"]));
+///
+/// assert_eq!(running(&disable_one, None), "Disabling Owner-Mod");
+/// assert_eq!(
+///   running(&disable_one, Some(&on("Owner-Mod", Stage::Disabling))),
+///   "Disabling Owner-Mod"
+/// );
+/// assert_eq!(
+///   running(&uninstall_two, Some(&on("Owner-Lib", Stage::Uninstalling))),
+///   "Uninstalling 2 mods: uninstalling Owner-Lib"
+/// );
+/// ```
 pub fn running(action: &Action, progress: Option<&Progress>) -> String {
-  match action {
-    Action::Install(package) => installing(package, progress),
-    action => changing_packages(action),
+  if let Action::Install(package) = action {
+    return installing(package, progress);
+  }
+
+  match progress {
+    Some(progress) if action.packages() != std::slice::from_ref(&progress.package) => format!(
+      "{}: {} {}",
+      changing_packages(action),
+      stage(progress.stage),
+      progress.package
+    ),
+    _ => changing_packages(action),
   }
 }
 

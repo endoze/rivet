@@ -3,7 +3,7 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, WindowOptions};
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
-use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome};
+use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
 use rivet_core::readme::{self, Request};
 use rivet_core::settings::{GameSettings, Settings};
 use rivet_core::{Command, Msg, Screen, State};
@@ -354,7 +354,7 @@ fn package(full_name: &str, dependencies: &[&str]) -> (String, InstalledPackage)
 }
 
 #[gpui_kit::test]
-fn the_installed_tab_lists_the_profile_and_asks_before_disabling_a_dependency(
+fn the_installed_tab_asks_before_disabling_a_dependency_and_the_disable_can_be_cancelled(
   cx: &mut TestAppContext,
 ) {
   cx.update(gpui_kit::init);
@@ -413,8 +413,32 @@ fn the_installed_tab_lists_the_profile_and_asks_before_disabling_a_dependency(
     })
     .expect("a disable was sent");
 
+  assert_eq!(set.operation, 1);
   assert_eq!(set.packages, ["Owner-ModA", "Owner-ModC"]);
   assert!(!set.enabled);
+
+  answers
+    .unbounded_send(Msg::OperationProgress {
+      operation: 1,
+      progress: Progress {
+        package: "Owner-ModC".to_string(),
+        stage: Stage::Disabling,
+        done: 0,
+        total: None,
+      },
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("cancel-operation-1", cx);
+  })
+  .unwrap();
+
+  let cancelled =
+    std::iter::from_fn(|| sent.try_recv().ok()).any(|command| command == Command::Cancel(1));
+
+  assert!(cancelled);
 }
 
 fn valheim_refresh(id: u64) -> Refresh {

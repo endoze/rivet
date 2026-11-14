@@ -172,25 +172,29 @@ pub enum OperationStatus {
   Cancelled { changed: Vec<String> },
 }
 
-/// How far an install has got with one package.
+/// How far an operation has got with one package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Progress {
   /// The package, as `Owner-Name`.
   pub package: String,
   pub stage: Stage,
   /// Units done: bytes when downloading, archive entries when extracting,
-  /// files when installing.
+  /// files when installing. Always `0` for a stage without units.
   pub done: u64,
-  /// Units expected, or `None` when unknown.
+  /// Units expected, or `None` when unknown or the stage has no units.
   pub total: Option<u64>,
 }
 
-/// The step an install is at for one package.
+/// The step an operation is at for one package. An install downloads,
+/// extracts, then installs each package; the other stages have no units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
   Downloading,
   Extracting,
   Installing,
+  Uninstalling,
+  Enabling,
+  Disabling,
 }
 
 /// A package an operation could not change, with the reason.
@@ -208,8 +212,9 @@ pub struct Outcome {
   pub changed: Vec<String>,
   /// What failed. Empty when the operation succeeded.
   pub failed: Vec<FailedPackage>,
-  /// The packages left alone because the operation was cancelled, by
-  /// `Owner-Name`. Empty when it ran to the end.
+  /// What was left alone because the operation was cancelled: packages by
+  /// `Owner-Name` (an install's requested package may carry its version),
+  /// and folders an uninstall kept, by path. Empty when it ran to the end.
   pub cancelled: Vec<String>,
   /// Every package in the profile afterwards, or why the profile could not be
   /// read back after the operation.
@@ -674,14 +679,14 @@ mod tests {
 
     update(
       &mut state,
-      Msg::InstallProgress {
+      Msg::OperationProgress {
         operation: 1,
         progress: progress("Owner-Lib", Stage::Extracting, 4),
       },
     );
     update(
       &mut state,
-      Msg::InstallProgress {
+      Msg::OperationProgress {
         operation: 2,
         progress: progress("Owner-Other", Stage::Installing, 9),
       },

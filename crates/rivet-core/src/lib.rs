@@ -180,8 +180,8 @@ pub enum Msg {
   InstallPressed(String),
   InstallConfirmed,
   InstallDismissed,
-  /// An [`Install`] moved on, by operation id.
-  InstallProgress {
+  /// A running operation moved on to a package or stage, by operation id.
+  OperationProgress {
     operation: u64,
     progress: Progress,
   },
@@ -317,7 +317,7 @@ pub enum Command {
   /// Read a game's profile, creating it first if it does not exist. Answered
   /// with [`Msg::ProfileOpened`].
   OpenProfile { game: String, profile: String },
-  /// Answered with any number of [`Msg::InstallProgress`], then
+  /// Answered with any number of [`Msg::OperationProgress`], then
   /// [`Msg::OperationFinished`].
   Install(Install),
   /// Stop the operation with this id after the package it is on. Not
@@ -330,9 +330,11 @@ pub enum Command {
     profile: String,
     packages: Vec<String>,
   },
-  /// Answered with [`Msg::OperationFinished`].
+  /// Answered with any number of [`Msg::OperationProgress`], then
+  /// [`Msg::OperationFinished`].
   Uninstall(Uninstall),
-  /// Answered with [`Msg::OperationFinished`].
+  /// Answered with any number of [`Msg::OperationProgress`], then
+  /// [`Msg::OperationFinished`].
   SetEnabled(SetEnabled),
   /// Prepare and start the game. Answered with [`Msg::LaunchFinished`].
   Launch(Launch),
@@ -444,7 +446,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
 
       Vec::new()
     }
-    Msg::InstallProgress {
+    Msg::OperationProgress {
       operation,
       progress,
     } => queue::progressed(state, operation, progress),

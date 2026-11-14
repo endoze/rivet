@@ -100,7 +100,7 @@ pub const USER_AGENT: &str = concat!("rivet/", env!("CARGO_PKG_VERSION"));
 
 /// Runs one command to completion and returns the message that answers it, or
 /// `None` for a command nothing answers. Messages it sends before the answer,
-/// such as install progress, go to `progress`.
+/// such as an operation's progress, go to `progress`.
 pub async fn run(
   command: Command,
   config: &Config,
@@ -182,7 +182,7 @@ pub async fn run(
     }
     Command::Uninstall(uninstall) => {
       let operation = uninstall.operation;
-      let outcome = uninstall_packages(config, uninstall).await;
+      let outcome = uninstall_packages(config, uninstall, progress.clone()).await;
 
       config.cancels.forget(operation);
 
@@ -190,7 +190,7 @@ pub async fn run(
     }
     Command::SetEnabled(set) => {
       let operation = set.operation;
-      let outcome = set_enabled(config, set).await;
+      let outcome = set_enabled(config, set, progress.clone()).await;
 
       config.cancels.forget(operation);
 
@@ -370,19 +370,7 @@ async fn install_package(
   let client = client(config, &install.community)?;
   let requested = [install.package.clone()];
   let batch = profile::plan_install_batch_from(&before, &requested, &requested);
-  let id = install.operation;
-  let operation = engine::Operation::new(OperationId(id))
-    .with_cancel(config.cancels.token(id))
-    .with_progress(move |event: ProgressEvent| {
-      if let Some(update) = progress_of(event) {
-        progress
-          .unbounded_send(Msg::InstallProgress {
-            operation: id,
-            progress: update,
-          })
-          .ok();
-      }
-    });
+  let operation = operation(config, install.operation, progress);
   let outcome = profile::install_batch_with(
     &folder,
     &config.data,
@@ -454,10 +442,16 @@ async fn check_uninstall(
 }
 
 /// Removes `uninstall.packages`, and of the folders no package records only
-/// those in `uninstall.delete` that are still unrecorded.
-async fn uninstall_packages(config: &Config, uninstall: Uninstall) -> Result<Outcome, String> {
+/// those in `uninstall.delete` that are still unrecorded, sending its progress
+/// to `progress` and stopping when the operation is cancelled.
+async fn uninstall_packages(
+  config: &Config,
+  uninstall: Uninstall,
+  progress: UnboundedSender<Msg>,
+) -> Result<Outcome, String> {
   let folder = layout::profile_dir(&config.data, &uninstall.game, &uninstall.profile);
   let ecosystem = config.ecosystem.clone();
+  let operation = operation(config, uninstall.operation, progress);
 
   tokio::task::spawn_blocking(move || {
     let mut batch = profile::plan_uninstall_batch(
@@ -475,7 +469,8 @@ async fn uninstall_packages(config: &Config, uninstall: Uninstall) -> Result<Out
       batch.confirm_untracked();
     }
 
-    let outcome = profile::uninstall_batch(&folder, &ecosystem, &uninstall.game, &batch)?;
+    let outcome =
+      profile::uninstall_batch_with(&folder, &ecosystem, &uninstall.game, &batch, &operation)?;
 
     Ok(batch_outcome(&folder, outcome))
   })
@@ -484,15 +479,22 @@ async fn uninstall_packages(config: &Config, uninstall: Uninstall) -> Result<Out
   .map_err(|error: thunderstore_engine::Error| error.to_string())
 }
 
-/// Enables or disables `set.packages`. Mod loaders are left as they are.
-async fn set_enabled(config: &Config, set: SetEnabled) -> Result<Outcome, String> {
+/// Enables or disables `set.packages`, sending its progress to `progress` and
+/// stopping when the operation is cancelled. Mod loaders are left as they are.
+async fn set_enabled(
+  config: &Config,
+  set: SetEnabled,
+  progress: UnboundedSender<Msg>,
+) -> Result<Outcome, String> {
   let folder = layout::profile_dir(&config.data, &set.game, &set.profile);
   let ecosystem = config.ecosystem.clone();
+  let operation = operation(config, set.operation, progress);
 
   tokio::task::spawn_blocking(move || {
     let batch =
       profile::plan_set_enabled_batch(&folder, &ecosystem, Some(&set.packages), set.enabled)?;
-    let outcome = profile::set_enabled_batch(&folder, &ecosystem, &set.game, &batch)?;
+    let outcome =
+      profile::set_enabled_batch_with(&folder, &ecosystem, &set.game, &batch, &operation)?;
 
     Ok(batch_outcome(&folder, outcome))
   })
@@ -517,11 +519,28 @@ fn batch_outcome(folder: &Path, outcome: profile::BatchOutcome) -> Outcome {
         reason: error.to_string(),
       })
       .collect(),
-    cancelled: Vec::new(),
+    cancelled: outcome.cancelled,
     profile: modlist::read(folder)
       .map(|recorded| installed(&recorded))
       .map_err(|error| error.to_string()),
   }
+}
+
+/// The engine's handle on operation `id`: it stops on the operation's cancel
+/// flag and sends its progress to `progress`.
+fn operation(config: &Config, id: u64, progress: UnboundedSender<Msg>) -> engine::Operation {
+  engine::Operation::new(OperationId(id))
+    .with_cancel(config.cancels.token(id))
+    .with_progress(move |event: ProgressEvent| {
+      if let Some(update) = progress_of(event) {
+        progress
+          .unbounded_send(Msg::OperationProgress {
+            operation: id,
+            progress: update,
+          })
+          .ok();
+      }
+    })
 }
 
 /// The progress an engine event reports, or `None` for the end of a stage,
@@ -531,6 +550,9 @@ fn progress_of(event: ProgressEvent) -> Option<Progress> {
     engine::Stage::Downloading => Stage::Downloading,
     engine::Stage::Extracting => Stage::Extracting,
     engine::Stage::Installing => Stage::Installing,
+    engine::Stage::Uninstalling => Stage::Uninstalling,
+    engine::Stage::Enabling => Stage::Enabling,
+    engine::Stage::Disabling => Stage::Disabling,
     _ => return None,
   };
   let (done, total) = match event.update {
@@ -1144,7 +1166,7 @@ mod tests {
     let stages: Vec<(String, Stage)> = progress
       .into_iter()
       .map(|msg| match msg {
-        Msg::InstallProgress {
+        Msg::OperationProgress {
           operation: 3,
           progress,
         } => (progress.package, progress.stage),
@@ -1554,6 +1576,105 @@ mod tests {
     run_now(uninstall(&["Owner-ModC"], vec![]), &config);
 
     assert!(!config.cancels.flags().contains_key(&5));
+  }
+
+  /// The package and stage of each progress message operation 5 sent.
+  fn stages_of(progress: Vec<Msg>) -> Vec<(String, Stage)> {
+    progress
+      .into_iter()
+      .map(|msg| match msg {
+        Msg::OperationProgress {
+          operation: 5,
+          progress,
+        } => (progress.package, progress.stage),
+        other => panic!("unexpected message {other:?}"),
+      })
+      .collect()
+  }
+
+  #[test]
+  fn an_uninstall_or_toggle_reports_each_package_as_it_changes() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+    let both = ["Owner-ModA", "Owner-ModC"];
+
+    let (disabling, _) = run_reporting(set_enabled(&both, false), &config);
+    let (enabling, _) = run_reporting(set_enabled(&both, true), &config);
+    let (uninstalling, _) = run_reporting(uninstall(&["Owner-ModC"], vec![]), &config);
+
+    assert_eq!(
+      stages_of(disabling),
+      [
+        ("Owner-ModA".to_string(), Stage::Disabling),
+        ("Owner-ModC".to_string(), Stage::Disabling),
+      ]
+    );
+    assert_eq!(
+      stages_of(enabling),
+      [
+        ("Owner-ModA".to_string(), Stage::Enabling),
+        ("Owner-ModC".to_string(), Stage::Enabling),
+      ]
+    );
+    assert_eq!(
+      stages_of(uninstalling),
+      [("Owner-ModC".to_string(), Stage::Uninstalling)]
+    );
+  }
+
+  #[test]
+  fn a_cancelled_toggle_changes_nothing_and_names_what_it_left() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+
+    run_any(Command::Cancel(5), &config);
+
+    let outcome = finished(run_now(
+      set_enabled(&["Owner-ModA", "Owner-ModC"], false),
+      &config,
+    ));
+
+    assert_eq!(outcome.cancelled, names(&["Owner-ModA", "Owner-ModC"]));
+    assert_eq!(outcome.changed, Vec::<String>::new());
+    assert_eq!(outcome.failed, vec![]);
+    assert_eq!(
+      outcome.profile.as_ref().map(packages),
+      Ok(vec![enabled("Owner-ModA"), enabled("Owner-ModC")])
+    );
+  }
+
+  #[test]
+  fn a_cancelled_uninstall_keeps_the_packages_and_folders_it_did_not_reach() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+    let stray = default_profile(&config).join("BepInEx/plugins/Someone-Stray");
+
+    std::fs::create_dir_all(&stray).unwrap();
+
+    let Msg::UninstallChecked {
+      untracked: Ok(untracked),
+      ..
+    } = run_now(check_uninstall(&["Owner-ModC"]), &config)
+    else {
+      panic!("the check failed");
+    };
+    let kept = untracked[0].display().to_string();
+
+    run_any(Command::Cancel(5), &config);
+
+    let outcome = finished(run_now(uninstall(&["Owner-ModC"], untracked), &config));
+
+    assert_eq!(outcome.cancelled, ["Owner-ModC".to_string(), kept]);
+    assert_eq!(outcome.changed, Vec::<String>::new());
+    assert!(stray.is_dir());
+    assert!(
+      default_profile(&config)
+        .join("BepInEx/plugins/Owner-ModC/ModC.dll")
+        .is_file()
+    );
   }
 
   #[test]

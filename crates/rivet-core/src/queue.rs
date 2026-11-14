@@ -77,7 +77,7 @@ pub enum Closing {
 pub enum CloseChoice {
   /// Let every operation run, then close.
   Wait,
-  /// Cancel the waiting operations and stop a running install after the
+  /// Cancel the waiting operations and stop the running one after the
   /// package it is on, then close.
   Cancel,
 }
@@ -98,15 +98,13 @@ impl OperationStatus {
 }
 
 impl Operation {
-  /// Whether it can be cancelled: it is waiting, or it is a running install,
-  /// which stops after the package it is on. A running uninstall or toggle
-  /// cannot stop part way.
+  /// Whether it can be cancelled: it is waiting, or it is running and has not
+  /// been asked to stop yet. A running one stops after the package it is on.
   pub fn can_cancel(&self) -> bool {
-    match self.status {
-      OperationStatus::Queued => true,
-      OperationStatus::Running(_) => matches!(self.action, Action::Install(_)),
-      _ => false,
-    }
+    matches!(
+      self.status,
+      OperationStatus::Queued | OperationStatus::Running(_)
+    )
   }
 }
 
@@ -270,8 +268,7 @@ pub(crate) fn finished(
 }
 
 /// Cancels operation `id` when [`Operation::can_cancel`] says it can: one
-/// waiting never starts, and a running install stops after the package it is
-/// on.
+/// waiting never starts, and a running one stops after the package it is on.
 pub(crate) fn cancel_pressed(state: &mut State, id: u64) -> Vec<Effect> {
   let Some(operation) = find(state, id) else {
     return Vec::new();
@@ -641,14 +638,14 @@ mod tests {
 
     update(
       &mut state,
-      Msg::InstallProgress {
+      Msg::OperationProgress {
         operation: 1,
         progress: progress.clone(),
       },
     );
     update(
       &mut state,
-      Msg::InstallProgress {
+      Msg::OperationProgress {
         operation: 2,
         progress: progress.clone(),
       },
@@ -714,13 +711,83 @@ mod tests {
   }
 
   #[test]
-  fn a_running_uninstall_or_toggle_cannot_be_cancelled_but_one_waiting_can() {
-    let mut state = two_queued();
+  fn cancelling_a_running_toggle_stops_it_after_the_current_package() {
+    let mut state = ready(DEFAULT_PROFILE);
 
-    assert!(!state.queue.operations[0].can_cancel());
-    assert!(state.queue.operations[1].can_cancel());
-    assert_eq!(update(&mut state, Msg::OperationCancelPressed(1)), vec![]);
-    assert_eq!(statuses(&state)[0], (1, OperationStatus::Running(None)));
+    update(&mut state, Msg::DisableAllPressed);
+
+    let disabling = Progress {
+      package: "Owner-Other".to_string(),
+      stage: Stage::Disabling,
+      done: 0,
+      total: None,
+    };
+
+    update(
+      &mut state,
+      Msg::OperationProgress {
+        operation: 1,
+        progress: disabling.clone(),
+      },
+    );
+
+    assert!(state.queue.operations[0].can_cancel());
+
+    let effects = update(&mut state, Msg::OperationCancelPressed(1));
+
+    assert_eq!(effects, vec![Effect::Run(Command::Cancel(1))]);
+    assert_eq!(
+      statuses(&state),
+      vec![(1, OperationStatus::Cancelling(Some(disabling)))]
+    );
+
+    update(
+      &mut state,
+      finished_with(
+        1,
+        Ok(Outcome {
+          cancelled: names(&["Owner-Solo"]),
+          ..outcome(&["Owner-Other"])
+        }),
+      ),
+    );
+
+    assert_eq!(
+      statuses(&state),
+      vec![(
+        1,
+        OperationStatus::Cancelled {
+          changed: names(&["Owner-Other"]),
+        }
+      )]
+    );
+  }
+
+  #[test]
+  fn a_running_uninstall_can_be_cancelled() {
+    let mut state = ready(DEFAULT_PROFILE);
+
+    update(&mut state, Msg::UninstallPressed("Owner-Solo".to_string()));
+    update(
+      &mut state,
+      Msg::UninstallChecked {
+        game: "valheim".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        packages: names(&["Owner-Solo"]),
+        untracked: Ok(vec![]),
+      },
+    );
+
+    let uninstall = state
+      .queue
+      .operations
+      .iter()
+      .find(|operation| matches!(operation.action, Action::Uninstall(_)));
+
+    assert_eq!(
+      uninstall.map(|operation| (&operation.status, operation.can_cancel())),
+      Some((&OperationStatus::Running(None), true))
+    );
   }
 
   #[test]
@@ -1119,18 +1186,18 @@ mod tests {
   }
 
   #[test]
-  fn cancelling_to_close_lets_a_running_toggle_finish_then_closes() {
+  fn cancelling_to_close_stops_a_running_toggle_after_the_current_package_then_closes() {
     let mut state = two_queued();
 
     update(&mut state, Msg::CloseRequested);
 
     let effects = update(&mut state, Msg::CloseChosen(CloseChoice::Cancel));
 
-    assert_eq!(effects, vec![]);
+    assert_eq!(effects, vec![Effect::Run(Command::Cancel(1))]);
     assert_eq!(
       statuses(&state),
       vec![
-        (1, OperationStatus::Running(None)),
+        (1, OperationStatus::Cancelling(None)),
         (2, OperationStatus::Cancelled { changed: vec![] })
       ]
     );
