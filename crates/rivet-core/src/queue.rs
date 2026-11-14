@@ -267,6 +267,10 @@ pub(crate) fn finished(
       .retain(|operation| operation.id != id);
   }
 
+  if let Ok(installed) = &profile {
+    crate::switcher::counted(state, &game, &name, installed.len());
+  }
+
   if let Some(open) = state
     .profile
     .as_mut()

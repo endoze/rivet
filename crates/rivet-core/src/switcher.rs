@@ -4,6 +4,7 @@
 use crate::install::{self, DEFAULT_PROFILE, ProfileStatus};
 use crate::notice::Notice;
 use crate::{Command, Effect, State};
+use std::collections::BTreeMap;
 use thunderstore_engine::profile::layout::{BadName, BadProfile, validate_name};
 
 /// The open game's profiles and any change to them in progress.
@@ -21,6 +22,9 @@ pub struct Switcher {
   pub changing: Option<ProfileChange>,
   /// Why the profiles could not be listed, until they are.
   pub list_failure: Option<String>,
+  /// How many packages each profile read since the game opened held when it
+  /// was last read, by name.
+  pub counts: BTreeMap<String, usize>,
 }
 
 impl Switcher {
@@ -32,6 +36,7 @@ impl Switcher {
       deleting: None,
       changing: None,
       list_failure: None,
+      counts: BTreeMap::new(),
     }
   }
 }
@@ -131,6 +136,21 @@ impl State {
     }
   }
 
+  /// How many packages the open game's profile `name` holds, when known: the
+  /// open profile once read, or one read earlier while the game stayed open.
+  pub fn mod_count(&self, name: &str) -> Option<usize> {
+    let open = self
+      .profile
+      .as_ref()
+      .filter(|profile| profile.name == name)
+      .and_then(install::Profile::installed);
+
+    match open {
+      Some(installed) => Some(installed.len()),
+      None => self.switcher.as_ref()?.counts.get(name).copied(),
+    }
+  }
+
   /// Whether another profile can be selected or a new one created: a game is
   /// open and no change to its profiles is being made.
   pub fn can_switch_profile(&self) -> bool {
@@ -190,6 +210,18 @@ impl State {
 /// selected profile has opened, so a default profile it creates is included.
 pub(crate) fn open(state: &mut State, game: &str) {
   state.switcher = Some(Switcher::new(game));
+}
+
+/// Records that `game`'s profile `name` was read holding `count` packages,
+/// while `game` is open.
+pub(crate) fn counted(state: &mut State, game: &str, name: &str, count: usize) {
+  if let Some(switcher) = state
+    .switcher
+    .as_mut()
+    .filter(|switcher| switcher.game == game)
+  {
+    switcher.counts.insert(name.to_string(), count);
+  }
 }
 
 /// Lists `game`'s profiles after its selected profile opened, unless they
@@ -470,13 +502,34 @@ pub(crate) fn changed(
     return effects;
   };
   let selected = state.profile.as_ref().map(|profile| profile.name.clone());
+  let selected_count = state
+    .profile
+    .as_ref()
+    .and_then(install::Profile::installed)
+    .map(|installed| installed.len());
 
   match change {
-    ProfileChange::Create(name) | ProfileChange::Duplicate { to: name, .. } => {
+    ProfileChange::Create(name) => {
       insert(&mut switcher.names, name.clone());
       effects.extend(select(state, name));
     }
+    ProfileChange::Duplicate { from, to } => {
+      let count = selected_count
+        .filter(|_| selected.as_ref() == Some(&from))
+        .or_else(|| switcher.counts.get(&from).copied());
+
+      if let Some(count) = count {
+        switcher.counts.insert(to.clone(), count);
+      }
+
+      insert(&mut switcher.names, to.clone());
+      effects.extend(select(state, to));
+    }
     ProfileChange::Rename { from, to } => {
+      if let Some(count) = switcher.counts.remove(&from) {
+        switcher.counts.insert(to.clone(), count);
+      }
+
       switcher.names.retain(|name| *name != from);
       insert(&mut switcher.names, to.clone());
 
@@ -485,6 +538,7 @@ pub(crate) fn changed(
       }
     }
     ProfileChange::Delete(name) => {
+      switcher.counts.remove(&name);
       switcher.names.retain(|existing| *existing != name);
 
       if selected == Some(name) {
@@ -1080,5 +1134,103 @@ mod tests {
     update(&mut state, Msg::SwitchGamePressed);
 
     assert_eq!(state.switcher, None);
+  }
+
+  fn opened_with(name: &str, packages: &[(&str, &str)]) -> Msg {
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: name.to_string(),
+      installed: Ok(crate::test_installed(packages)),
+    }
+  }
+
+  fn counts(state: &State) -> Vec<(&str, Option<usize>)> {
+    state
+      .profile_names()
+      .into_iter()
+      .map(|name| (name, state.mod_count(name)))
+      .collect()
+  }
+
+  #[test]
+  fn a_profile_s_mod_count_is_known_once_it_has_been_read() {
+    let (mut state, _) = started_on(None);
+
+    update(
+      &mut state,
+      opened_with("Default", &[("Owner-A", "1.0.0"), ("Owner-B", "1.0.0")]),
+    );
+    update(&mut state, listed(&["Default", "Modded"]));
+
+    assert_eq!(counts(&state), vec![("Default", Some(2)), ("Modded", None)]);
+
+    update(&mut state, Msg::ProfilePicked("Modded".to_string()));
+
+    assert_eq!(counts(&state), vec![("Default", Some(2)), ("Modded", None)]);
+
+    update(&mut state, opened_with("Modded", &[("Owner-A", "1.0.0")]));
+
+    assert_eq!(
+      counts(&state),
+      vec![("Default", Some(2)), ("Modded", Some(1))]
+    );
+  }
+
+  #[test]
+  fn an_operation_on_a_profile_not_open_updates_its_mod_count() {
+    let (mut state, _) = started_on(None);
+
+    update(&mut state, opened_with("Default", &[("Owner-A", "1.0.0")]));
+    update(&mut state, listed(&["Default", "Modded"]));
+    update(&mut state, Msg::DisableAllPressed);
+    update(&mut state, Msg::ProfilePicked("Modded".to_string()));
+    update(&mut state, opened("Modded"));
+    update(
+      &mut state,
+      Msg::OperationFinished {
+        operation: 1,
+        outcome: Ok(Outcome {
+          changed: strings(&["Owner-A"]),
+          failed: vec![],
+          cancelled: vec![],
+          profile: Ok(crate::test_installed(&[
+            ("Owner-A", "1.0.0"),
+            ("Owner-B", "1.0.0"),
+          ])),
+        }),
+      },
+    );
+
+    assert_eq!(
+      counts(&state),
+      vec![("Default", Some(2)), ("Modded", Some(0))]
+    );
+  }
+
+  #[test]
+  fn a_mod_count_follows_its_profile_through_a_rename_a_copy_and_a_delete() {
+    let (mut state, _) = started_on(Some("Modded"));
+
+    update(&mut state, opened_with("Modded", &[("Owner-A", "1.0.0")]));
+    update(&mut state, listed(&["Default", "Modded"]));
+    submit(&mut state, Naming::Rename, "Heavy");
+    update(&mut state, changed(rename("Modded", "Heavy"), Ok(())));
+
+    assert_eq!(counts(&state), vec![("Default", None), ("Heavy", Some(1))]);
+
+    submit(&mut state, Naming::Duplicate, "Copy");
+    update(&mut state, changed(duplicate("Heavy", "Copy"), Ok(())));
+
+    assert_eq!(
+      counts(&state),
+      vec![("Copy", Some(1)), ("Default", None), ("Heavy", Some(1))]
+    );
+
+    update(&mut state, opened_with("Copy", &[("Owner-A", "1.0.0")]));
+    update(&mut state, Msg::DeleteProfilePressed);
+    update(&mut state, Msg::DeleteProfileConfirmed);
+    update(&mut state, changed(delete("Copy"), Ok(())));
+
+    assert_eq!(state.mod_count("Copy"), None);
   }
 }

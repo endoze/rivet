@@ -81,6 +81,17 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
     "{mode:?}: text on a toast is {toast_text:.2}:1, under {AA}:1"
   );
 
+  let danger_text = contrast(palette.danger_text, palette.toast);
+
+  assert!(
+    danger_text >= AA,
+    "{mode:?}: a destructive menu item is {danger_text:.2}:1, under {AA}:1"
+  );
+  assert_ne!(
+    palette.danger_text, palette.text,
+    "{mode:?}: a destructive menu item looks like any other"
+  );
+
   let accents = [
     ("info", palette.info),
     ("success", palette.success),

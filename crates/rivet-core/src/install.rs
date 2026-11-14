@@ -292,6 +292,10 @@ pub(crate) fn profile_opened(
     Err(reason) => ProfileStatus::Failed(reason),
   };
 
+  if let Some(count) = profile.installed().map(Installed::len) {
+    crate::switcher::counted(state, &game, &name, count);
+  }
+
   crate::switcher::profile_opened(state, &game)
 }
 

@@ -1,7 +1,8 @@
 use futures::channel::mpsc::unbounded;
-use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::test::{ElementSnapshot, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
-  AnyWindowHandle, AppContext as _, TestAppContext, VisualTestContext, WindowOptions,
+  AnyWindowHandle, AppContext as _, Role, TestAppContext, VisualTestContext, Window, WindowOptions,
 };
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
@@ -544,6 +545,8 @@ fn picking_a_game_and_its_folder_opens_the_game(cx: &mut TestAppContext) {
 
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+    window.click("game-menu", cx);
+    window.render_frame(cx);
     window.click("switch-game", cx);
   })
   .unwrap();
@@ -796,8 +799,35 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
   .unwrap();
 }
 
+/// The menu row holding the element `id`, which carries the row's check.
+fn menu_row(window: &Window, id: &'static str) -> ElementSnapshot {
+  let inner = window.find(id);
+
+  window
+    .elements()
+    .into_iter()
+    .find(|row| row.role() == Some(Role::MenuItem) && inner.path().starts_with(row.path()))
+    .unwrap_or_else(|| panic!("{id} is not in a menu row"))
+}
+
+/// Draws the window, gives the shell time to open or close a dialog, and
+/// draws it again.
+fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
+  cx.update_window(window, |_, window, cx| window.render_frame(cx))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| window.render_frame(cx))
+    .unwrap();
+}
+
+/// Whether a dialog is open and not on its way out.
+fn dialog_open(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
+  cx.update_window(window, |_, window, cx| window.has_active_dialog(cx))
+    .unwrap()
+}
+
 #[gpui_kit::test]
-fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
+fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
   use rivet_core::switcher::ProfileChange;
 
   cx.update(gpui_kit::init);
@@ -819,7 +849,11 @@ fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
-    opened(DEFAULT_PROFILE),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[])].into()),
+    },
     Msg::ProfilesListed {
       game: "valheim".to_string(),
       names: Ok(vec![DEFAULT_PROFILE.to_string(), "Modded".to_string()]),
@@ -832,7 +866,38 @@ fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext
   drain();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-    window.click("profile-Modded", cx);
+    window.click("profile-actions", cx);
+    window.render_frame(cx);
+    window.click("rename-profile", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(
+    !dialog_open(cx, window),
+    "the default profile could be renamed"
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    window.press("escape", cx);
+    window.click("profile-menu", cx);
+    window.render_frame(cx);
+
+    assert_eq!(
+      menu_row(window, "pick-profile-Default").checked(),
+      Some(true)
+    );
+    assert_ne!(
+      menu_row(window, "pick-profile-Modded").checked(),
+      Some(true)
+    );
+    assert!(window.try_find("mod-count-Default").is_some());
+    assert!(
+      window.try_find("mod-count-Modded").is_none(),
+      "a count was shown for a profile never read"
+    );
+
+    window.click("pick-profile-Modded", cx);
   })
   .unwrap();
 
@@ -848,17 +913,43 @@ fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext
   cx.run_until_parked();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-    window.click("new-profile", cx);
+    window.click("profile-menu", cx);
     window.render_frame(cx);
+    window.click("new-profile", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(dialog_open(cx, window), "naming a profile opened no dialog");
+
+  cx.update_window(window, |_, window, cx| {
     window.input("CON", cx);
     window.click("save-profile-name", cx);
     window.render_frame(cx);
 
-    assert!(window.try_find("profile-name-refused").is_some());
+    assert!(
+      window
+        .within("profile-name-dialog")
+        .try_find("profile-name-refused")
+        .is_some(),
+      "the refusal was not shown in the dialog"
+    );
 
     window.click("cancel-profile-name", cx);
-    window.click("new-profile", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(!dialog_open(cx, window), "cancelling left the dialog open");
+
+  cx.update_window(window, |_, window, cx| {
+    window.click("profile-menu", cx);
     window.render_frame(cx);
+    window.click("new-profile", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
     window.input("Fresh", cx);
     window.press("enter", cx);
   })
@@ -893,13 +984,28 @@ fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext
     "creating the profile was not told"
   );
 
+  assert!(
+    !dialog_open(cx, window),
+    "a saved name left the dialog open"
+  );
+
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-
-    assert!(window.try_find("profile-Fresh").is_some());
-
-    window.click("delete-profile", cx);
+    window.click("profile-actions", cx);
     window.render_frame(cx);
+    window.click("delete-profile", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
+    assert!(
+      window
+        .within("delete-profile-dialog")
+        .try_find("confirm-delete-profile")
+        .is_some(),
+      "deleting asked nothing"
+    );
+
     window.click("confirm-delete-profile", cx);
   })
   .unwrap();

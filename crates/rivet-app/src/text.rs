@@ -572,10 +572,14 @@ pub fn launch_failed(game: &str, launch: LaunchMode, failure: &LaunchFailure) ->
   }
 }
 
-pub const PROFILE: &str = "Profile:";
-pub const NEW_PROFILE: &str = "New profile";
-pub const RENAME: &str = "Rename";
-pub const DUPLICATE: &str = "Duplicate";
+pub const NEW_PROFILE: &str = "New profile…";
+pub const RENAME_PROFILE: &str = "Rename…";
+pub const DUPLICATE_PROFILE: &str = "Duplicate…";
+pub const DELETE_PROFILE: &str = "Delete…";
+pub const PROFILE_ACTIONS: &str = "Profile actions";
+/// Between the game and the profile in the header, read as "Valheim's
+/// Default profile".
+pub const HEADER_SEPARATOR: &str = "›";
 pub const DELETE: &str = "Delete";
 pub const SAVE: &str = "Save";
 pub const DELETE_WARNING: &str =
@@ -619,6 +623,14 @@ pub fn name_refused(refusal: &NameRefusal) -> Failure {
     headline: "That name cannot be used".to_string(),
     detail,
     next: "Choose another name.".to_string(),
+  }
+}
+
+/// How many packages a profile holds, such as `1 mod` or `12 mods`.
+pub fn mod_count(count: usize) -> String {
+  match count {
+    1 => "1 mod".to_string(),
+    count => format!("{count} mods"),
   }
 }
 

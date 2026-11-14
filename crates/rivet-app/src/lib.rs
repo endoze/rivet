@@ -10,7 +10,9 @@ use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
@@ -18,10 +20,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-  Anchor, AnyElement, AppContext as _, ClipboardItem, Context, Div, Entity, FontWeight, Hsla,
-  InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-  SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-  TestSupportExt as _, Window, div, img, px, uniform_list,
+  Anchor, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, Entity,
+  FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions,
+  Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+  TestSupportExt as _, WeakEntity, Window, div, img, px, uniform_list,
 };
 use icons::IconCache;
 use palette::Palette;
@@ -57,6 +59,9 @@ pub struct Shell {
   /// Notices shown as toasts on the next render, since showing one needs the
   /// window.
   notices: Vec<Notice>,
+  /// The profile dialog open over the window, kept in step with the
+  /// switcher's form and deletion on each render.
+  profile_dialog: Option<ProfileDialog>,
   installed_search: Entity<InputState>,
   icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
@@ -150,6 +155,7 @@ impl Shell {
       fill_profile_name: None,
       close_window: false,
       notices: Vec::new(),
+      profile_dialog: None,
       installed_search,
       icons: cx.new(|_| IconCache::new()),
       _subscriptions: vec![
@@ -459,31 +465,10 @@ impl Shell {
       .size_full()
       .p_4()
       .gap_3()
-      .child(
-        h_flex()
-          .justify_between()
-          .child(div().text_xl().child(self.game_name(game)))
-          .child(
-            h_flex()
-              .gap_2()
-              .child(
-                Button::new("refresh")
-                  .label(text::REFRESH)
-                  .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::RefreshPressed, cx))),
-              )
-              .child(
-                Button::new("switch-game")
-                  .label(text::SWITCH_GAME)
-                  .on_click(cx.listener(|this, _, window, cx| {
-                    this.dispatch(Msg::SwitchGamePressed, cx);
-                    this.empty_package_search(window, cx);
-                  })),
-              ),
-          ),
-      )
+      .child(self.render_header(game, cx))
       .children(folder)
-      .children(self.render_switcher(cx))
-      .child(self.render_launch(cx))
+      .children(self.render_profile_notes(cx))
+      .children(self.render_launch_notes(cx))
       .children(
         self
           .state
@@ -618,147 +603,171 @@ impl Shell {
       .into_any_element()
   }
 
-  /// The profile switcher, which is always shown in a game: a button per
-  /// profile, the actions on the selected one, and any name being asked for,
-  /// deletion being confirmed, or failure.
-  fn render_switcher(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+  /// The bar along the top of a game: the game, with switching to another,
+  /// the selected profile with the others to pick from, the actions on the
+  /// selected profile, and the launch buttons.
+  fn render_header(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
+    let shell = cx.weak_entity();
+    let can_launch = self.state.can_launch();
+    let game_menu = Button::new("game-menu")
+      .label(self.game_name(game))
+      .ghost()
+      .dropdown_caret(true)
+      .dropdown_menu({
+        let shell = shell.clone();
+
+        move |menu, _, _| {
+          let shell = shell.clone();
+
+          menu.item(menu_item("switch-game", text::SWITCH_GAME, None).on_click(
+            move |_, window, cx| {
+              shell
+                .update(cx, |this, cx| {
+                  this.dispatch(Msg::SwitchGamePressed, cx);
+                  this.empty_package_search(window, cx);
+                })
+                .ok();
+            },
+          ))
+        }
+      });
+    let profile_menus = self.render_profile_menus(&shell).map(|menus| {
+      h_flex()
+        .gap_1()
+        .items_center()
+        .child(
+          div()
+            .text_color(palette.muted_text)
+            .child(text::HEADER_SEPARATOR),
+        )
+        .children(menus)
+    });
+
+    h_flex()
+      .id("header")
+      .gap_1()
+      .items_center()
+      .child(game_menu)
+      .children(profile_menus)
+      .child(div().flex_1())
+      .child(
+        h_flex()
+          .gap_2()
+          .child(
+            Button::new("launch-modded")
+              .label(text::LAUNCH_MODDED)
+              .primary()
+              .disabled(!can_launch)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::LaunchPressed(LaunchMode::Modded), cx);
+              })),
+          )
+          .child(
+            Button::new("launch-vanilla")
+              .label(text::LAUNCH_VANILLA)
+              .disabled(!can_launch)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::LaunchPressed(LaunchMode::Vanilla), cx);
+              })),
+          ),
+      )
+      .test_support()
+      .into_any_element()
+  }
+
+  /// The profile dropdown, which picks a profile or starts a new one, and
+  /// the menu of actions on the selected profile. `None` until a profile is
+  /// selected.
+  fn render_profile_menus(&self, shell: &WeakEntity<Self>) -> Option<[AnyElement; 2]> {
     let state = &self.state;
-    let switcher = state.switcher.as_ref()?;
-    let selected = state.profile.as_ref().map(|profile| profile.name.as_str());
+
+    state.switcher.as_ref()?;
+
+    let selected = state.profile.as_ref()?.name.clone();
     let can_switch = state.can_switch_profile();
     let can_rename_or_delete = state.can_rename_or_delete_profile();
-    let profiles: Vec<_> = state
+    let can_duplicate = state.can_duplicate_profile();
+    let profiles: Vec<(String, Option<usize>)> = state
       .profile_names()
       .into_iter()
-      .map(|name| {
-        let picked = name.to_string();
-
-        Button::new(SharedString::from(format!("profile-{name}")))
-          .label(name.to_string())
-          .small()
-          .when(Some(name) == selected, |button| button.primary())
-          .disabled(!can_switch)
-          .on_click(cx.listener(move |this, _, _, cx| {
-            this.dispatch(Msg::ProfilePicked(picked.clone()), cx);
-          }))
-      })
+      .map(|name| (name.to_string(), state.mod_count(name)))
       .collect();
-    let naming = |id: &'static str, label: &'static str, naming: Naming, enabled: bool| {
-      Button::new(id)
-        .label(label)
-        .small()
-        .disabled(!enabled)
-        .on_click(cx.listener(move |this, _, _, cx| {
-          this.dispatch(Msg::ProfileNamePressed(naming), cx);
-        }))
-    };
-    let actions = h_flex()
-      .gap_2()
-      .child(naming(
-        "new-profile",
-        text::NEW_PROFILE,
-        Naming::Create,
-        can_switch,
-      ))
-      .child(naming(
-        "rename-profile",
-        text::RENAME,
-        Naming::Rename,
-        can_rename_or_delete,
-      ))
-      .child(naming(
-        "duplicate-profile",
-        text::DUPLICATE,
-        Naming::Duplicate,
-        state.can_duplicate_profile(),
-      ))
-      .child(
-        Button::new("delete-profile")
-          .label(text::DELETE)
-          .small()
-          .disabled(!can_rename_or_delete)
-          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::DeleteProfilePressed, cx))),
-      );
-    let form = switcher.form.as_ref().map(|form| {
-      v_flex()
-        .gap_2()
-        .p_3()
-        .border_1()
-        .border_color(palette.border)
-        .child(text::name_prompt(form.naming, &form.from))
-        .child(Input::new(&self.profile_name))
-        .children(form.refusal.as_ref().map(|refusal| {
-          div()
-            .id("profile-name-refused")
-            .child(failure(palette, text::name_refused(refusal)))
-            .test_support()
-        }))
-        .child(
-          h_flex()
-            .gap_2()
-            .child(
-              Button::new("save-profile-name")
-                .label(text::SAVE)
-                .primary()
-                .on_click(cx.listener(|this, _, _, cx| this.submit_profile_name(cx))),
+    let picker = Button::new("profile-menu")
+      .label(selected.clone())
+      .ghost()
+      .dropdown_caret(true)
+      .dropdown_menu({
+        let shell = shell.clone();
+
+        move |menu, _, cx| {
+          let muted = Palette::new(cx).muted_text;
+
+          profiles
+            .iter()
+            .fold(menu, |menu, (name, count)| {
+              menu.item(
+                profile_item(name, *count, muted)
+                  .checked(*name == selected)
+                  .disabled(!can_switch)
+                  .on_click(send(&shell, Msg::ProfilePicked(name.clone()))),
+              )
+            })
+            .separator()
+            .item(
+              menu_item("new-profile", text::NEW_PROFILE, None)
+                .disabled(!can_switch)
+                .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Create))),
             )
-            .child(
-              Button::new("cancel-profile-name")
-                .label(text::CANCEL)
-                .on_click(
-                  cx.listener(|this, _, _, cx| this.dispatch(Msg::ProfileNameDismissed, cx)),
-                ),
-            ),
-        )
-    });
-    let deleting = switcher.deleting.as_ref().map(|name| {
-      v_flex()
-        .gap_2()
-        .p_3()
-        .border_1()
-        .border_color(palette.danger_border)
-        .child(
-          div()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(text::confirm_delete(name)),
-        )
-        .child(text::DELETE_WARNING)
-        .child(
-          h_flex()
-            .gap_2()
-            .child(
-              Button::new("confirm-delete-profile")
-                .label(text::DELETE)
-                .primary()
-                .on_click(
-                  cx.listener(|this, _, _, cx| this.dispatch(Msg::DeleteProfileConfirmed, cx)),
-                ),
+        }
+      });
+    let actions = Button::new("profile-actions")
+      .icon(IconName::Ellipsis)
+      .ghost()
+      .tooltip(text::PROFILE_ACTIONS)
+      .dropdown_menu({
+        let shell = shell.clone();
+
+        move |menu: PopupMenu, _, cx| {
+          let danger = can_rename_or_delete.then(|| Palette::new(cx).danger_text);
+
+          menu
+            .item(
+              menu_item("rename-profile", text::RENAME_PROFILE, None)
+                .disabled(!can_rename_or_delete)
+                .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Rename))),
             )
-            .child(
-              Button::new("cancel-delete-profile")
-                .label(text::CANCEL)
-                .on_click(
-                  cx.listener(|this, _, _, cx| this.dispatch(Msg::DeleteProfileDismissed, cx)),
-                ),
-            ),
-        )
-    });
+            .item(
+              menu_item("duplicate-profile", text::DUPLICATE_PROFILE, None)
+                .disabled(!can_duplicate)
+                .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Duplicate))),
+            )
+            .separator()
+            .item(
+              menu_item("delete-profile", text::DELETE_PROFILE, danger)
+                .disabled(!can_rename_or_delete)
+                .on_click(send(&shell, Msg::DeleteProfilePressed)),
+            )
+        }
+      });
+
+    Some([picker.into_any_element(), actions.into_any_element()])
+  }
+
+  /// What the profiles are waiting on: a change being made on disk, or why
+  /// they could not be listed. `None` when there is nothing to say.
+  fn render_profile_notes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let palette = Palette::new(cx);
+    let switcher = self.state.switcher.as_ref()?;
+
+    if switcher.changing.is_none() && switcher.list_failure.is_none() {
+      return None;
+    }
 
     Some(
       v_flex()
         .gap_2()
-        .child(
-          h_flex()
-            .gap_2()
-            .flex_wrap()
-            .child(text::PROFILE)
-            .children(profiles),
-        )
-        .child(actions)
         .children(switcher.changing.as_ref().map(text::changing))
-        .children(form)
-        .children(deleting)
         .children(
           switcher
             .list_failure
@@ -769,11 +778,10 @@ impl Shell {
     )
   }
 
-  /// The launch buttons, which are always shown, with what the user should
-  /// know before or after pressing one.
-  fn render_launch(&self, cx: &mut Context<Self>) -> AnyElement {
+  /// What the user should know before or after pressing a launch button, or
+  /// `None` when there is nothing to say.
+  fn render_launch_notes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
     let palette = Palette::new(cx);
-    let can_launch = self.state.can_launch();
     let launcher = self.state.launcher.as_ref();
     let attempt = self.state.launch.as_ref().and_then(|attempt| {
       let launched = self.game_name(&attempt.game);
@@ -804,40 +812,236 @@ impl Shell {
             palette,
             text::missing_loader(&profile.name, loader),
           ))
-          .test_support(),
+          .test_support()
+          .into_any_element(),
       )
     });
     let steam = launcher
       .and_then(|launcher| launcher.steam.as_ref())
       .and_then(|steam| render_steam_option(steam, cx));
+    let notes: Vec<AnyElement> = [attempt, missing_loader, steam]
+      .into_iter()
+      .flatten()
+      .collect();
 
-    v_flex()
-      .gap_2()
+    if notes.is_empty() {
+      return None;
+    }
+
+    Some(v_flex().gap_2().children(notes).into_any_element())
+  }
+
+  /// The profile dialog the state asks for: naming while a name is asked
+  /// for, deleting while a deletion waits to be confirmed.
+  fn wanted_dialog(&self) -> Option<ProfileDialog> {
+    let switcher = self.state.switcher.as_ref()?;
+
+    if switcher.form.is_some() {
+      Some(ProfileDialog::Naming)
+    } else if switcher.deleting.is_some() {
+      Some(ProfileDialog::Deleting)
+    } else {
+      None
+    }
+  }
+
+  /// Opens or closes the profile dialog to match the state. Deferred past
+  /// the render, since dialogs belong to the window's root view.
+  fn sync_profile_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let wanted = self.wanted_dialog();
+
+    if wanted == self.profile_dialog {
+      return;
+    }
+
+    let shown = std::mem::replace(&mut self.profile_dialog, wanted);
+    let shell = cx.weak_entity();
+    let input = self.profile_name.clone();
+
+    window.defer(cx, move |window, cx| {
+      if shown.is_some() && window.has_active_dialog(cx) {
+        window.close_dialog(cx);
+      }
+
+      match wanted {
+        Some(ProfileDialog::Naming) => window.open_dialog(cx, naming_dialog(shell, input)),
+        Some(ProfileDialog::Deleting) => window.open_dialog(cx, deleting_dialog(shell)),
+        None => {}
+      }
+    });
+  }
+}
+
+/// A modal dialog about the selected profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProfileDialog {
+  /// Asks for a name for a new, renamed, or copied profile.
+  Naming,
+  /// Asks to confirm deleting the selected profile.
+  Deleting,
+}
+
+/// A click handler that hands `msg` to the shell, while it is open.
+fn send(
+  shell: &WeakEntity<Shell>,
+  msg: Msg,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + use<> {
+  let shell = shell.clone();
+
+  move |_, _, cx| {
+    shell
+      .update(cx, |this, cx| this.dispatch(msg.clone(), cx))
+      .ok();
+  }
+}
+
+/// A menu item reading `label`, found in tests by `id`, in `color` when
+/// given and the theme's text color otherwise.
+fn menu_item(id: &'static str, label: &'static str, color: Option<Hsla>) -> PopupMenuItem {
+  PopupMenuItem::element(move |_, _| {
+    div()
+      .id(id)
+      .when_some(color, |item, color| item.text_color(color))
+      .child(label)
+      .test_support()
+  })
+}
+
+/// A profile in the profile dropdown: its name, and how many packages it
+/// holds when that is known.
+fn profile_item(name: &str, count: Option<usize>, muted: Hsla) -> PopupMenuItem {
+  let name = name.to_string();
+
+  PopupMenuItem::element(move |_, _| {
+    h_flex()
+      .id(SharedString::from(format!("pick-profile-{name}")))
+      .w_full()
+      .gap_4()
+      .justify_between()
+      .child(name.clone())
+      .children(count.map(|count| {
+        div()
+          .id(SharedString::from(format!("mod-count-{name}")))
+          .text_sm()
+          .text_color(muted)
+          .child(text::mod_count(count))
+          .test_support()
+      }))
+      .test_support()
+  })
+}
+
+/// The dialog asking for a profile name, with why the last one given was
+/// refused. It focuses the name field when it opens.
+fn naming_dialog(
+  shell: WeakEntity<Shell>,
+  input: Entity<InputState>,
+) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
+  let focus = std::cell::Cell::new(true);
+
+  move |dialog, window, cx| {
+    if focus.replace(false) {
+      input.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    let form = shell.upgrade().and_then(|shell| {
+      let switcher = shell.read(cx).state.switcher.as_ref()?;
+
+      switcher.form.clone()
+    });
+    let Some(form) = form else {
+      return dialog;
+    };
+    let palette = Palette::new(cx);
+    let submit = {
+      let shell = shell.clone();
+
+      move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+        shell
+          .update(cx, |this, cx| this.submit_profile_name(cx))
+          .ok();
+      }
+    };
+    let refusal = form.refusal.as_ref().map(|refusal| {
+      div()
+        .id("profile-name-refused")
+        .child(failure(palette, text::name_refused(refusal)))
+        .test_support()
+    });
+
+    dialog
+      .title(SharedString::from(text::name_prompt(
+        form.naming,
+        &form.from,
+      )))
+      .on_ok(|_, _, _| false)
+      .on_close(send(&shell, Msg::ProfileNameDismissed))
       .child(
-        h_flex()
-          .gap_2()
+        v_flex()
+          .id("profile-name-dialog")
+          .gap_3()
+          .child(Input::new(&input))
+          .children(refusal)
           .child(
-            Button::new("launch-modded")
-              .label(text::LAUNCH_MODDED)
-              .primary()
-              .disabled(!can_launch)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::LaunchPressed(LaunchMode::Modded), cx);
-              })),
+            h_flex()
+              .gap_2()
+              .justify_end()
+              .child(
+                Button::new("cancel-profile-name")
+                  .label(text::CANCEL)
+                  .on_click(send(&shell, Msg::ProfileNameDismissed)),
+              )
+              .child(
+                Button::new("save-profile-name")
+                  .label(text::SAVE)
+                  .primary()
+                  .on_click(submit),
+              ),
           )
-          .child(
-            Button::new("launch-vanilla")
-              .label(text::LAUNCH_VANILLA)
-              .disabled(!can_launch)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::LaunchPressed(LaunchMode::Vanilla), cx);
-              })),
-          ),
+          .test_support(),
       )
-      .children(attempt)
-      .children(missing_loader)
-      .children(steam)
-      .into_any_element()
+  }
+}
+
+/// The dialog asking to confirm deleting the selected profile.
+fn deleting_dialog(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
+  move |dialog, _, cx| {
+    let deleting = shell.upgrade().and_then(|shell| {
+      let switcher = shell.read(cx).state.switcher.as_ref()?;
+
+      switcher.deleting.clone()
+    });
+    let Some(name) = deleting else {
+      return dialog;
+    };
+
+    dialog
+      .title(SharedString::from(text::confirm_delete(&name)))
+      .on_ok(|_, _, _| false)
+      .on_close(send(&shell, Msg::DeleteProfileDismissed))
+      .child(
+        v_flex()
+          .id("delete-profile-dialog")
+          .gap_3()
+          .child(text::DELETE_WARNING)
+          .child(
+            h_flex()
+              .gap_2()
+              .justify_end()
+              .child(
+                Button::new("cancel-delete-profile")
+                  .label(text::CANCEL)
+                  .on_click(send(&shell, Msg::DeleteProfileDismissed)),
+              )
+              .child(
+                Button::new("confirm-delete-profile")
+                  .label(text::DELETE)
+                  .danger()
+                  .on_click(send(&shell, Msg::DeleteProfileConfirmed)),
+              ),
+          )
+          .test_support(),
+      )
   }
 }
 
@@ -1016,6 +1220,8 @@ fn render_operation(operation: &Operation, game: &str, cx: &mut Context<Shell>) 
     .into_any_element()
 }
 
+/// The Browse and Installed tabs, with refreshing the package list at the
+/// far end.
 fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
   let tab_button = |id: &'static str, label: &'static str, this_tab: Tab| {
     Button::new(id)
@@ -1032,6 +1238,13 @@ fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
       text::TAB_INSTALLED,
       Tab::Installed,
     ))
+    .child(div().flex_1())
+    .child(
+      Button::new("refresh")
+        .label(text::REFRESH)
+        .ghost()
+        .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::RefreshPressed, cx))),
+    )
     .into_any_element()
 }
 
@@ -1627,6 +1840,8 @@ impl Render for Shell {
 
       window.defer(cx, move |window, cx| window.push_notification(toast, cx));
     }
+
+    self.sync_profile_dialog(window, cx);
 
     let screen = match self.state.screen.clone() {
       Screen::Starting => v_flex()

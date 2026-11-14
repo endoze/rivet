@@ -29,8 +29,10 @@ pub struct Palette {
   pub border: Hsla,
   /// The outline of a panel reporting a failure or asking about one.
   pub danger_border: Hsla,
-  /// The background of a toast.
+  /// The background of a toast or a menu.
   pub toast: Hsla,
+  /// The text of a menu item that destroys something.
+  pub danger_text: Hsla,
   /// The icon and outline of an info toast.
   pub info: Hsla,
   /// The icon and outline of a success toast.
@@ -47,6 +49,8 @@ impl Palette {
   /// on every background here. The toast accents are the theme's info,
   /// success, warning, and danger colors, moved the same way only as far as
   /// it takes to reach the WCAG AA contrast for icons on a toast.
+  /// `danger_text` is the theme's danger color moved as far as it takes to
+  /// reach WCAG AA on a menu.
   pub fn new(cx: &App) -> Self {
     let theme = cx.theme();
     let panel = theme.background;
@@ -73,6 +77,7 @@ impl Palette {
       border: theme.border,
       danger_border: theme.danger,
       toast,
+      danger_text: reaching(AA, toast.blend(theme.danger), text, &[toast]),
       info: accent(theme.info),
       success: accent(theme.success),
       warning: accent(theme.warning),
