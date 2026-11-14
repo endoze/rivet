@@ -1,7 +1,8 @@
 //! The Installed tab: the open profile's packages, searched and sorted, and
 //! enabling, disabling, and uninstalling them with the questions that asks.
 
-use crate::install::{self, Action, Installed, InstalledPackage, Profile};
+use crate::install::{Action, Installed, InstalledPackage, Profile};
+use crate::queue::{self, Work};
 use crate::{Command, Effect, State};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -220,9 +221,17 @@ impl State {
     matches!(self.manage.pending, Some(Pending::Checking { .. }))
   }
 
+  /// Whether the open profile's packages can be enabled, disabled, or
+  /// uninstalled: as for [`State::can_install`], and no operation on the
+  /// profile is running or waiting. Those changes are planned from the
+  /// packages shown, which an operation still to end would make stale.
+  pub fn can_manage(&self) -> bool {
+    self.can_install() && !self.is_profile_busy()
+  }
+
   /// The open profile's packages, once they are known and a change can start.
   fn changeable(&self) -> Option<&Installed> {
-    if !self.can_install() {
+    if !self.can_manage() {
       return None;
     }
 
@@ -428,17 +437,17 @@ fn uninstall(state: &mut State, packages: Vec<String>, delete: Vec<PathBuf>) -> 
     return Vec::new();
   };
   let (game, name) = (profile.game.clone(), profile.name.clone());
-  let Some(operation) = install::start(state, Action::Uninstall(packages.clone())) else {
-    return Vec::new();
-  };
+  let action = Action::Uninstall(packages.clone());
 
-  vec![Effect::Run(Command::Uninstall(Uninstall {
-    operation,
-    game,
-    profile: name,
-    packages,
-    delete,
-  }))]
+  queue::enqueue(state, game.clone(), name.clone(), action, |operation| {
+    Work::Uninstall(Uninstall {
+      operation,
+      game,
+      profile: name,
+      packages,
+      delete,
+    })
+  })
 }
 
 fn set_enabled(state: &mut State, packages: Vec<String>, enabled: bool) -> Vec<Effect> {
@@ -454,17 +463,16 @@ fn set_enabled(state: &mut State, packages: Vec<String>, enabled: bool) -> Vec<E
     packages: packages.clone(),
     enabled,
   };
-  let Some(operation) = install::start(state, action) else {
-    return Vec::new();
-  };
 
-  vec![Effect::Run(Command::SetEnabled(SetEnabled {
-    operation,
-    game,
-    profile: name,
-    packages,
-    enabled,
-  }))]
+  queue::enqueue(state, game.clone(), name.clone(), action, |operation| {
+    Work::SetEnabled(SetEnabled {
+      operation,
+      game,
+      profile: name,
+      packages,
+      enabled,
+    })
+  })
 }
 
 #[cfg(test)]
@@ -696,7 +704,11 @@ mod tests {
 
     assert_eq!(effects, vec![set_enabled(1, &["Owner-Solo"], false)]);
     assert_eq!(
-      state.operation.map(|operation| operation.action),
+      state
+        .queue
+        .operations
+        .last()
+        .map(|operation| operation.action.clone()),
       Some(Action::SetEnabled {
         packages: names(&["Owner-Solo"]),
         enabled: false,
@@ -711,7 +723,7 @@ mod tests {
     let effects = update(&mut state, Msg::DisablePressed("Owner-Core".to_string()));
 
     assert_eq!(effects, vec![]);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
     assert_eq!(
       state.manage.pending,
       dependants_question(Removal::Disable, "Owner-Core", &["Owner-Lib", "Owner-Pack"])
@@ -830,6 +842,7 @@ mod tests {
         outcome: Ok(Outcome {
           changed: names(&["Owner-Solo"]),
           failed: vec![],
+          cancelled: vec![],
           profile: Ok(profile()),
         }),
       },
@@ -853,7 +866,7 @@ mod tests {
     let mut state = ready(profile());
 
     assert_eq!(update(&mut state, Msg::EnableAllPressed), vec![]);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]
@@ -871,6 +884,7 @@ mod tests {
         outcome: Ok(Outcome {
           changed: names(&["Owner-Solo"]),
           failed: vec![],
+          cancelled: vec![],
           profile: Ok(after.clone()),
         }),
       },
@@ -878,8 +892,9 @@ mod tests {
 
     assert_eq!(
       state
-        .operation
-        .as_ref()
+        .queue
+        .operations
+        .last()
         .map(|operation| operation.status.clone()),
       Some(OperationStatus::Finished {
         changed: names(&["Owner-Solo"]),
@@ -892,21 +907,51 @@ mod tests {
   }
 
   #[test]
-  fn changes_are_ignored_while_an_operation_runs() {
-    let mut state = ready(profile());
+  fn nothing_is_enabled_disabled_or_uninstalled_until_the_profiles_operation_ends() {
+    let mut installed = profile();
 
-    update(&mut state, Msg::DisablePressed("Owner-Solo".to_string()));
+    installed.extend([disabled("Owner-Solo", &[])]);
 
+    let mut state = ready(installed.clone());
+
+    update(&mut state, Msg::DisablePressed("Owner-Pack".to_string()));
+
+    assert!(!state.can_manage());
+    assert!(state.can_install());
     assert_eq!(
-      update(&mut state, Msg::UninstallPressed("Owner-Pack".to_string())),
+      update(&mut state, Msg::EnablePressed("Owner-Solo".to_string())),
       vec![]
     );
     assert_eq!(
-      update(&mut state, Msg::DisablePressed("Owner-Pack".to_string())),
+      update(&mut state, Msg::DisablePressed("Owner-Lib".to_string())),
       vec![]
     );
-    assert_eq!(update(&mut state, Msg::DisableAllPressed), vec![]);
+    assert_eq!(
+      update(&mut state, Msg::UninstallPressed("Owner-Core".to_string())),
+      vec![]
+    );
+    assert_eq!(update(&mut state, Msg::EnableAllPressed), vec![]);
     assert_eq!(state.manage.pending, None);
+    assert_eq!(state.queue.operations.len(), 1);
+
+    update(
+      &mut state,
+      Msg::OperationFinished {
+        operation: 1,
+        outcome: Ok(Outcome {
+          changed: names(&["Owner-Pack"]),
+          failed: vec![],
+          cancelled: vec![],
+          profile: Ok(installed),
+        }),
+      },
+    );
+
+    assert!(state.can_manage());
+    assert_eq!(
+      update(&mut state, Msg::EnablePressed("Owner-Solo".to_string())),
+      vec![set_enabled(2, &["Owner-Solo"], true)]
+    );
   }
 
   #[test]
@@ -991,7 +1036,11 @@ mod tests {
     assert_eq!(effects, vec![uninstall(1, &["Owner-Pack"], &[])]);
     assert_eq!(state.manage.pending, None);
     assert_eq!(
-      state.operation.map(|operation| operation.action),
+      state
+        .queue
+        .operations
+        .last()
+        .map(|operation| operation.action.clone()),
       Some(Action::Uninstall(names(&["Owner-Pack"])))
     );
   }
@@ -1011,7 +1060,7 @@ mod tests {
     );
 
     assert_eq!(effects, vec![]);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
     assert_eq!(
       state.manage.pending,
       Some(Pending::Untracked {
@@ -1078,7 +1127,7 @@ mod tests {
       update(&mut state, Msg::FoldersChosen(Folders::Delete)),
       vec![]
     );
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]
@@ -1090,7 +1139,7 @@ mod tests {
     let effects = update(&mut state, checked(&[LOADER], Err("no install record")));
 
     assert_eq!(effects, vec![]);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
     assert_eq!(
       state.manage.pending,
       Some(Pending::Refused {
@@ -1111,7 +1160,7 @@ mod tests {
     let effects = update(&mut state, checked(&["Owner-Pack"], Ok(vec![])));
 
     assert_eq!(effects, vec![]);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]

@@ -22,11 +22,12 @@ use gpui_kit::{
 use icons::IconCache;
 use rivet_core::browse::{Browse, SortKey, View};
 use rivet_core::install::{
-  Action, Confirmation, InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus,
+  Confirmation, InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus,
 };
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::manage::{Folders, Pending, Scope, Sort, Tab};
 use rivet_core::picker::Step;
+use rivet_core::queue::{CloseChoice, Closing};
 use rivet_core::readme::{Package, Readme, Status};
 use rivet_core::switcher::Naming;
 use rivet_core::{Command, Effect, Msg, Screen, State};
@@ -44,6 +45,9 @@ pub struct Shell {
   /// Text for the profile name field, put there and focused on the next
   /// render, since setting it needs the window.
   fill_profile_name: Option<String>,
+  /// Set when the window should close, which it does on the next render or
+  /// as the answer to its close button, since closing needs the window.
+  close_window: bool,
   installed_search: Entity<InputState>,
   icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
@@ -108,6 +112,14 @@ impl Shell {
         }
       },
     );
+    let shell = cx.weak_entity();
+
+    window.on_window_should_close(cx, move |_, cx| {
+      shell
+        .update(cx, |this, cx| this.close_requested(cx))
+        .unwrap_or(true)
+    });
+
     let _inbox = cx.spawn(async move |this, cx| {
       while let Some(msg) = inbox.next().await {
         if this.update(cx, |this, cx| this.dispatch(msg, cx)).is_err() {
@@ -122,6 +134,7 @@ impl Shell {
       package_search,
       profile_name,
       fill_profile_name: None,
+      close_window: false,
       installed_search,
       icons: cx.new(|_| IconCache::new()),
       _subscriptions: vec![searched, package_searched, named, installed_searched],
@@ -146,6 +159,7 @@ impl Shell {
         Effect::ChooseFolder => self.choose_folder(cx),
         Effect::FillProfileName(text) => self.fill_profile_name = Some(text),
         Effect::OpenUrl(url) => cx.open_url(&url),
+        Effect::CloseWindow => self.close_window = true,
       }
     }
 
@@ -258,9 +272,122 @@ impl Shell {
       .children(fallback)
       .children(refusal.map(failure))
       .children(checking)
+      .children(self.render_queue(cx))
       .child(Input::new(&self.search))
       .child(list)
       .into_any_element()
+  }
+
+  /// Every operation in the queue, on any game or profile, or `None` when it
+  /// is empty.
+  fn render_queue(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let operations = &self.state.queue.operations;
+
+    if operations.is_empty() {
+      return None;
+    }
+
+    let ended = operations
+      .iter()
+      .any(|operation| !operation.status.is_active());
+    let rows: Vec<AnyElement> = operations
+      .iter()
+      .map(|operation| render_operation(operation, &self.game_name(&operation.game), cx))
+      .collect();
+    let clear = ended.then(|| {
+      Button::new("clear-queue")
+        .label(text::CLEAR_ENDED)
+        .small()
+        .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::QueueCleared, cx)))
+    });
+
+    Some(
+      v_flex()
+        .gap_2()
+        .p_3()
+        .border_1()
+        .border_color(rgb(0x606060))
+        .child(
+          h_flex()
+            .justify_between()
+            .child(
+              div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text::QUEUE_TITLE),
+            )
+            .children(clear),
+        )
+        .child(
+          v_flex()
+            .id("queue")
+            .gap_2()
+            .max_h(px(240.0))
+            .overflow_y_scroll()
+            .children(rows),
+        )
+        .into_any_element(),
+    )
+  }
+
+  /// What closing the window is waiting on: the question asked when work is
+  /// in progress, or that the window closes once it ends.
+  fn render_closing(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let closing = self.state.closing?;
+    let keep_open = Button::new("close-dismiss")
+      .label(text::KEEP_OPEN)
+      .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::CloseDismissed, cx)));
+    let panel = v_flex()
+      .id("closing")
+      .gap_2()
+      .p_3()
+      .border_1()
+      .border_color(rgb(0xb04040));
+    let panel = match closing {
+      Closing::Asking => panel
+        .child(
+          div()
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(text::CLOSE_HEADLINE),
+        )
+        .child(text::CLOSE_DETAIL)
+        .child(
+          h_flex()
+            .gap_2()
+            .child(
+              Button::new("close-wait")
+                .label(text::CLOSE_WAIT)
+                .primary()
+                .on_click(cx.listener(|this, _, _, cx| {
+                  this.dispatch(Msg::CloseChosen(CloseChoice::Wait), cx);
+                })),
+            )
+            .child(
+              Button::new("close-cancel")
+                .label(text::CLOSE_CANCEL)
+                .on_click(cx.listener(|this, _, _, cx| {
+                  this.dispatch(Msg::CloseChosen(CloseChoice::Cancel), cx);
+                })),
+            )
+            .child(keep_open),
+        ),
+      Closing::Waiting => panel.child(
+        h_flex()
+          .gap_2()
+          .justify_between()
+          .child(text::CLOSING_WHEN_DONE)
+          .child(keep_open),
+      ),
+    };
+
+    Some(panel.test_support().into_any_element())
+  }
+
+  /// Applies a press of the window's close button, answering whether the
+  /// window may close now.
+  fn close_requested(&mut self, cx: &mut Context<Self>) -> bool {
+    self.dispatch(Msg::CloseRequested, cx);
+
+    std::mem::take(&mut self.close_window)
   }
 
   fn render_game(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
@@ -314,13 +441,7 @@ impl Shell {
             _ => None,
           }),
       )
-      .children(
-        self
-          .state
-          .operation
-          .as_ref()
-          .map(|operation| render_operation(operation, cx)),
-      )
+      .children(self.render_queue(cx))
       .children(
         self
           .state
@@ -352,7 +473,7 @@ impl Shell {
   /// the question a change is waiting on.
   fn render_installed(&self, cx: &mut Context<Self>) -> AnyElement {
     let state = &self.state;
-    let can_change = state.can_install();
+    let can_change = state.can_manage();
     let manage = &state.manage;
     let sort_button = |id: &'static str, label: &'static str, sort: Sort| {
       Button::new(id)
@@ -758,47 +879,60 @@ fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> 
     .into_any_element()
 }
 
-fn render_operation(operation: &Operation, cx: &mut Context<Shell>) -> AnyElement {
-  let dismiss = Button::new("dismiss-operation")
-    .label(text::DISMISS)
-    .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::OperationDismissed, cx)));
+/// One operation of the queue: the game and profile it changes, what it is
+/// doing or how it ended, and the buttons that act on it.
+fn render_operation(operation: &Operation, game: &str, cx: &mut Context<Shell>) -> AnyElement {
+  let id = operation.id;
   let action = &operation.action;
+  let button = |name: &str, label: &'static str, msg: Msg| {
+    Button::new(SharedString::from(format!("{name}-operation-{id}")))
+      .label(label)
+      .small()
+      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
+  };
+  let cancel = || button("cancel", text::CANCEL, Msg::OperationCancelPressed(id));
+  let retry = || button("retry", text::RETRY, Msg::RetryPressed(id));
+  let dismiss = || button("dismiss", text::DISMISS, Msg::OperationDismissed(id));
+  let line = |line: String| div().child(line).into_any_element();
+  let (body, buttons) = match &operation.status {
+    OperationStatus::Queued => (line(text::queued(action)), vec![cancel()]),
+    OperationStatus::Running(progress) => (
+      line(text::running(action, progress.as_ref())),
+      operation.can_cancel().then(cancel).into_iter().collect(),
+    ),
+    OperationStatus::Cancelling(progress) => {
+      (line(text::stopping(action, progress.as_ref())), vec![])
+    }
+    OperationStatus::Finished { changed } => {
+      (line(text::finished(action, changed)), vec![dismiss()])
+    }
+    OperationStatus::Failed { failed, changed } => (
+      failure(text::operation_failed(action, failed, changed)).into_any_element(),
+      vec![retry(), dismiss()],
+    ),
+    OperationStatus::Cancelled { changed } => (
+      line(text::cancelled(action, changed)),
+      vec![retry(), dismiss()],
+    ),
+  };
 
-  match (&operation.status, action) {
-    (OperationStatus::Running(progress), Action::Install(package)) => div()
-      .child(text::installing(package, progress.as_ref()))
-      .into_any_element(),
-    (OperationStatus::Running(_), action) => div()
-      .id("operation-running")
-      .child(text::changing_packages(action))
-      .test_support()
-      .into_any_element(),
-    (OperationStatus::Finished { changed }, action) => {
-      let message = match action {
-        Action::Install(package) => text::installed(package, changed),
-        action => text::changed(action, changed),
-      };
-
+  v_flex()
+    .id(SharedString::from(format!("operation-{id}")))
+    .gap_1()
+    .child(
+      div()
+        .text_sm()
+        .text_color(rgb(0x999999))
+        .child(text::place(game, &operation.profile)),
+    )
+    .child(
       h_flex()
         .gap_2()
-        .justify_between()
-        .child(message)
-        .child(dismiss)
-        .into_any_element()
-    }
-    (OperationStatus::Failed { failed, changed }, action) => {
-      let message = match action {
-        Action::Install(package) => text::install_failed(package, failed, changed),
-        action => text::change_failed(action, failed, changed),
-      };
-
-      v_flex()
-        .gap_2()
-        .child(failure(message))
-        .child(dismiss)
-        .into_any_element()
-    }
-  }
+        .child(div().flex_1().child(body))
+        .child(h_flex().gap_2().flex_none().children(buttons)),
+    )
+    .test_support()
+    .into_any_element()
 }
 
 fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
@@ -1359,7 +1493,11 @@ impl Render for Shell {
       });
     }
 
-    match self.state.screen.clone() {
+    if std::mem::take(&mut self.close_window) {
+      window.remove_window();
+    }
+
+    let screen = match self.state.screen.clone() {
       Screen::Starting => v_flex()
         .size_full()
         .items_center()
@@ -1368,6 +1506,11 @@ impl Render for Shell {
         .into_any_element(),
       Screen::Picker => self.render_picker(cx),
       Screen::Game(game) => self.render_game(&game, cx),
-    }
+    };
+
+    v_flex()
+      .size_full()
+      .children(self.render_closing(cx))
+      .child(div().w_full().flex_1().overflow_hidden().child(screen))
   }
 }

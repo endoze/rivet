@@ -6,15 +6,17 @@ pub mod install;
 pub mod launch;
 pub mod manage;
 pub mod picker;
+pub mod queue;
 pub mod readme;
 pub mod settings;
 pub mod switcher;
 
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
-use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Progress};
+use install::{Confirmation, Install, Installed, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
+use queue::{CloseChoice, Closing, Queue};
 use readme::Readme;
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
@@ -40,11 +42,11 @@ pub struct State {
   pub profile: Option<Profile>,
   /// An install waiting for the user to confirm it.
   pub confirmation: Option<Confirmation>,
-  /// The latest install, kept after it ends so its result can be shown. It
-  /// outlives leaving the game it belongs to.
-  pub operation: Option<Operation>,
-  /// How many operations have been started, so each gets its own id.
-  pub operations: u64,
+  /// Every operation asked for and not dismissed, on every game and profile.
+  /// It outlives leaving the game and profile each belongs to.
+  pub queue: Queue,
+  /// Closing the window while operations are running or waiting.
+  pub closing: Option<Closing>,
   /// The operating system games launch on, or `None` where launching is not
   /// supported.
   pub host: Option<HostOs>,
@@ -87,8 +89,8 @@ impl State {
       refreshes: 0,
       profile: None,
       confirmation: None,
-      operation: None,
-      operations: 0,
+      queue: Queue::default(),
+      closing: None,
       tab: Tab::default(),
       manage: Manage::default(),
       readme: None,
@@ -189,8 +191,21 @@ pub enum Msg {
     operation: u64,
     outcome: Result<Outcome, String>,
   },
-  /// The result of the last operation was closed.
-  OperationDismissed,
+  /// Cancel was pressed on an operation, by its id.
+  OperationCancelPressed(u64),
+  /// Retry was pressed on an operation that failed or was cancelled, by its
+  /// id.
+  RetryPressed(u64),
+  /// An operation that ended was removed from the queue, by its id.
+  OperationDismissed(u64),
+  /// Every operation that ended was removed from the queue.
+  QueueCleared,
+  /// The user asked to close the window.
+  CloseRequested,
+  /// The user answered how to close the window while work is in progress.
+  CloseChosen(CloseChoice),
+  /// The user chose to keep the window open.
+  CloseDismissed,
   TabChosen(Tab),
   /// The Installed tab's search text changed.
   InstalledSearchChanged(String),
@@ -275,6 +290,8 @@ pub enum Effect {
   /// Open this web address in the user's browser. Needs the platform's
   /// opener, which the shell holds. Not answered.
   OpenUrl(String),
+  /// Close the window. Needs the window, so the shell runs it. Not answered.
+  CloseWindow,
   /// Work for the commands thread.
   Run(Command),
 }
@@ -303,6 +320,9 @@ pub enum Command {
   /// Answered with any number of [`Msg::InstallProgress`], then
   /// [`Msg::OperationFinished`].
   Install(Install),
+  /// Stop the operation with this id after the package it is on. Not
+  /// answered: the operation's own answer says what it did.
+  Cancel(u64),
   /// Check what uninstalling `packages` from a game's profile would delete,
   /// changing nothing. Answered with [`Msg::UninstallChecked`].
   CheckUninstall {
@@ -425,11 +445,15 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::InstallProgress {
       operation,
       progress,
-    } => install::install_progress(state, operation, progress),
-    Msg::OperationFinished { operation, outcome } => {
-      install::operation_finished(state, operation, outcome)
-    }
-    Msg::OperationDismissed => install::operation_dismissed(state),
+    } => queue::progressed(state, operation, progress),
+    Msg::OperationFinished { operation, outcome } => queue::finished(state, operation, outcome),
+    Msg::OperationCancelPressed(operation) => queue::cancel_pressed(state, operation),
+    Msg::RetryPressed(operation) => queue::retry_pressed(state, operation),
+    Msg::OperationDismissed(operation) => queue::dismissed(state, operation),
+    Msg::QueueCleared => queue::cleared(state),
+    Msg::CloseRequested => queue::close_requested(state),
+    Msg::CloseChosen(choice) => queue::close_chosen(state, choice),
+    Msg::CloseDismissed => queue::close_dismissed(state),
     Msg::TabChosen(tab) => {
       if state.tab != tab {
         state.readme = None;

@@ -212,9 +212,11 @@ pub fn install_failed(package: &str, failed: &[FailedPackage], installed: &[Stri
     .collect::<Vec<_>>()
     .join("\n");
   let next = match installed {
-    [] => "Nothing in your profile was changed. Check your connection and try again.".to_string(),
+    [] => {
+      "Nothing in your profile was changed. Check your connection, then press Retry.".to_string()
+    }
     installed => format!(
-      "These were installed before it failed: {}. Installing again finishes the rest.",
+      "These were installed before it failed: {}. Retry finishes the rest.",
       installed.join(", ")
     ),
   };
@@ -295,6 +297,81 @@ fn action_verbs(action: &Action) -> (&'static str, &'static str, &'static str) {
   }
 }
 
+pub const QUEUE_TITLE: &str = "Changes to your profiles";
+pub const CLEAR_ENDED: &str = "Clear finished";
+pub const RETRY: &str = "Retry";
+
+/// The game and profile an operation changes, such as `Valheim, Default
+/// profile`.
+pub fn place(game: &str, profile: &str) -> String {
+  format!("{game}, {profile} profile")
+}
+
+/// An operation waiting its turn, such as `Waiting to install Owner-Mod`.
+pub fn queued(action: &Action) -> String {
+  let verb = match action {
+    Action::Install(_) => "install",
+    Action::Uninstall(_) => "uninstall",
+    Action::SetEnabled { enabled: true, .. } => "enable",
+    Action::SetEnabled { enabled: false, .. } => "disable",
+  };
+
+  format!("Waiting to {verb} {}", subject(action.packages()))
+}
+
+/// A running operation, with the package and stage it is on when known.
+pub fn running(action: &Action, progress: Option<&Progress>) -> String {
+  match action {
+    Action::Install(package) => installing(package, progress),
+    action => changing_packages(action),
+  }
+}
+
+/// A running operation asked to stop after the package it is on.
+pub fn stopping(action: &Action, progress: Option<&Progress>) -> String {
+  format!(
+    "{}. Stopping after the current mod.",
+    running(action, progress)
+  )
+}
+
+/// An operation that went through, such as `Enabled Owner-Mod.`.
+pub fn finished(action: &Action, changed: &[String]) -> String {
+  match action {
+    Action::Install(package) => installed(package, changed),
+    action => self::changed(action, changed),
+  }
+}
+
+/// An operation that failed, naming what failed, why, and what to do next.
+pub fn operation_failed(action: &Action, failed: &[FailedPackage], changed: &[String]) -> Failure {
+  match action {
+    Action::Install(package) => install_failed(package, failed, changed),
+    action => change_failed(action, failed, changed),
+  }
+}
+
+/// An operation the user cancelled, naming what it changed first.
+pub fn cancelled(action: &Action, changed: &[String]) -> String {
+  let doing = action_verbs(action).0.to_lowercase();
+  let subject = subject(action.packages());
+
+  match changed {
+    [] => format!("Cancelled {doing} {subject}. Nothing was changed."),
+    changed => format!(
+      "Cancelled {doing} {subject} after changing {}.",
+      changed.join(", ")
+    ),
+  }
+}
+
+pub const CLOSE_HEADLINE: &str = "Changes to your profiles are still running";
+pub const CLOSE_DETAIL: &str = "Closing now could leave a profile half changed.";
+pub const CLOSE_WAIT: &str = "Wait for them, then close";
+pub const CLOSE_CANCEL: &str = "Cancel after the current mod, then close";
+pub const KEEP_OPEN: &str = "Keep Rivet open";
+pub const CLOSING_WHEN_DONE: &str = "Rivet closes once the running changes end.";
+
 /// A running uninstall, enable, or disable, such as `Disabling 3 mods`.
 pub fn changing_packages(action: &Action) -> String {
   format!("{} {}", action_verbs(action).0, subject(action.packages()))
@@ -318,9 +395,9 @@ pub fn change_failed(action: &Action, failed: &[FailedPackage], changed: &[Strin
     .collect::<Vec<_>>()
     .join("\n");
   let next = match changed {
-    [] => "Nothing in your profile was changed. Try again.".to_string(),
+    [] => "Nothing in your profile was changed. Press Retry to try again.".to_string(),
     changed => format!(
-      "These were {} before it failed: {}. Trying again finishes the rest.",
+      "These were {} before it failed: {}. Retry finishes the rest.",
       action_verbs(action).2,
       changed.join(", ")
     ),

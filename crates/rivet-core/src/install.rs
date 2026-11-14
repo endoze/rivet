@@ -1,7 +1,9 @@
 //! The open game's profile and installing a package into it: which packages
-//! an install brings, the confirmation, and the running operation.
+//! an install brings, the confirmation, and the operations that change a
+//! profile.
 
 use crate::browse::Index;
+use crate::queue::{self, Work};
 use crate::{Command, Effect, State};
 use std::collections::BTreeMap;
 use thunderstore_engine::extract::parse_package_filename;
@@ -119,6 +121,7 @@ pub struct Operation {
   pub game: String,
   pub profile: String,
   pub action: Action,
+  pub work: Work,
   pub status: OperationStatus,
 }
 
@@ -150,8 +153,12 @@ impl Action {
 /// Where an [`Operation`] is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationStatus {
+  /// Waiting for the operations ahead of it to end.
+  Queued,
   /// Running, with the latest progress once there is some.
   Running(Option<Progress>),
+  /// Running, and asked to stop after the package it is on.
+  Cancelling(Option<Progress>),
   /// Everything went through. `changed` lists the packages that changed.
   Finished { changed: Vec<String> },
   /// Something failed. `changed` lists the packages that changed before or
@@ -160,6 +167,9 @@ pub enum OperationStatus {
     failed: Vec<FailedPackage>,
     changed: Vec<String>,
   },
+  /// Stopped by the user. `changed` lists the packages that changed before
+  /// it stopped, and is empty for one cancelled before it started.
+  Cancelled { changed: Vec<String> },
 }
 
 /// How far an install has got with one package.
@@ -198,6 +208,9 @@ pub struct Outcome {
   pub changed: Vec<String>,
   /// What failed. Empty when the operation succeeded.
   pub failed: Vec<FailedPackage>,
+  /// The packages left alone because the operation was cancelled, by
+  /// `Owner-Name`. Empty when it ran to the end.
+  pub cancelled: Vec<String>,
   /// Every package in the profile afterwards, or why the profile could not be
   /// read back after the operation.
   pub profile: Result<Installed, String>,
@@ -230,43 +243,15 @@ impl State {
       .is_some_and(|installed| installed.contains_key(full_name))
   }
 
-  /// Whether an operation is running, so no other can start.
-  pub fn is_busy(&self) -> bool {
-    self
-      .operation
-      .as_ref()
-      .is_some_and(|operation| matches!(operation.status, OperationStatus::Running(_)))
-  }
-
-  /// Whether an operation can start: the open profile has been read, no
-  /// operation is running or being checked, no launch is being prepared, and
-  /// no profile change is being made.
+  /// Whether a change to the open profile can be asked for: the profile has
+  /// been read, no uninstall is being checked, no launch is being prepared,
+  /// and no profile change is being made. A change asked for while another
+  /// runs waits its turn.
   pub fn can_install(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
-    ready
-      && !self.is_busy()
-      && !self.is_checking()
-      && !self.is_launching()
-      && !self.is_changing_profile()
+    ready && !self.is_checking() && !self.is_launching() && !self.is_changing_profile()
   }
-}
-
-/// Starts `action` on the open profile as a new [`Operation`], returning its
-/// id. `None` when no profile is open.
-pub(crate) fn start(state: &mut State, action: Action) -> Option<u64> {
-  let profile = state.profile.as_ref()?;
-
-  state.operations += 1;
-  state.operation = Some(Operation {
-    id: state.operations,
-    game: profile.game.clone(),
-    profile: profile.name.clone(),
-    action,
-    status: OperationStatus::Running(None),
-  });
-
-  Some(state.operations)
 }
 
 /// Opens `game`'s `name` profile as the selected one, creating it if the game
@@ -389,94 +374,18 @@ pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
     return Vec::new();
   };
   let package = confirmation.package.full_name;
-  let Some(operation) = start(state, Action::Install(package.clone())) else {
-    return Vec::new();
-  };
+  let action = Action::Install(package.clone());
 
-  vec![Effect::Run(Command::Install(Install {
-    operation,
-    game,
-    community,
-    profile: name,
-    package,
-    index,
-  }))]
-}
-
-/// The running operation with id `id`, if there is one.
-fn running(state: &mut State, id: u64) -> Option<&mut Operation> {
-  state.operation.as_mut().filter(|operation| {
-    operation.id == id && matches!(operation.status, OperationStatus::Running(_))
+  queue::enqueue(state, game.clone(), name.clone(), action, |operation| {
+    Work::Install(Install {
+      operation,
+      game,
+      community,
+      profile: name,
+      package,
+      index,
+    })
   })
-}
-
-pub(crate) fn install_progress(state: &mut State, id: u64, progress: Progress) -> Vec<Effect> {
-  if let Some(operation) = running(state, id) {
-    operation.status = OperationStatus::Running(Some(progress));
-  }
-
-  Vec::new()
-}
-
-/// Applies the result of operation `id`: what it did, or why it could not run
-/// at all, which leaves the profile as it was.
-pub(crate) fn operation_finished(
-  state: &mut State,
-  id: u64,
-  outcome: Result<Outcome, String>,
-) -> Vec<Effect> {
-  let Some(operation) = running(state, id) else {
-    return Vec::new();
-  };
-
-  let Outcome {
-    changed,
-    failed,
-    profile,
-  } = match outcome {
-    Ok(outcome) => outcome,
-    Err(reason) => {
-      operation.status = OperationStatus::Failed {
-        failed: vec![FailedPackage {
-          package: operation.action.packages().join(", "),
-          reason,
-        }],
-        changed: Vec::new(),
-      };
-
-      return Vec::new();
-    }
-  };
-
-  operation.status = if failed.is_empty() {
-    OperationStatus::Finished { changed }
-  } else {
-    OperationStatus::Failed { failed, changed }
-  };
-
-  let (game, name) = (operation.game.clone(), operation.profile.clone());
-
-  if let Some(open) = state
-    .profile
-    .as_mut()
-    .filter(|open| open.game == game && open.name == name)
-  {
-    open.status = match profile {
-      Ok(installed) => ProfileStatus::Ready(installed),
-      Err(reason) => ProfileStatus::Failed(reason),
-    };
-  }
-
-  Vec::new()
-}
-
-/// Clears the result of an operation that has ended.
-pub(crate) fn operation_dismissed(state: &mut State) -> Vec<Effect> {
-  if !state.is_busy() {
-    state.operation = None;
-  }
-
-  Vec::new()
 }
 
 #[cfg(test)]
@@ -516,8 +425,9 @@ mod tests {
 
   fn action(state: &State) -> Option<Action> {
     state
-      .operation
-      .as_ref()
+      .queue
+      .operations
+      .last()
       .map(|operation| operation.action.clone())
   }
 
@@ -644,7 +554,7 @@ mod tests {
     assert_eq!(confirmation.missing, vec!["Owner-Gone".to_string()]);
     assert!(!confirmation.can_confirm());
     assert_eq!(update(&mut state, Msg::InstallConfirmed), vec![]);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]
@@ -657,7 +567,7 @@ mod tests {
 
     assert_eq!(effects, vec![]);
     assert_eq!(state.confirmation, None);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]
@@ -678,8 +588,9 @@ mod tests {
 
   fn status(state: &State) -> Option<OperationStatus> {
     state
-      .operation
-      .as_ref()
+      .queue
+      .operations
+      .last()
       .map(|operation| operation.status.clone())
   }
 
@@ -743,12 +654,18 @@ mod tests {
   }
 
   #[test]
-  fn install_is_ignored_while_an_install_runs() {
+  fn an_install_confirmed_while_another_runs_waits_its_turn() {
     let mut state = installing();
 
     press(&mut state, "Owner-Core");
 
-    assert_eq!(state.confirmation, None);
+    assert!(state.confirmation.is_some());
+    assert_eq!(update(&mut state, Msg::InstallConfirmed), vec![]);
+    assert_eq!(
+      action(&state),
+      Some(Action::Install("Owner-Core".to_string()))
+    );
+    assert_eq!(status(&state), Some(OperationStatus::Queued));
   }
 
   #[test]
@@ -796,6 +713,7 @@ mod tests {
         Ok(Outcome {
           changed: names(&["Owner-Core", "Owner-Lib", "Owner-Pack"]),
           failed: vec![],
+          cancelled: vec![],
           profile: Ok(profile),
         }),
       ),
@@ -827,6 +745,7 @@ mod tests {
         Ok(Outcome {
           changed: names(&["Owner-Core"]),
           failed: vec![failure.clone()],
+          cancelled: vec![],
           profile: Ok(installed(&[("Owner-Core", "1.0.0")])),
         }),
       ),
@@ -877,6 +796,7 @@ mod tests {
         Ok(Outcome {
           changed: names(&["Owner-Lib", "Owner-Pack"]),
           failed: vec![],
+          cancelled: vec![],
           profile: Err("mods.yml: permission denied".to_string()),
         }),
       ),
@@ -908,6 +828,7 @@ mod tests {
         Ok(Outcome {
           changed: names(&["Owner-Pack"]),
           failed: vec![],
+          cancelled: vec![],
           profile: Ok(installed(&[("Owner-Pack", "2.0.0")])),
         }),
       ),
@@ -927,21 +848,24 @@ mod tests {
     let mut state = installing();
 
     update(&mut state, finished(1, Err("offline")));
-    update(&mut state, Msg::OperationDismissed);
+    update(&mut state, Msg::OperationDismissed(1));
 
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
 
     press(&mut state, "Owner-Core");
     update(&mut state, Msg::InstallConfirmed);
 
-    assert_eq!(state.operation.map(|operation| operation.id), Some(2));
+    assert_eq!(
+      state.queue.operations.last().map(|operation| operation.id),
+      Some(2)
+    );
   }
 
   #[test]
   fn a_running_install_cannot_be_dismissed() {
     let mut state = installing();
 
-    update(&mut state, Msg::OperationDismissed);
+    update(&mut state, Msg::OperationDismissed(1));
 
     assert_eq!(status(&state), Some(OperationStatus::Running(None)));
   }

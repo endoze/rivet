@@ -160,15 +160,16 @@ impl State {
       .is_some_and(|switcher| switcher.changing.is_some())
   }
 
-  /// Whether the selected profile can be duplicated: it has been opened, and
-  /// nothing is installing or launching that could be reading or writing it.
+  /// Whether the selected profile can be duplicated: it has been opened, no
+  /// operation on it is running or waiting, and no launch is being prepared,
+  /// any of which could be reading or writing it.
   pub fn can_duplicate_profile(&self) -> bool {
     let opened = self
       .profile
       .as_ref()
       .is_some_and(|profile| profile.status != ProfileStatus::Opening);
 
-    self.can_switch_profile() && opened && !self.is_busy() && !self.is_launching()
+    self.can_switch_profile() && opened && !self.is_profile_busy() && !self.is_launching()
   }
 
   /// Whether the selected profile can be renamed or deleted: as for
@@ -433,8 +434,8 @@ fn start(switcher: &mut Switcher, change: ProfileChange) -> Vec<Effect> {
 /// duplicated profile is selected, a renamed one keeps its place, and
 /// deleting the selected profile selects the default one.
 ///
-/// What `game` opens with next is kept right even when the game was left
-/// while the change ran.
+/// What `game` opens with next, and the profile ended operations retry on,
+/// are kept right even when the game was left while the change ran.
 pub(crate) fn changed(
   state: &mut State,
   game: String,
@@ -454,6 +455,8 @@ pub(crate) fn changed(
 
     return Vec::new();
   }
+
+  crate::queue::profile_changed(state, &game, &change);
 
   let remembered = state
     .settings
@@ -1038,6 +1041,7 @@ mod tests {
         outcome: Ok(Outcome {
           changed: strings(&["Owner-Pack"]),
           failed: vec![],
+          cancelled: vec![],
           profile: Ok(crate::test_installed(&[("Owner-Pack", "1.0.0")])),
         }),
       },

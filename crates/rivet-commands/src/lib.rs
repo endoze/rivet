@@ -14,14 +14,17 @@ use rivet_core::readme;
 use rivet_core::settings::Settings;
 use rivet_core::switcher::ProfileChange;
 use rivet_core::{Command, Msg};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use thunderstore_engine::client::{Refreshed, ThunderstoreClient};
 use thunderstore_engine::ecosystem::Ecosystem;
 use thunderstore_engine::profile::modlist::{self, ProfileMod};
 use thunderstore_engine::profile::target::InstallTarget;
 use thunderstore_engine::profile::{self, launch, layout};
-use thunderstore_engine::progress::{self as engine, OperationId, ProgressEvent, StageUpdate};
+use thunderstore_engine::progress::{
+  self as engine, CancelToken, OperationId, ProgressEvent, StageUpdate,
+};
 
 /// Where commands read and write the app's files, and the Thunderstore host
 /// they fetch from.
@@ -47,6 +50,32 @@ pub struct Config {
   pub steam_installs: Vec<PathBuf>,
   /// Starts a prepared game, such as [`spawn_detached`].
   pub spawn: fn(std::process::Command) -> std::io::Result<()>,
+  /// The cancel flags operations stop on.
+  pub cancels: Cancels,
+}
+
+/// The cancel flags of operations, by operation id. Clones share the flags.
+#[derive(Debug, Clone, Default)]
+pub struct Cancels(Arc<Mutex<HashMap<u64, CancelToken>>>);
+
+impl Cancels {
+  /// Cancels operation `id`, whether or not it has started.
+  fn cancel(&self, id: u64) {
+    self.flags().entry(id).or_default().cancel();
+  }
+
+  /// The flag operation `id` stops on, until [`Cancels::forget`].
+  fn token(&self, id: u64) -> CancelToken {
+    self.flags().entry(id).or_default().clone()
+  }
+
+  fn forget(&self, id: u64) {
+    self.flags().remove(&id);
+  }
+
+  fn flags(&self) -> std::sync::MutexGuard<'_, HashMap<u64, CancelToken>> {
+    self.0.lock().unwrap_or_else(PoisonError::into_inner)
+  }
 }
 
 /// Starts `command` without waiting for it to exit.
@@ -69,11 +98,20 @@ pub const THUNDERSTORE: &str = "https://thunderstore.io";
 /// The `User-Agent` sent with every request the app makes.
 pub const USER_AGENT: &str = concat!("rivet/", env!("CARGO_PKG_VERSION"));
 
-/// Runs one command to completion and returns the message that answers it.
-/// Messages it sends before the answer, such as install progress, go to
-/// `progress`.
-pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<Msg>) -> Msg {
-  match command {
+/// Runs one command to completion and returns the message that answers it, or
+/// `None` for a command nothing answers. Messages it sends before the answer,
+/// such as install progress, go to `progress`.
+pub async fn run(
+  command: Command,
+  config: &Config,
+  progress: &UnboundedSender<Msg>,
+) -> Option<Msg> {
+  let answer = match command {
+    Command::Cancel(operation) => {
+      config.cancels.cancel(operation);
+
+      return None;
+    }
     Command::LoadSettings => Msg::SettingsLoaded(load_settings(&config.settings).await),
     Command::SaveSettings(settings) => {
       Msg::SettingsSaved(save_settings(&config.settings, &settings).await)
@@ -121,6 +159,8 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
       let operation = install.operation;
       let outcome = install_package(config, install, progress.clone()).await;
 
+      config.cancels.forget(operation);
+
       Msg::OperationFinished {
         operation,
         outcome: outcome.map_err(|error| error.to_string()),
@@ -140,14 +180,22 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
         untracked,
       }
     }
-    Command::Uninstall(uninstall) => Msg::OperationFinished {
-      operation: uninstall.operation,
-      outcome: uninstall_packages(config, uninstall).await,
-    },
-    Command::SetEnabled(set) => Msg::OperationFinished {
-      operation: set.operation,
-      outcome: set_enabled(config, set).await,
-    },
+    Command::Uninstall(uninstall) => {
+      let operation = uninstall.operation;
+      let outcome = uninstall_packages(config, uninstall).await;
+
+      config.cancels.forget(operation);
+
+      Msg::OperationFinished { operation, outcome }
+    }
+    Command::SetEnabled(set) => {
+      let operation = set.operation;
+      let outcome = set_enabled(config, set).await;
+
+      config.cancels.forget(operation);
+
+      Msg::OperationFinished { operation, outcome }
+    }
     Command::Launch(launch) => Msg::LaunchFinished {
       launch: launch.id,
       result: start(config, launch).await,
@@ -181,7 +229,9 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
       request: request.id,
       readme: fetch_readme(config, &request).await,
     },
-  }
+  };
+
+  Some(answer)
 }
 
 async fn fetch_readme(
@@ -306,7 +356,8 @@ async fn open_profile(config: &Config, game: &str, name: &str) -> Result<Install
 }
 
 /// Installs `install.package` and everything it needs, sending its progress
-/// to `progress`. An error means nothing was installed. When the profile's
+/// to `progress` and stopping when the operation is cancelled. An error means
+/// nothing was installed. When the profile's
 /// record cannot be read back after the install, the outcome names what the
 /// install reported installing, with the read failure as its profile.
 async fn install_package(
@@ -320,8 +371,9 @@ async fn install_package(
   let requested = [install.package.clone()];
   let batch = profile::plan_install_batch_from(&before, &requested, &requested);
   let id = install.operation;
-  let operation =
-    engine::Operation::new(OperationId(id)).with_progress(move |event: ProgressEvent| {
+  let operation = engine::Operation::new(OperationId(id))
+    .with_cancel(config.cancels.token(id))
+    .with_progress(move |event: ProgressEvent| {
       if let Some(update) = progress_of(event) {
         progress
           .unbounded_send(Msg::InstallProgress {
@@ -372,6 +424,7 @@ async fn install_package(
         reason: error.to_string(),
       })
       .collect(),
+    cancelled: outcome.cancelled,
     profile: after,
   })
 }
@@ -464,6 +517,7 @@ fn batch_outcome(folder: &Path, outcome: profile::BatchOutcome) -> Outcome {
         reason: error.to_string(),
       })
       .collect(),
+    cancelled: Vec::new(),
     profile: modlist::read(folder)
       .map(|recorded| installed(&recorded))
       .map_err(|error| error.to_string()),
@@ -631,9 +685,9 @@ pub fn spawn(config: Config) -> (UnboundedSender<Command>, UnboundedReceiver<Msg
           let config = config.clone();
 
           tokio::spawn(async move {
-            let answer = run(command, &config, &answers).await;
-
-            answers.unbounded_send(answer).ok();
+            if let Some(answer) = run(command, &config, &answers).await {
+              answers.unbounded_send(answer).ok();
+            }
           });
         }
       });
@@ -670,6 +724,7 @@ mod tests {
       steam: None,
       steam_installs: Vec::new(),
       spawn: |_| panic!("a test tried to start a game"),
+      cancels: Cancels::default(),
     }
   }
 
@@ -715,6 +770,14 @@ mod tests {
   /// Runs `command`, returning the messages it sent along the way and its
   /// answer.
   fn run_reporting(command: Command, config: &Config) -> (Vec<Msg>, Msg) {
+    let (along_the_way, answer) = run_any(command, config);
+
+    (along_the_way, answer.expect("the command is answered"))
+  }
+
+  /// Runs `command`, returning the messages it sent along the way and its
+  /// answer, if it has one.
+  fn run_any(command: Command, config: &Config) -> (Vec<Msg>, Option<Msg>) {
     let (progress, mut sent) = unbounded();
     let answer = tokio::runtime::Builder::new_current_thread()
       .enable_all()
@@ -1098,6 +1161,58 @@ mod tests {
   }
 
   #[test]
+  fn a_cancelled_install_installs_nothing_and_names_what_it_left() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+
+    run_now(open_profile("valheim"), &config);
+
+    assert_eq!(run_any(Command::Cancel(3), &config), (vec![], None));
+
+    let answer = run_now(install("Owner-ModC", &index), &config);
+
+    let Msg::OperationFinished {
+      operation: 3,
+      outcome: Ok(outcome),
+    } = answer
+    else {
+      panic!("unexpected answer {answer:?}");
+    };
+
+    assert_eq!(outcome.cancelled, names(&["Owner-ModC"]));
+    assert_eq!(outcome.changed, Vec::<String>::new());
+    assert_eq!(outcome.failed, vec![]);
+    assert_eq!(outcome.profile, Ok(Installed::new()));
+  }
+
+  #[test]
+  fn a_cancel_stops_only_the_run_of_the_operation_it_was_sent_for() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+
+    run_now(open_profile("valheim"), &config);
+    run_any(Command::Cancel(3), &config);
+    run_now(install("Owner-ModC", &index), &config);
+
+    let answer = run_now(install("Owner-ModC", &index), &config);
+
+    let Msg::OperationFinished {
+      outcome: Ok(outcome),
+      ..
+    } = answer
+    else {
+      panic!("unexpected answer {answer:?}");
+    };
+
+    assert_eq!(outcome.cancelled, Vec::<String>::new());
+    assert_eq!(outcome.changed, names(&["Owner-ModA", "Owner-ModC"]));
+  }
+
+  #[test]
   fn a_failed_download_names_the_package_and_leaves_the_profile_as_it_was() {
     let dir = TempDir::new().unwrap();
     let mut mock = mock_thunderstore();
@@ -1422,6 +1537,23 @@ mod tests {
         .join("BepInEx/plugins/Owner-ModC/ModC.dll")
         .is_file()
     );
+  }
+
+  #[test]
+  fn an_uninstall_or_toggle_drops_a_cancel_sent_for_it() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+
+    run_any(Command::Cancel(5), &config);
+    run_now(set_enabled(&["Owner-ModC"], false), &config);
+
+    assert!(!config.cancels.flags().contains_key(&5));
+
+    run_any(Command::Cancel(5), &config);
+    run_now(uninstall(&["Owner-ModC"], vec![]), &config);
+
+    assert!(!config.cancels.flags().contains_key(&5));
   }
 
   #[test]

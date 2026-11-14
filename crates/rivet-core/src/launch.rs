@@ -169,15 +169,16 @@ impl State {
   }
 
   /// Whether a launch button would start a launch: the open profile has been
-  /// read, no operation, other launch, or profile change is running, and no
-  /// uninstall is being checked.
+  /// read, no operation on it is running or waiting, no other launch is
+  /// being prepared, no uninstall is being checked, and no profile change is
+  /// being made.
   pub fn can_launch(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
     self.host.is_some()
       && ready
       && !self.is_launching()
-      && !self.is_busy()
+      && !self.is_profile_busy()
       && !self.is_checking()
       && !self.is_changing_profile()
   }
@@ -714,7 +715,7 @@ mod tests {
     let effects = update(&mut state, Msg::InstallConfirmed);
 
     assert_eq!(effects, vec![]);
-    assert_eq!(state.operation, None);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]

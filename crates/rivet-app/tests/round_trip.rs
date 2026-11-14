@@ -1,6 +1,6 @@
 use futures::channel::mpsc::unbounded;
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, TestAppContext, WindowOptions};
+use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, WindowOptions};
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome};
@@ -234,6 +234,7 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
       outcome: Ok(Outcome {
         changed: vec!["Owner-ModA".to_string(), "Owner-ModC".to_string()],
         failed: vec![],
+        cancelled: vec![],
         profile: Ok(
           [
             package("Owner-ModA", &[]),
@@ -250,8 +251,87 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
 
     assert!(window.try_find("installed-Owner-ModC").is_some());
     assert!(window.try_find("install-Owner-ModC").is_none());
+    assert!(window.try_find("dismiss-operation-1").is_some());
   })
   .unwrap();
+}
+
+#[gpui_kit::test]
+fn closing_while_an_install_runs_asks_then_cancels_it_and_closes(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(Installed::new()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("install-Owner-ModC", cx);
+    window.render_frame(cx);
+    window.click("confirm-install", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("operation-1").is_some());
+    assert!(window.try_find("cancel-operation-1").is_some());
+  })
+  .unwrap();
+
+  let mut visual = VisualTestContext::from_window(window, cx);
+
+  assert!(!visual.simulate_close());
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("closing").is_some());
+
+    window.click("close-cancel", cx);
+  })
+  .unwrap();
+
+  let cancelled =
+    std::iter::from_fn(|| sent.try_recv().ok()).any(|command| command == Command::Cancel(1));
+
+  assert!(cancelled);
+
+  answers
+    .unbounded_send(Msg::OperationFinished {
+      operation: 1,
+      outcome: Ok(Outcome {
+        changed: vec![],
+        failed: vec![],
+        cancelled: vec!["Owner-ModC".to_string()],
+        profile: Ok(Installed::new()),
+      }),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| window.render_frame(cx))
+    .ok();
+  cx.run_until_parked();
+
+  assert!(cx.update_window(window, |_, _, _| ()).is_err());
 }
 
 /// An enabled 1.0.0 `Owner-` package needing `dependencies`.

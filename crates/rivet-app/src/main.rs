@@ -16,6 +16,7 @@ fn main() {
     steam: rivet_platform::steam::root(),
     steam_installs: rivet_platform::steam::installs(),
     spawn: rivet_commands::spawn_detached,
+    cancels: rivet_commands::Cancels::default(),
   };
 
   gpui_kit::application().run(move |cx| {
