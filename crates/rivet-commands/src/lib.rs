@@ -10,6 +10,7 @@ use rivet_core::install::{
 use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
 use rivet_core::manage::{SetEnabled, Uninstall};
 use rivet_core::picker::NotFound;
+use rivet_core::readme;
 use rivet_core::settings::Settings;
 use rivet_core::switcher::ProfileChange;
 use rivet_core::{Command, Msg};
@@ -176,7 +177,24 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
         result,
       }
     }
+    Command::FetchReadme(request) => Msg::ReadmeFetched {
+      request: request.id,
+      readme: fetch_readme(config, &request).await,
+    },
   }
+}
+
+async fn fetch_readme(
+  config: &Config,
+  request: &readme::Request,
+) -> Result<Option<String>, String> {
+  let package = &request.package;
+  let client = client(config, &request.community).map_err(|error| error.to_string())?;
+
+  client
+    .get_readme(&package.owner, &package.name, &package.version)
+    .await
+    .map_err(|error| error.to_string())
 }
 
 async fn list_profiles(config: &Config, game: &str) -> Result<Vec<String>, String> {
@@ -639,7 +657,7 @@ mod tests {
   use thunderstore_engine::profile::launch::{
     HostOs, LaunchContext, LaunchMode, Runtime, StorePlatform,
   };
-  use thunderstore_engine::test_support::{MockThunderstore, index_json};
+  use thunderstore_engine::test_support::{MockThunderstore, index_json, readme, readme_path};
 
   /// A config whose files sit in `dir`, against the public Thunderstore.
   fn config_in(dir: &TempDir) -> Config {
@@ -775,6 +793,84 @@ mod tests {
 
     assert!(
       matches!(&answer, Msg::IndexRefreshed { refresh, index: Err(_) } if *refresh == refresh_of("gone")),
+      "{answer:?}"
+    );
+  }
+
+  fn fetch_readme(owner: &str, name: &str, version: &str) -> Command {
+    Command::FetchReadme(readme::Request {
+      id: 7,
+      community: "valheim".to_string(),
+      package: readme::Package {
+        owner: owner.to_string(),
+        name: name.to_string(),
+        version: version.to_string(),
+      },
+    })
+  }
+
+  #[test]
+  fn a_readme_is_fetched_for_the_version_asked_for() {
+    let dir = TempDir::new().unwrap();
+    let mock = MockThunderstore::start();
+
+    let answer = run_now(
+      fetch_readme("Owner", "ModD", "1.0.0"),
+      &config_for(&dir, &mock),
+    );
+
+    assert_eq!(
+      answer,
+      Msg::ReadmeFetched {
+        request: 7,
+        readme: Ok(Some(readme("ModD", "1.0.0"))),
+      }
+    );
+  }
+
+  #[test]
+  fn a_package_without_a_readme_answers_with_none() {
+    let dir = TempDir::new().unwrap();
+    let mock = MockThunderstore::start();
+
+    let answer = run_now(
+      fetch_readme("Owner", "ModB", "1.0.0"),
+      &config_for(&dir, &mock),
+    );
+
+    assert_eq!(
+      answer,
+      Msg::ReadmeFetched {
+        request: 7,
+        readme: Ok(None),
+      }
+    );
+  }
+
+  #[test]
+  fn a_readme_that_cannot_be_fetched_answers_with_why() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = MockThunderstore::start();
+
+    mock
+      .server_mut()
+      .mock("GET", readme_path("Owner", "Locked", "1.0.0").as_str())
+      .with_status(403)
+      .create();
+
+    let answer = run_now(
+      fetch_readme("Owner", "Locked", "1.0.0"),
+      &config_for(&dir, &mock),
+    );
+
+    assert!(
+      matches!(
+        &answer,
+        Msg::ReadmeFetched {
+          request: 7,
+          readme: Err(_)
+        }
+      ),
       "{answer:?}"
     );
   }

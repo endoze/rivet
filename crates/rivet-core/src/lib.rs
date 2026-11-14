@@ -6,6 +6,7 @@ pub mod install;
 pub mod launch;
 pub mod manage;
 pub mod picker;
+pub mod readme;
 pub mod settings;
 pub mod switcher;
 
@@ -14,6 +15,7 @@ use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Pro
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
+use readme::Readme;
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
 use switcher::{Naming, ProfileChange, Switcher};
@@ -59,6 +61,11 @@ pub struct State {
   pub tab: Tab,
   /// The Installed tab.
   pub manage: Manage,
+  /// The readme of the package selected in the shown tab. `None` when no
+  /// package is selected.
+  pub readme: Option<Readme>,
+  /// How many readme fetches have been started, so each gets its own id.
+  pub readmes: u64,
 }
 
 impl State {
@@ -84,6 +91,8 @@ impl State {
       operations: 0,
       tab: Tab::default(),
       manage: Manage::default(),
+      readme: None,
+      readmes: 0,
     }
   }
 }
@@ -209,6 +218,16 @@ pub enum Msg {
     packages: Vec<String>,
     untracked: Result<Vec<PathBuf>, String>,
   },
+  /// A package was selected in the shown tab, to read its readme.
+  PackageSelected(readme::Package),
+  /// A [`readme::Request`] ended, by its id: the readme's markdown, `None`
+  /// when the package has none, or why it could not be fetched.
+  ReadmeFetched {
+    request: u64,
+    readme: Result<Option<String>, String>,
+  },
+  /// A link in a readme was clicked, by its target.
+  LinkClicked(String),
   /// A launch button was pressed.
   LaunchPressed(LaunchMode),
   /// A [`Launch`] ended, by its id: the game started, or why it did not.
@@ -253,6 +272,9 @@ pub enum Effect {
   /// Put this text in the profile name field. Needs the window, so the shell
   /// runs it. Not answered.
   FillProfileName(String),
+  /// Open this web address in the user's browser. Needs the platform's
+  /// opener, which the shell holds. Not answered.
+  OpenUrl(String),
   /// Work for the commands thread.
   Run(Command),
 }
@@ -301,6 +323,8 @@ pub enum Command {
   ListProfiles(String),
   /// Answered with [`Msg::ProfileChanged`].
   ChangeProfile { game: String, change: ProfileChange },
+  /// Answered with [`Msg::ReadmeFetched`].
+  FetchReadme(readme::Request),
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -362,6 +386,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.launcher = None;
       state.switcher = None;
       state.manage.pending = None;
+      state.readme = None;
 
       if !state.is_launching() {
         state.launch = None;
@@ -406,6 +431,10 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     }
     Msg::OperationDismissed => install::operation_dismissed(state),
     Msg::TabChosen(tab) => {
+      if state.tab != tab {
+        state.readme = None;
+      }
+
       state.tab = tab;
 
       Vec::new()
@@ -438,6 +467,9 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       packages,
       untracked,
     } => manage::uninstall_checked(state, game, profile, packages, untracked),
+    Msg::PackageSelected(package) => readme::selected(state, package),
+    Msg::ReadmeFetched { request, readme } => readme::fetched(state, request, readme),
+    Msg::LinkClicked(url) => readme::link_clicked(url),
     Msg::LaunchPressed(mode) => launch::launch_pressed(state, mode),
     Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
     Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),

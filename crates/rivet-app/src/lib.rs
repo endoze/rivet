@@ -10,6 +10,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -26,6 +27,7 @@ use rivet_core::install::{
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::manage::{Folders, Pending, Scope, Sort, Tab};
 use rivet_core::picker::Step;
+use rivet_core::readme::{Package, Readme, Status};
 use rivet_core::switcher::Naming;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
@@ -143,6 +145,7 @@ impl Shell {
         }
         Effect::ChooseFolder => self.choose_folder(cx),
         Effect::FillProfileName(text) => self.fill_profile_name = Some(text),
+        Effect::OpenUrl(url) => cx.open_url(&url),
       }
     }
 
@@ -326,14 +329,22 @@ impl Shell {
           .map(|confirmation| render_confirmation(confirmation, cx)),
       )
       .child(render_tabs(self.state.tab, cx))
-      .children(match self.state.tab {
-        Tab::Browse => self
-          .state
-          .browse
-          .as_ref()
-          .map(|browse| render_browse(browse, &self.package_search, &self.icons, cx)),
-        Tab::Installed => Some(self.render_installed(cx)),
-      })
+      .child(
+        div()
+          .flex()
+          .flex_1()
+          .gap_3()
+          .overflow_hidden()
+          .children(match self.state.tab {
+            Tab::Browse => self
+              .state
+              .browse
+              .as_ref()
+              .map(|browse| render_browse(browse, &self.package_search, &self.icons, cx)),
+            Tab::Installed => Some(self.render_installed(cx)),
+          })
+          .child(render_readme(self.state.readme.as_ref(), cx)),
+      )
       .into_any_element()
   }
 
@@ -395,8 +406,9 @@ impl Shell {
       .into_iter()
       .map(|(full_name, package)| {
         let toggle = state.can_toggle(full_name);
+        let selected = is_selected(state.readme.as_ref(), full_name);
 
-        installed_row(full_name, package, toggle, can_change, cx)
+        installed_row(full_name, package, toggle, can_change, selected, cx)
       })
       .collect();
     let empty = match installed {
@@ -910,14 +922,16 @@ fn render_pending(pending: &Pending, cx: &mut Context<Shell>) -> AnyElement {
 }
 
 /// One package of the Installed tab: its name, author, version, whether it
-/// is enabled, and the buttons that change it.
+/// is enabled, and the buttons that change it. Clicking it selects it.
 fn installed_row(
   full_name: &str,
   package: &InstalledPackage,
   can_toggle: bool,
   can_change: bool,
+  selected: bool,
   cx: &mut Context<Shell>,
 ) -> AnyElement {
+  let selection = Package::installed(full_name, package);
   let muted = rgb(0x999999);
   let (state_id, state_label) = match (can_toggle, package.enabled) {
     (false, _) => ("loader", text::MOD_LOADER),
@@ -953,7 +967,12 @@ fn installed_row(
     .px_3()
     .py_2()
     .gap_3()
+    .hover(|row| row.bg(rgb(ROW_HOVER)))
+    .when(selected, |row| row.bg(rgb(ROW_SELECTED)))
     .when(!package.enabled, |row| row.opacity(0.6))
+    .on_click(cx.listener(move |this, _, _, cx| {
+      this.dispatch(Msg::PackageSelected(selection.clone()), cx);
+    }))
     .child(
       h_flex()
         .flex_1()
@@ -1026,6 +1045,69 @@ fn install_action(
 /// Fixed so the list can be virtualized: only the rows in view are built.
 const ROW_HEIGHT: f32 = 64.0;
 const ICON_SIZE: f32 = 48.0;
+const ROW_HOVER: u32 = 0x2a2a2a;
+const ROW_SELECTED: u32 = 0x353535;
+
+/// Whether the readme shown is `full_name`'s.
+fn is_selected(readme: Option<&Readme>, full_name: &str) -> bool {
+  readme.is_some_and(|readme| readme.package.full_name() == full_name)
+}
+
+/// The readme of the selected package, or why it is not shown.
+fn render_readme(readme: Option<&Readme>, cx: &mut Context<Shell>) -> AnyElement {
+  let panel = v_flex()
+    .flex_1()
+    .overflow_hidden()
+    .p_3()
+    .border_1()
+    .border_color(rgb(0x606060));
+  let message = |id: &'static str, message: String| {
+    div()
+      .id(id)
+      .text_color(rgb(0x999999))
+      .child(message)
+      .test_support()
+      .into_any_element()
+  };
+  let Some(readme) = readme else {
+    return panel
+      .child(message("readme-none", text::NO_README_SELECTED.to_string()))
+      .into_any_element();
+  };
+  let content = match &readme.status {
+    Status::Loading => message(
+      "readme-loading",
+      text::readme_loading(&readme.package.full_name()),
+    ),
+    Status::Missing => message("readme-missing", text::README_MISSING.to_string()),
+    Status::Failed(reason) => message("readme-failed", text::readme_failed(reason)),
+    Status::Loaded(markdown) => {
+      let shell = cx.entity().downgrade();
+      let view = TextView::markdown(
+        SharedString::from(format!("readme-{}", readme.id)),
+        markdown.clone(),
+      )
+      .scrollable(true)
+      .selectable(true)
+      .on_link_click(move |url, _, _, cx| {
+        shell
+          .update(cx, |this, cx| {
+            this.dispatch(Msg::LinkClicked(url.to_string()), cx);
+          })
+          .ok();
+      });
+
+      div()
+        .id("readme")
+        .size_full()
+        .child(view)
+        .test_support()
+        .into_any_element()
+    }
+  };
+
+  panel.child(content).into_any_element()
+}
 
 /// The search box, sort buttons, and filters above the package list.
 fn render_filters(
@@ -1129,7 +1211,10 @@ fn render_browse(
   cx: &mut Context<Shell>,
 ) -> AnyElement {
   match browse.view() {
-    View::Loading => div().child(text::LOADING_PACKAGES).into_any_element(),
+    View::Loading => div()
+      .flex_1()
+      .child(text::LOADING_PACKAGES)
+      .into_any_element(),
     View::Unavailable(reason) => failure(text::unavailable(reason)).into_any_element(),
     View::List { refreshing, stale } => {
       let count = browse.rows.len();
@@ -1154,7 +1239,9 @@ fn render_browse(
               let action =
                 install_action(full_name, state.is_installed(full_name), can_install, cx);
 
-              package_row(row, action)
+              let selected = is_selected(state.readme.as_ref(), full_name);
+
+              package_row(row, action, selected, cx)
             })
             .collect()
         }),
@@ -1187,7 +1274,12 @@ fn render_browse(
   }
 }
 
-fn package_row(row: PackageRow<'_>, action: AnyElement) -> AnyElement {
+fn package_row(
+  row: PackageRow<'_>,
+  action: AnyElement,
+  selected: bool,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
   let muted = rgb(0x999999);
   let icon = match row.icon() {
     Some(url) => img(SharedString::from(url.to_string()))
@@ -1197,6 +1289,7 @@ fn package_row(row: PackageRow<'_>, action: AnyElement) -> AnyElement {
     None => div().size(px(ICON_SIZE)).flex_none().into_any_element(),
   };
   let text = |field: Option<&str>| SharedString::from(field.unwrap_or_default().to_string());
+  let selection = Package::listed(row);
 
   h_flex()
     .id(text(row.full_name()))
@@ -1204,6 +1297,13 @@ fn package_row(row: PackageRow<'_>, action: AnyElement) -> AnyElement {
     .w_full()
     .px_3()
     .gap_3()
+    .hover(|row| row.bg(rgb(ROW_HOVER)))
+    .when(selected, |row| row.bg(rgb(ROW_SELECTED)))
+    .when_some(selection, |row, selection| {
+      row.on_click(cx.listener(move |this, _, _, cx| {
+        this.dispatch(Msg::PackageSelected(selection.clone()), cx);
+      }))
+    })
     .child(icon)
     .child(
       v_flex()

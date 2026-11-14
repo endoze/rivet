@@ -4,6 +4,7 @@ use gpui_kit::{AppContext as _, TestAppContext, WindowOptions};
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome};
+use rivet_core::readme::{self, Request};
 use rivet_core::settings::{GameSettings, Settings};
 use rivet_core::{Command, Msg, Screen, State};
 use std::path::PathBuf;
@@ -734,4 +735,107 @@ fn the_profile_switcher_picks_names_and_deletes_profiles(cx: &mut TestAppContext
       change: ProfileChange::Delete("Fresh".to_string()),
     }]
   );
+}
+
+/// The readme fetch the shell sent last, if any.
+fn readme_request(
+  sent: &mut futures::channel::mpsc::UnboundedReceiver<Command>,
+) -> Option<Request> {
+  std::iter::from_fn(|| sent.try_recv().ok())
+    .filter_map(|command| match command {
+      Command::FetchReadme(request) => Some(request),
+      _ => None,
+    })
+    .last()
+}
+
+#[gpui_kit::test]
+fn selecting_a_package_in_either_tab_shows_its_readme_beside_the_list(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModB", &[])].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("Owner-ModD", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("readme-loading").is_some());
+  })
+  .unwrap();
+
+  let browsed = readme_request(&mut sent).expect("a readme fetch was sent");
+
+  assert_eq!(
+    browsed.package,
+    readme::Package {
+      owner: "Owner".to_string(),
+      name: "ModD".to_string(),
+      version: "2.0.0".to_string(),
+    }
+  );
+
+  answers
+    .unbounded_send(Msg::ReadmeFetched {
+      request: browsed.id,
+      readme: Ok(Some(
+        "# ModD\n\nSee [the wiki](https://example.com).".to_string(),
+      )),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("readme").is_some());
+
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("readme").is_none());
+
+    window.click("profile-Owner-ModB", cx);
+  })
+  .unwrap();
+
+  let installed = readme_request(&mut sent).expect("a readme fetch was sent");
+
+  assert_eq!(installed.package.full_name(), "Owner-ModB");
+
+  answers
+    .unbounded_send(Msg::ReadmeFetched {
+      request: installed.id,
+      readme: Ok(None),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("readme-missing").is_some());
+  })
+  .unwrap();
 }

@@ -527,3 +527,17 @@ pub fn switcher_failed(failure: &SwitcherFailure) -> Failure {
     }
   }
 }
+
+pub const NO_README_SELECTED: &str = "Select a mod to read its readme.";
+pub const README_MISSING: &str = "This mod has no readme.";
+
+/// The readme of `full_name` is on its way, such as `Loading the readme
+/// of Owner-ModA`.
+pub fn readme_loading(full_name: &str) -> String {
+  format!("Loading the readme of {full_name}")
+}
+
+/// The readme could not be fetched, with the reason.
+pub fn readme_failed(reason: &str) -> String {
+  format!("The readme could not be loaded: {reason}. Select the mod again to retry.")
+}
