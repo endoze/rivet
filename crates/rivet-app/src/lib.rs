@@ -8,8 +8,9 @@ pub mod text;
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
   AnyElement, AppContext as _, ClipboardItem, Context, Entity, FontWeight, InteractiveElement as _,
@@ -18,7 +19,7 @@ use gpui_kit::{
   div, img, px, rgb, uniform_list,
 };
 use icons::IconCache;
-use rivet_core::browse::{Browse, View};
+use rivet_core::browse::{Browse, SortKey, View};
 use rivet_core::install::{Confirmation, Operation, OperationStatus, ProfileStatus};
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::picker::Step;
@@ -32,6 +33,7 @@ pub struct Shell {
   state: State,
   commands: UnboundedSender<Command>,
   search: Entity<InputState>,
+  package_search: Entity<InputState>,
   icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
   _inbox: Task<()>,
@@ -59,6 +61,19 @@ impl Shell {
         }
       },
     );
+    let package_search =
+      cx.new(|cx| InputState::new(window, cx).placeholder(text::PACKAGE_SEARCH_PLACEHOLDER));
+    let package_searched = cx.subscribe_in(
+      &package_search,
+      window,
+      |this: &mut Self, input, event: &InputEvent, _, cx| {
+        if let InputEvent::Change = event {
+          let search = input.read(cx).value().to_string();
+
+          this.dispatch(Msg::PackageSearchChanged(search), cx);
+        }
+      },
+    );
     let _inbox = cx.spawn(async move |this, cx| {
       while let Some(msg) = inbox.next().await {
         if this.update(cx, |this, cx| this.dispatch(msg, cx)).is_err() {
@@ -70,8 +85,9 @@ impl Shell {
       state,
       commands,
       search,
+      package_search,
       icons: cx.new(|_| IconCache::new()),
-      _subscriptions: vec![searched],
+      _subscriptions: vec![searched, package_searched],
       _inbox,
     };
 
@@ -95,6 +111,13 @@ impl Shell {
     }
 
     cx.notify();
+  }
+
+  /// Empties the package search box to match a list whose search was reset.
+  fn empty_package_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    self
+      .package_search
+      .update(cx, |input, cx| input.set_value("", window, cx));
   }
 
   fn choose_folder(&mut self, cx: &mut Context<Self>) {
@@ -217,9 +240,10 @@ impl Shell {
               .child(
                 Button::new("switch-game")
                   .label(text::SWITCH_GAME)
-                  .on_click(
-                    cx.listener(|this, _, _, cx| this.dispatch(Msg::SwitchGamePressed, cx)),
-                  ),
+                  .on_click(cx.listener(|this, _, window, cx| {
+                    this.dispatch(Msg::SwitchGamePressed, cx);
+                    this.empty_package_search(window, cx);
+                  })),
               ),
           ),
       )
@@ -263,7 +287,7 @@ impl Shell {
           .state
           .browse
           .as_ref()
-          .map(|browse| render_browse(browse, &self.icons, cx)),
+          .map(|browse| render_browse(browse, &self.package_search, &self.icons, cx)),
       )
       .into_any_element()
   }
@@ -503,8 +527,104 @@ fn install_action(
 const ROW_HEIGHT: f32 = 64.0;
 const ICON_SIZE: f32 = 48.0;
 
+/// The search box, sort buttons, and filters above the package list.
+fn render_filters(
+  browse: &Browse,
+  search: &Entity<InputState>,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
+  let filters = &browse.filters;
+  let sorts: Vec<_> = [
+    SortKey::LastUpdated,
+    SortKey::Name,
+    SortKey::Downloads,
+    SortKey::Rating,
+  ]
+  .into_iter()
+  .map(|key| {
+    let current = (filters.sort == key).then_some(filters.direction);
+    let id = match key {
+      SortKey::LastUpdated => "sort-last-updated",
+      SortKey::Name => "sort-name",
+      SortKey::Downloads => "sort-downloads",
+      SortKey::Rating => "sort-rating",
+    };
+
+    Button::new(id)
+      .label(text::sort(key, current))
+      .small()
+      .selected(current.is_some())
+      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(Msg::SortPressed(key), cx)))
+  })
+  .collect();
+  let categories: Vec<_> = browse
+    .categories
+    .iter()
+    .map(|category| {
+      let toggled = category.clone();
+
+      Button::new(SharedString::from(format!("category-{category}")))
+        .label(SharedString::from(category.clone()))
+        .xsmall()
+        .selected(filters.categories.contains(category))
+        .on_click(cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::CategoryToggled(toggled.clone()), cx);
+        }))
+    })
+    .collect();
+
+  v_flex()
+    .gap_2()
+    .child(
+      h_flex()
+        .gap_2()
+        .child(
+          div()
+            .id("package-search")
+            .flex_1()
+            .child(Input::new(search))
+            .test_support(),
+        )
+        .child(
+          Button::new("clear-filters")
+            .label(text::CLEAR_FILTERS)
+            .disabled(!filters.is_filtering())
+            .on_click(cx.listener(|this, _, window, cx| {
+              this.dispatch(Msg::FiltersCleared, cx);
+              this.empty_package_search(window, cx);
+            })),
+        ),
+    )
+    .child(
+      h_flex()
+        .gap_2()
+        .child(div().text_sm().child(text::SORT_BY))
+        .children(sorts)
+        .child(div().flex_1())
+        .child(
+          Checkbox::new("show-nsfw")
+            .label(text::SHOW_NSFW)
+            .checked(filters.show_nsfw)
+            .on_click(cx.listener(|this, show: &bool, _, cx| {
+              this.dispatch(Msg::ShowNsfw(*show), cx);
+            })),
+        )
+        .child(
+          Checkbox::new("show-deprecated")
+            .label(text::SHOW_DEPRECATED)
+            .checked(filters.show_deprecated)
+            .on_click(cx.listener(|this, show: &bool, _, cx| {
+              this.dispatch(Msg::ShowDeprecated(*show), cx);
+            })),
+        ),
+    )
+    .child(h_flex().flex_wrap().gap_1().children(categories))
+    .into_any_element()
+}
+
 fn render_browse(
   browse: &Browse,
+  search: &Entity<InputState>,
   icons: &Entity<IconCache>,
   cx: &mut Context<Shell>,
 ) -> AnyElement {
@@ -540,6 +660,12 @@ fn render_browse(
         }),
       )
       .flex_1();
+      let empty = if browse.filters.is_filtering() {
+        text::NO_PACKAGE_MATCHES
+      } else {
+        text::NO_PACKAGES
+      };
+      let filters = render_filters(browse, search, cx);
 
       v_flex()
         .flex_1()
@@ -553,7 +679,8 @@ fn render_browse(
             .test_support()
         }))
         .when(refreshing, |list| list.child(text::REFRESHING))
-        .when(count == 0, |list| list.child(text::NO_PACKAGES))
+        .child(filters)
+        .when(count == 0, |list| list.child(empty))
         .child(rows)
         .into_any_element()
     }

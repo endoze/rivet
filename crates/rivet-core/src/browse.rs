@@ -2,9 +2,11 @@
 //! is being read, a refresh is running, or the last refresh failed.
 
 use crate::{Command, Effect, State};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use thunderstore_engine::models::PackageIndex;
-use thunderstore_engine::query::{self, BrowseQuery};
+use thunderstore_engine::query::{self, BrowseQuery, PackageRow};
+pub use thunderstore_engine::query::{SortDirection, SortKey};
 
 /// A package index shared between the commands thread and the state.
 ///
@@ -45,6 +47,114 @@ pub struct Browse {
   /// The packages to show, as positions in `index`, in display order.
   pub rows: Vec<usize>,
   pub status: Status,
+  /// What the user narrowed and ordered the list by.
+  pub filters: Filters,
+  /// Every category a package in `index` belongs to, in order.
+  pub categories: Vec<String>,
+}
+
+/// Other mod managers published as packages, by `Owner-Name`, taken from
+/// r2modman's exclusion list. They never appear in the list, so none is
+/// installed as if it were a mod.
+pub const HIDDEN_PACKAGES: &[&str] = &[
+  "ebkr-r2modman",
+  "ebkr-r2modman_dsp",
+  "ethanbrews-RiskOfRainModManager",
+  "ethanbrews-Forecast_Mod_Manager",
+  "scottbot95-RoR2ModManager",
+  "HoodedDeath-RiskOfDeathModManager",
+  "Elaviers-GCManager",
+  "MythicManiac-MythicModManager",
+  "Foldex-r2mod_cli",
+  "Kesomannen-GaleModManager",
+];
+
+/// The search, sort, and filters the user set on the package list.
+///
+/// The default is r2modman's browse defaults: no search, most recently
+/// updated first, every category, NSFW and deprecated packages hidden.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filters {
+  /// Words that each must appear in a package's name, author, or description.
+  pub search: String,
+  pub sort: SortKey,
+  pub direction: SortDirection,
+  /// Keeps packages in at least one of these. Empty keeps every package.
+  pub categories: BTreeSet<String>,
+  pub show_nsfw: bool,
+  pub show_deprecated: bool,
+}
+
+impl Default for Filters {
+  fn default() -> Self {
+    Self {
+      search: String::new(),
+      sort: SortKey::LastUpdated,
+      direction: SortDirection::Descending,
+      categories: BTreeSet::new(),
+      show_nsfw: false,
+      show_deprecated: false,
+    }
+  }
+}
+
+impl Filters {
+  /// Whether the search or any filter differs from the defaults, so there is
+  /// something to clear. The sort is not a filter.
+  pub fn is_filtering(&self) -> bool {
+    !self.search.is_empty() || !self.categories.is_empty() || self.show_nsfw || self.show_deprecated
+  }
+
+  /// Resets the search and filters, keeping the sort.
+  pub fn clear(&mut self) {
+    *self = Self {
+      sort: self.sort,
+      direction: self.direction,
+      ..Self::default()
+    };
+  }
+
+  /// Adds `category` to the chosen ones, or removes it if already chosen.
+  pub fn toggle_category(&mut self, category: String) {
+    if !self.categories.remove(&category) {
+      self.categories.insert(category);
+    }
+  }
+
+  /// Sorts by `key`: reversed when it is already the sort, otherwise in the
+  /// direction that reads first for it, `A` to `Z` for names and largest or
+  /// latest first for the rest.
+  pub fn sort_by(&mut self, key: SortKey) {
+    if self.sort == key {
+      self.direction = match self.direction {
+        SortDirection::Ascending => SortDirection::Descending,
+        SortDirection::Descending => SortDirection::Ascending,
+      };
+
+      return;
+    }
+
+    self.sort = key;
+    self.direction = match key {
+      SortKey::Name => SortDirection::Ascending,
+      _ => SortDirection::Descending,
+    };
+  }
+
+  /// The engine query these filters stand for. Community-pinned packages lead
+  /// only the default order, as in r2modman.
+  fn query(&self) -> BrowseQuery<'_> {
+    let defaults = Self::default();
+    let default_order = self.sort == defaults.sort && self.direction == defaults.direction;
+
+    BrowseQuery::new()
+      .search(&self.search)
+      .sort(self.sort, self.direction)
+      .pinned_first(default_order)
+      .categories(self.categories.iter().map(String::as_str))
+      .show_nsfw(self.show_nsfw)
+      .show_deprecated(self.show_deprecated)
+  }
 }
 
 /// Where the package list is in loading or refreshing.
@@ -86,6 +196,8 @@ impl Browse {
       index: None,
       rows: Vec::new(),
       status: Status::ReadingCache,
+      filters: Filters::default(),
+      categories: Vec::new(),
     }
   }
 
@@ -107,10 +219,32 @@ impl Browse {
     }
   }
 
-  /// Shows `index`, listing its packages with r2modman's browse defaults.
+  /// Shows `index`, listing its packages through the current filters.
   fn show(&mut self, index: Index) {
-    self.rows = query::browse(&index.0, &BrowseQuery::new());
+    let categories: BTreeSet<&str> = (0..index.0.len())
+      .filter_map(|idx| PackageRow::new(&index.0, idx))
+      .flat_map(|row| row.categories())
+      .collect();
+
+    self.categories = categories.into_iter().map(str::to_string).collect();
     self.index = Some(index);
+    self.list();
+  }
+
+  /// Lists the index's packages again through the current filters, leaving
+  /// out [`HIDDEN_PACKAGES`].
+  fn list(&mut self) {
+    let Some(index) = &self.index else {
+      return;
+    };
+
+    self.rows = query::browse(&index.0, &self.filters.query());
+    self.rows.retain(|&row| {
+      index
+        .0
+        .full_name_at(row)
+        .is_none_or(|full_name| !HIDDEN_PACKAGES.contains(&full_name))
+    });
   }
 
   /// Starts a fetch, numbered from `refreshes`, the count of fetches started
@@ -208,6 +342,16 @@ pub(crate) fn refreshed(
     }
     Ok(None) => browse.status = Status::Refreshed,
     Err(reason) => browse.status = Status::Failed(reason),
+  }
+
+  Vec::new()
+}
+
+/// Changes the open list's filters with `change`, then lists it again.
+pub(crate) fn filter(state: &mut State, change: impl FnOnce(&mut Filters)) -> Vec<Effect> {
+  if let Some(browse) = state.browse.as_mut() {
+    change(&mut browse.filters);
+    browse.list();
   }
 
   Vec::new()
@@ -557,6 +701,274 @@ mod tests {
       listed(&state),
       ["Owner-Pinned", "Owner-Newer", "Owner-Older"]
     );
+  }
+
+  /// A state showing `packages` from the cache.
+  fn showing(packages: Vec<serde_json::Value>) -> State {
+    let mut state = opened("valheim");
+
+    update(&mut state, cache_read("valheim", Ok(Some(index(packages)))));
+
+    state
+  }
+
+  fn filters(state: &State) -> &Filters {
+    &state.browse.as_ref().unwrap().filters
+  }
+
+  #[test]
+  fn typing_in_the_search_box_narrows_the_list_by_name_author_and_description() {
+    let mut described = package("Owner-Described", 1);
+
+    described["versions"][0]["description"] = "Adds a Fast travel map".into();
+
+    let mut state = showing(vec![
+      package("Owner-Older", 2),
+      package("Owner-FastBoats", 3),
+      package("Fastest-Rafts", 4),
+      described,
+    ]);
+
+    update(&mut state, Msg::PackageSearchChanged("fast".to_string()));
+
+    assert_eq!(
+      listed(&state),
+      ["Fastest-Rafts", "Owner-FastBoats", "Owner-Described"]
+    );
+
+    update(
+      &mut state,
+      Msg::PackageSearchChanged("fast rafts".to_string()),
+    );
+
+    assert_eq!(listed(&state), ["Fastest-Rafts"]);
+    assert_eq!(filters(&state).search, "fast rafts");
+  }
+
+  /// Three packages whose name, update day, downloads, and rating each order
+  /// them differently.
+  fn three_to_sort() -> State {
+    let mut bravo = package("Owner-bravo", 1);
+    let mut alpha = package("Owner-Alpha", 2);
+    let mut charlie = package("Owner-Charlie", 3);
+
+    bravo["versions"][0]["downloads"] = 300.into();
+    alpha["versions"][0]["downloads"] = 100.into();
+    charlie["versions"][0]["downloads"] = 200.into();
+    bravo["rating_score"] = 20.into();
+    alpha["rating_score"] = 30.into();
+    charlie["rating_score"] = 10.into();
+
+    showing(vec![bravo, alpha, charlie])
+  }
+
+  #[test]
+  fn each_sort_order_works_in_both_directions() {
+    let cases = [
+      (
+        SortKey::Name,
+        ["Owner-Alpha", "Owner-bravo", "Owner-Charlie"],
+      ),
+      (
+        SortKey::Downloads,
+        ["Owner-bravo", "Owner-Charlie", "Owner-Alpha"],
+      ),
+      (
+        SortKey::Rating,
+        ["Owner-Alpha", "Owner-bravo", "Owner-Charlie"],
+      ),
+    ];
+
+    for (key, first) in cases {
+      let mut state = three_to_sort();
+      let mut reversed = first;
+
+      reversed.reverse();
+
+      update(&mut state, Msg::SortPressed(key));
+
+      assert_eq!(listed(&state), first, "{key:?} first press");
+
+      update(&mut state, Msg::SortPressed(key));
+
+      assert_eq!(listed(&state), reversed, "{key:?} second press");
+    }
+  }
+
+  #[test]
+  fn pressing_the_current_sort_reverses_it() {
+    let mut state = three_to_sort();
+
+    assert_eq!(
+      listed(&state),
+      ["Owner-Charlie", "Owner-Alpha", "Owner-bravo"]
+    );
+
+    update(&mut state, Msg::SortPressed(SortKey::LastUpdated));
+
+    assert_eq!(
+      listed(&state),
+      ["Owner-bravo", "Owner-Alpha", "Owner-Charlie"]
+    );
+    assert_eq!(filters(&state).direction, SortDirection::Ascending);
+  }
+
+  #[test]
+  fn community_pinned_packages_lead_only_the_default_order() {
+    let mut pinned = package("Owner-Pinned", 1);
+
+    pinned["is_pinned"] = true.into();
+
+    let mut state = showing(vec![package("Owner-Alpha", 2), pinned]);
+
+    assert_eq!(listed(&state), ["Owner-Pinned", "Owner-Alpha"]);
+
+    update(&mut state, Msg::SortPressed(SortKey::Name));
+
+    assert_eq!(listed(&state), ["Owner-Alpha", "Owner-Pinned"]);
+  }
+
+  /// A package last updated on `updated_day` in `categories`.
+  fn categorized(full_name: &str, updated_day: u32, categories: &[&str]) -> serde_json::Value {
+    let mut package = package(full_name, updated_day);
+
+    package["categories"] = categories.into();
+
+    package
+  }
+
+  #[test]
+  fn the_categories_on_offer_are_those_in_the_index() {
+    let state = showing(vec![
+      categorized("Owner-Map", 1, &["Tools", "Maps"]),
+      categorized("Owner-Boat", 2, &["Mods", "Tools"]),
+    ]);
+
+    assert_eq!(
+      state.browse.as_ref().unwrap().categories,
+      ["Maps", "Mods", "Tools"]
+    );
+  }
+
+  #[test]
+  fn choosing_categories_narrows_the_list_to_packages_in_any_of_them() {
+    let mut state = showing(vec![
+      categorized("Owner-Map", 1, &["Maps"]),
+      categorized("Owner-Boat", 2, &["Mods", "Tools"]),
+      categorized("Owner-Skin", 3, &["Cosmetics"]),
+    ]);
+
+    update(&mut state, Msg::CategoryToggled("Tools".to_string()));
+
+    assert_eq!(listed(&state), ["Owner-Boat"]);
+
+    update(&mut state, Msg::CategoryToggled("Maps".to_string()));
+
+    assert_eq!(listed(&state), ["Owner-Boat", "Owner-Map"]);
+
+    update(&mut state, Msg::CategoryToggled("Tools".to_string()));
+
+    assert_eq!(listed(&state), ["Owner-Map"]);
+    assert_eq!(
+      filters(&state).categories,
+      BTreeSet::from(["Maps".to_string()])
+    );
+  }
+
+  #[test]
+  fn nsfw_and_deprecated_packages_are_hidden_until_each_is_turned_on() {
+    let mut deprecated = package("Owner-Deprecated", 2);
+    let mut nsfw = package("Owner-Nsfw", 3);
+
+    deprecated["is_deprecated"] = true.into();
+    nsfw["has_nsfw_content"] = true.into();
+
+    let mut state = showing(vec![package("Owner-Plain", 1), deprecated, nsfw]);
+
+    assert_eq!(listed(&state), ["Owner-Plain"]);
+
+    update(&mut state, Msg::ShowNsfw(true));
+
+    assert_eq!(listed(&state), ["Owner-Nsfw", "Owner-Plain"]);
+
+    update(&mut state, Msg::ShowDeprecated(true));
+
+    assert_eq!(
+      listed(&state),
+      ["Owner-Nsfw", "Owner-Deprecated", "Owner-Plain"]
+    );
+
+    update(&mut state, Msg::ShowNsfw(false));
+
+    assert_eq!(listed(&state), ["Owner-Deprecated", "Owner-Plain"]);
+  }
+
+  #[test]
+  fn other_mod_managers_never_appear() {
+    let mut state = showing(vec![
+      package("Owner-Plain", 1),
+      package("ebkr-r2modman", 2),
+      package("Kesomannen-GaleModManager", 3),
+    ]);
+
+    assert_eq!(listed(&state), ["Owner-Plain"]);
+
+    update(
+      &mut state,
+      Msg::PackageSearchChanged("r2modman".to_string()),
+    );
+
+    assert_eq!(listed(&state), Vec::<String>::new());
+  }
+
+  #[test]
+  fn clearing_resets_search_and_filters_and_keeps_the_sort() {
+    let mut nsfw = categorized("Owner-Nsfw", 2, &["Mods"]);
+
+    nsfw["has_nsfw_content"] = true.into();
+
+    let mut state = showing(vec![categorized("Owner-Plain", 1, &["Tools"]), nsfw]);
+
+    update(&mut state, Msg::PackageSearchChanged("nsfw".to_string()));
+    update(&mut state, Msg::CategoryToggled("Mods".to_string()));
+    update(&mut state, Msg::ShowNsfw(true));
+    update(&mut state, Msg::ShowDeprecated(true));
+    update(&mut state, Msg::SortPressed(SortKey::Name));
+
+    assert!(filters(&state).is_filtering());
+
+    update(&mut state, Msg::FiltersCleared);
+
+    assert!(!filters(&state).is_filtering());
+    assert_eq!(
+      filters(&state),
+      &Filters {
+        sort: SortKey::Name,
+        direction: SortDirection::Ascending,
+        ..Filters::default()
+      }
+    );
+    assert_eq!(listed(&state), ["Owner-Plain"]);
+  }
+
+  #[test]
+  fn the_filters_outlast_a_refresh() {
+    let mut state = showing(vec![package("Owner-Alpha", 1)]);
+
+    update(&mut state, Msg::PackageSearchChanged("beta".to_string()));
+    update(
+      &mut state,
+      refreshed(
+        "valheim",
+        1,
+        Ok(index(vec![
+          package("Owner-Alpha", 1),
+          package("Owner-Beta", 2),
+        ])),
+      ),
+    );
+
+    assert_eq!(listed(&state), ["Owner-Beta"]);
   }
 
   #[test]

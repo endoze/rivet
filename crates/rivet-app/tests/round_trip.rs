@@ -96,6 +96,69 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
   );
 }
 
+#[gpui_kit::test]
+fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
+  use rivet_core::browse::{Filters, SortDirection, SortKey};
+
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, shell) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("package-search", cx);
+    window.input("modc", cx);
+  })
+  .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("Owner-ModC").is_some());
+    assert!(window.try_find("Owner-ModA").is_none());
+
+    window.click("sort-name", cx);
+    window.click("show-deprecated", cx);
+    window.render_frame(cx);
+    window.click("clear-filters", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("Owner-ModA").is_some());
+  })
+  .unwrap();
+
+  let filters = shell.read_with(cx, |shell, _| {
+    shell.state().browse.as_ref().unwrap().filters.clone()
+  });
+
+  assert_eq!(
+    filters,
+    Filters {
+      sort: SortKey::Name,
+      direction: SortDirection::Ascending,
+      ..Filters::default()
+    }
+  );
+}
+
 fn open_default_profile() -> Command {
   Command::OpenProfile {
     game: "valheim".to_string(),

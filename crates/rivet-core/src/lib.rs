@@ -7,7 +7,7 @@ pub mod launch;
 pub mod picker;
 pub mod settings;
 
-use browse::{Browse, Fetch, Index, Refresh};
+use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
 use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
@@ -132,6 +132,19 @@ pub enum Msg {
     index: Result<Option<Index>, String>,
   },
   RefreshPressed,
+  /// The package list's search text changed.
+  PackageSearchChanged(String),
+  /// A sort of the package list was pressed. Pressing the current one
+  /// reverses it.
+  SortPressed(SortKey),
+  /// A category of the package list was chosen, or unchosen if it was.
+  CategoryToggled(String),
+  /// NSFW packages were turned on or off in the package list.
+  ShowNsfw(bool),
+  /// Deprecated packages were turned on or off in the package list.
+  ShowDeprecated(bool),
+  /// The package list's search and filters were reset.
+  FiltersCleared,
   /// A game's profile was opened: its packages, or why it could not be
   /// created or read.
   ProfileOpened {
@@ -282,6 +295,14 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::CachedIndexRead { community, index } => browse::cache_read(state, community, index),
     Msg::IndexRefreshed { refresh, index } => browse::refreshed(state, refresh, index),
     Msg::RefreshPressed => browse::refresh_pressed(state),
+    Msg::PackageSearchChanged(search) => browse::filter(state, |filters| filters.search = search),
+    Msg::SortPressed(key) => browse::filter(state, |filters| filters.sort_by(key)),
+    Msg::CategoryToggled(category) => {
+      browse::filter(state, |filters| filters.toggle_category(category))
+    }
+    Msg::ShowNsfw(show) => browse::filter(state, |filters| filters.show_nsfw = show),
+    Msg::ShowDeprecated(show) => browse::filter(state, |filters| filters.show_deprecated = show),
+    Msg::FiltersCleared => browse::filter(state, Filters::clear),
     Msg::ProfileOpened {
       game,
       profile,

@@ -2,6 +2,7 @@
 //! added later.
 
 use rivet_core::SettingsError;
+use rivet_core::browse::{SortDirection, SortKey};
 use rivet_core::install::{FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal};
@@ -18,6 +19,29 @@ pub const REFRESH: &str = "Refresh";
 pub const REFRESHING: &str = "Checking Thunderstore for new mods";
 pub const LOADING_PACKAGES: &str = "Loading mods";
 pub const NO_PACKAGES: &str = "No mods to show.";
+pub const PACKAGE_SEARCH_PLACEHOLDER: &str = "Search mods by name, author, or description";
+pub const NO_PACKAGE_MATCHES: &str = "No mods match your search and filters.";
+pub const SORT_BY: &str = "Sort by";
+pub const SHOW_NSFW: &str = "Show NSFW";
+pub const SHOW_DEPRECATED: &str = "Show deprecated";
+pub const CLEAR_FILTERS: &str = "Clear";
+
+/// A sort button's label, with an arrow for its direction when it is the
+/// current sort, such as `Downloads ↓`.
+pub fn sort(key: SortKey, current: Option<SortDirection>) -> String {
+  let name = match key {
+    SortKey::LastUpdated => "Last updated",
+    SortKey::Name => "Name",
+    SortKey::Downloads => "Downloads",
+    SortKey::Rating => "Rating",
+  };
+
+  match current {
+    Some(SortDirection::Ascending) => format!("{name} ↑"),
+    Some(SortDirection::Descending) => format!("{name} ↓"),
+    None => name.to_string(),
+  }
+}
 
 /// A failure as shown to the user: what went wrong, the detail, and what to
 /// do next.
