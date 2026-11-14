@@ -1,20 +1,20 @@
 [package]
-name = "app"
+name = "rivet-app"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-commands.workspace = true
+rivet-commands.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
-platform.workspace = true
-state.workspace = true
+rivet-platform.workspace = true
+rivet-core.workspace = true
 thunderstore-engine.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
 
 [[bin]]
-name = "mm"
+name = "rivet"
 path = "src/main.rs"

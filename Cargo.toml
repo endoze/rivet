@@ -8,10 +8,10 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-state = { path = "crates/state" }
-commands = { path = "crates/commands" }
-platform = { path = "crates/platform" }
-app = { path = "crates/app" }
+rivet-core = { path = "crates/rivet-core" }
+rivet-commands = { path = "crates/rivet-commands" }
+rivet-platform = { path = "crates/rivet-platform" }
+rivet-app = { path = "crates/rivet-app" }
 dirs = "6"
 futures = "0.3"
 gpui-kit = "=0.9.1"

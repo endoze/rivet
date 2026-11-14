@@ -73,7 +73,7 @@ pub enum FolderRefusal {
 /// Names are compared ignoring ASCII case, as Windows does.
 ///
 /// ```
-/// use state::picker::{FolderRefusal, check_folder};
+/// use rivet_core::picker::{FolderRefusal, check_folder};
 /// use thunderstore_engine::ecosystem::Ecosystem;
 ///
 /// let ecosystem = Ecosystem::bundled();

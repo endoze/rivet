@@ -1,12 +1,12 @@
 [package]
-name = "commands"
+name = "rivet-commands"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
 futures.workspace = true
-state.workspace = true
+rivet-core.workspace = true
 tokio.workspace = true
 toml.workspace = true
 

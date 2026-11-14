@@ -20,14 +20,14 @@ jobs:
       - name: Test the workspace
         run: nix develop -c cargo test --workspace
       - name: Test the pure crate on its own
-        run: nix develop -c cargo test -p state
+        run: nix develop -c cargo test -p rivet-core
       - name: Refuse a UI toolkit, async runtime or HTTP client in the pure crate
         run: |
-          tree="$(nix develop -c cargo tree -p state -e normal --prefix none)"
+          tree="$(nix develop -c cargo tree -p rivet-core -e normal --prefix none)"
           status=0
           for crate in gpui-kit gpui-pre tokio reqwest hyper async-std smol zip; do
             if grep -q "^${crate} v" <<< "$tree"; then
-              echo "::error::${crate} is in the dependency tree of the state crate"
+              echo "::error::${crate} is in the dependency tree of the rivet-core crate"
               status=1
             fi
           done

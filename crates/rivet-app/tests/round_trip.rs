@@ -1,9 +1,9 @@
-use app::Shell;
 use futures::channel::mpsc::unbounded;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, TestAppContext, WindowOptions};
-use state::settings::Settings;
-use state::{Command, Msg, Screen, State};
+use rivet_app::Shell;
+use rivet_core::settings::Settings;
+use rivet_core::{Command, Msg, Screen, State};
 use std::path::PathBuf;
 use thunderstore_engine::ecosystem::Ecosystem;
 

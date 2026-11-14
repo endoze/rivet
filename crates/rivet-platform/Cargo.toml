@@ -1,9 +1,8 @@
 [package]
-name = "state"
+name = "rivet-platform"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-serde.workspace = true
-thunderstore-engine.workspace = true
+dirs.workspace = true

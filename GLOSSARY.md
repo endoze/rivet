@@ -1,4 +1,4 @@
-# Mod manager
+# Rivet
 
 A desktop app for installing and launching Thunderstore mods, across every game Thunderstore supports.
 

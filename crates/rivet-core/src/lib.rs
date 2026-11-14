@@ -99,7 +99,7 @@ pub enum Command {
 /// Applies one message to the state and returns the effects to run.
 ///
 /// ```
-/// use state::{Command, Effect, Msg, Screen, State, update};
+/// use rivet_core::{Command, Effect, Msg, Screen, State, update};
 /// use thunderstore_engine::ecosystem::Ecosystem;
 ///
 /// let mut state = State::new(Ecosystem::bundled());

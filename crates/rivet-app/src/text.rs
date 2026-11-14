@@ -1,8 +1,8 @@
 //! Every piece of interface text, kept in one place so translation can be
 //! added later.
 
-use state::SettingsError;
-use state::picker::{FolderRefusal, Refusal};
+use rivet_core::SettingsError;
+use rivet_core::picker::{FolderRefusal, Refusal};
 use std::path::Path;
 
 pub const LOADING: &str = "Loading";

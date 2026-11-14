@@ -3,8 +3,8 @@
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use state::settings::Settings;
-use state::{Command, Msg};
+use rivet_core::settings::Settings;
+use rivet_core::{Command, Msg};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -126,7 +126,7 @@ pub fn spawn(paths: Paths) -> (UnboundedSender<Command>, UnboundedReceiver<Msg>)
 #[cfg(test)]
 mod tests {
   use super::*;
-  use state::settings::GameSettings;
+  use rivet_core::settings::GameSettings;
   use tempfile::TempDir;
 
   fn paths_in(dir: &TempDir) -> Paths {

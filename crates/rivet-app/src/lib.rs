@@ -15,8 +15,8 @@ use gpui_kit::{
   ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
   Styled as _, Subscription, Task, TestSupportExt as _, Window, div, rgb,
 };
-use state::picker::Step;
-use state::{Command, Effect, Msg, Screen, State};
+use rivet_core::picker::Step;
+use rivet_core::{Command, Effect, Msg, Screen, State};
 
 /// The root view. It owns the state and is the only place `update` is called.
 pub struct Shell {
@@ -74,7 +74,7 @@ impl Shell {
   }
 
   fn dispatch(&mut self, msg: Msg, cx: &mut Context<Self>) {
-    for effect in state::update(&mut self.state, msg) {
+    for effect in rivet_core::update(&mut self.state, msg) {
       match effect {
         Effect::Run(command) => {
           self.commands.unbounded_send(command).ok();
@@ -121,7 +121,7 @@ impl Shell {
 
   fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
     let picker = &self.state.picker;
-    let games = state::picker::games(&self.state.ecosystem, &picker.query);
+    let games = rivet_core::picker::games(&self.state.ecosystem, &picker.query);
     let refusal = picker
       .refusal
       .as_ref()

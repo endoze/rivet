@@ -1,5 +1,5 @@
 {
-  description = "Dev shell for the mod manager workspace";
+  description = "Dev shell for the Rivet workspace";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
