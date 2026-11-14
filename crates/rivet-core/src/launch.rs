@@ -169,7 +169,8 @@ impl State {
   }
 
   /// Whether a launch button would start a launch: the open profile has been
-  /// read, and no install, other launch, or profile change is running.
+  /// read, no operation, other launch, or profile change is running, and no
+  /// uninstall is being checked.
   pub fn can_launch(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
@@ -177,6 +178,7 @@ impl State {
       && ready
       && !self.is_launching()
       && !self.is_busy()
+      && !self.is_checking()
       && !self.is_changing_profile()
   }
 
@@ -520,10 +522,8 @@ mod tests {
   /// A Linux state with `game` open and its profile holding `packages`.
   fn ready(game: &str, packages: &[&str]) -> State {
     let (mut state, _) = opened(game);
-    let installed: Installed = packages
-      .iter()
-      .map(|name| (name.to_string(), "1.0.0".to_string()))
-      .collect();
+    let packages: Vec<(&str, &str)> = packages.iter().map(|name| (*name, "1.0.0")).collect();
+    let installed: Installed = crate::test_installed(&packages);
 
     update(
       &mut state,

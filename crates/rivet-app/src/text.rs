@@ -3,8 +3,9 @@
 
 use rivet_core::SettingsError;
 use rivet_core::browse::{SortDirection, SortKey};
-use rivet_core::install::{FailedPackage, Planned, Progress, Stage};
+use rivet_core::install::{Action, FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
+use rivet_core::manage::Removal;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal};
 use rivet_core::switcher::{NameRefusal, Naming, ProfileChange, SwitcherFailure};
 use std::path::Path;
@@ -220,6 +221,117 @@ pub fn install_failed(package: &str, failed: &[FailedPackage], installed: &[Stri
 
   Failure {
     headline: format!("{package} could not be installed"),
+    detail,
+    next,
+  }
+}
+
+pub const TAB_BROWSE: &str = "Browse";
+pub const TAB_INSTALLED: &str = "Installed";
+pub const INSTALLED_SEARCH_PLACEHOLDER: &str = "Search installed mods";
+pub const SORT_NAME: &str = "Name";
+pub const SORT_AUTHOR: &str = "Author";
+pub const SORT_NEWEST: &str = "Newest";
+pub const ENABLE: &str = "Enable";
+pub const DISABLE: &str = "Disable";
+pub const UNINSTALL: &str = "Uninstall";
+pub const ENABLE_ALL: &str = "Enable all";
+pub const DISABLE_ALL: &str = "Disable all";
+pub const ENABLED: &str = "Enabled";
+pub const DISABLED: &str = "Disabled";
+pub const MOD_LOADER: &str = "Mod loader";
+pub const NO_INSTALLED: &str = "No mods are installed in this profile.";
+pub const NO_INSTALLED_MATCHES: &str = "No installed mod matches your search.";
+pub const PACKAGE_ONLY: &str = "This mod only";
+pub const WITH_DEPENDANTS: &str = "Including the mods that need it";
+pub const CHECKING_UNINSTALL: &str = "Checking what uninstalling removes";
+pub const DELETE_FOLDERS: &str = "Delete them";
+pub const KEEP_FOLDERS: &str = "Keep them";
+pub const UNTRACKED_LEAD: &str =
+  "These folders in the profile belong to no installed mod. Uninstalling can delete them too:";
+
+fn removal_verb(removal: Removal) -> &'static str {
+  match removal {
+    Removal::Disable => "Disable",
+    Removal::Uninstall => "Uninstall",
+  }
+}
+
+/// The question asked when other mods need the one being disabled or
+/// uninstalled, such as `Uninstall Owner-Lib? These mods need it:`.
+pub fn dependants_question(removal: Removal, package: &str) -> String {
+  format!("{} {package}? These mods need it:", removal_verb(removal))
+}
+
+/// The question asked before an uninstall that could delete folders no mod
+/// owns, such as `Uninstall Owner-Mod?`.
+pub fn untracked_question(packages: &[String]) -> String {
+  format!("Uninstall {}?", subject(packages))
+}
+
+/// An uninstall the profile refused before anything changed.
+pub fn uninstall_refused(packages: &[String], reason: &str) -> Failure {
+  Failure {
+    headline: format!("{} cannot be uninstalled", subject(packages)),
+    detail: reason.to_string(),
+    next: "Nothing in your profile was changed.".to_string(),
+  }
+}
+
+/// The packages an operation names: one by name, more by count.
+fn subject(packages: &[String]) -> String {
+  match packages {
+    [package] => package.clone(),
+    packages => format!("{} mods", packages.len()),
+  }
+}
+
+fn action_verbs(action: &Action) -> (&'static str, &'static str, &'static str) {
+  match action {
+    Action::Install(_) => ("Installing", "Installed", "installed"),
+    Action::Uninstall(_) => ("Uninstalling", "Uninstalled", "uninstalled"),
+    Action::SetEnabled { enabled: true, .. } => ("Enabling", "Enabled", "enabled"),
+    Action::SetEnabled { enabled: false, .. } => ("Disabling", "Disabled", "disabled"),
+  }
+}
+
+/// A running uninstall, enable, or disable, such as `Disabling 3 mods`.
+pub fn changing_packages(action: &Action) -> String {
+  format!("{} {}", action_verbs(action).0, subject(action.packages()))
+}
+
+/// A finished uninstall, enable, or disable, such as `Enabled Owner-Mod.`.
+pub fn changed(action: &Action, changed: &[String]) -> String {
+  if changed.is_empty() {
+    return "Nothing needed changing.".to_string();
+  }
+
+  format!("{} {}.", action_verbs(action).1, subject(changed))
+}
+
+/// An uninstall, enable, or disable that failed, naming what failed and what
+/// it changed.
+pub fn change_failed(action: &Action, failed: &[FailedPackage], changed: &[String]) -> Failure {
+  let detail = failed
+    .iter()
+    .map(|failure| format!("{}: {}", failure.package, failure.reason))
+    .collect::<Vec<_>>()
+    .join("\n");
+  let next = match changed {
+    [] => "Nothing in your profile was changed. Try again.".to_string(),
+    changed => format!(
+      "These were {} before it failed: {}. Trying again finishes the rest.",
+      action_verbs(action).2,
+      changed.join(", ")
+    ),
+  };
+
+  Failure {
+    headline: format!(
+      "{} could not be {}",
+      subject(action.packages()),
+      action_verbs(action).2
+    ),
     detail,
     next,
   }

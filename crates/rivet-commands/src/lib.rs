@@ -4,8 +4,11 @@
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use rivet_core::browse::{Fetch, Index};
-use rivet_core::install::{FailedPackage, Install, Installed, Outcome, Progress, Stage};
+use rivet_core::install::{
+  FailedPackage, Install, Installed, InstalledPackage, Outcome, Progress, Stage,
+};
 use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
+use rivet_core::manage::{SetEnabled, Uninstall};
 use rivet_core::picker::NotFound;
 use rivet_core::settings::Settings;
 use rivet_core::switcher::ProfileChange;
@@ -117,11 +120,33 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
       let operation = install.operation;
       let outcome = install_package(config, install, progress.clone()).await;
 
-      Msg::InstallFinished {
+      Msg::OperationFinished {
         operation,
         outcome: outcome.map_err(|error| error.to_string()),
       }
     }
+    Command::CheckUninstall {
+      game,
+      profile,
+      packages,
+    } => {
+      let untracked = check_uninstall(config, &game, &profile, &packages).await;
+
+      Msg::UninstallChecked {
+        game,
+        profile,
+        packages,
+        untracked,
+      }
+    }
+    Command::Uninstall(uninstall) => Msg::OperationFinished {
+      operation: uninstall.operation,
+      outcome: uninstall_packages(config, uninstall).await,
+    },
+    Command::SetEnabled(set) => Msg::OperationFinished {
+      operation: set.operation,
+      outcome: set_enabled(config, set).await,
+    },
     Command::Launch(launch) => Msg::LaunchFinished {
       launch: launch.id,
       result: start(config, launch).await,
@@ -306,7 +331,11 @@ async fn install_package(
       let after = installed(&after);
       let changed = after
         .iter()
-        .filter(|(name, version)| before.get(*name) != Some(version))
+        .filter(|(name, package)| {
+          before
+            .get(*name)
+            .is_none_or(|earlier| earlier.version != package.version)
+        })
         .map(|(name, _)| name.clone())
         .collect();
 
@@ -316,7 +345,7 @@ async fn install_package(
   };
 
   Ok(Outcome {
-    installed: changed,
+    changed,
     failed: outcome
       .failed
       .into_iter()
@@ -327,6 +356,100 @@ async fn install_package(
       .collect(),
     profile: after,
   })
+}
+
+/// The folders no package records in `game`'s `name` profile, which
+/// uninstalling `packages` would offer to delete, or why it would be refused.
+async fn check_uninstall(
+  config: &Config,
+  game: &str,
+  name: &str,
+  packages: &[String],
+) -> Result<Vec<PathBuf>, String> {
+  let folder = layout::profile_dir(&config.data, game, name);
+  let (ecosystem, game, packages) = (
+    config.ecosystem.clone(),
+    game.to_string(),
+    packages.to_vec(),
+  );
+
+  tokio::task::spawn_blocking(move || {
+    profile::plan_uninstall_batch(&folder, &ecosystem, &game, Some(&packages))
+      .map(|batch| batch.untracked)
+      .map_err(|error| error.to_string())
+  })
+  .await
+  .map_err(|error| error.to_string())?
+}
+
+/// Removes `uninstall.packages`, and of the folders no package records only
+/// those in `uninstall.delete` that are still unrecorded.
+async fn uninstall_packages(config: &Config, uninstall: Uninstall) -> Result<Outcome, String> {
+  let folder = layout::profile_dir(&config.data, &uninstall.game, &uninstall.profile);
+  let ecosystem = config.ecosystem.clone();
+
+  tokio::task::spawn_blocking(move || {
+    let mut batch = profile::plan_uninstall_batch(
+      &folder,
+      &ecosystem,
+      &uninstall.game,
+      Some(&uninstall.packages),
+    )?;
+
+    batch
+      .untracked
+      .retain(|untracked| uninstall.delete.contains(untracked));
+
+    if !batch.untracked.is_empty() {
+      batch.confirm_untracked();
+    }
+
+    let outcome = profile::uninstall_batch(&folder, &ecosystem, &uninstall.game, &batch)?;
+
+    Ok(batch_outcome(&folder, outcome))
+  })
+  .await
+  .map_err(|error| error.to_string())?
+  .map_err(|error: thunderstore_engine::Error| error.to_string())
+}
+
+/// Enables or disables `set.packages`. Mod loaders are left as they are.
+async fn set_enabled(config: &Config, set: SetEnabled) -> Result<Outcome, String> {
+  let folder = layout::profile_dir(&config.data, &set.game, &set.profile);
+  let ecosystem = config.ecosystem.clone();
+
+  tokio::task::spawn_blocking(move || {
+    let batch =
+      profile::plan_set_enabled_batch(&folder, &ecosystem, Some(&set.packages), set.enabled)?;
+    let outcome = profile::set_enabled_batch(&folder, &ecosystem, &set.game, &batch)?;
+
+    Ok(batch_outcome(&folder, outcome))
+  })
+  .await
+  .map_err(|error| error.to_string())?
+  .map_err(|error: thunderstore_engine::Error| error.to_string())
+}
+
+/// What a batch did to the profile in `folder`, with the profile read back.
+fn batch_outcome(folder: &Path, outcome: profile::BatchOutcome) -> Outcome {
+  let mut changed = outcome.succeeded;
+
+  changed.sort();
+
+  Outcome {
+    changed,
+    failed: outcome
+      .failed
+      .into_iter()
+      .map(|(package, error)| FailedPackage {
+        package,
+        reason: error.to_string(),
+      })
+      .collect(),
+    profile: modlist::read(folder)
+      .map(|recorded| installed(&recorded))
+      .map_err(|error| error.to_string()),
+  }
 }
 
 /// The progress an engine event reports, or `None` for the end of a stage,
@@ -355,7 +478,26 @@ fn progress_of(event: ProgressEvent) -> Option<Progress> {
 fn installed(recorded: &[ProfileMod]) -> Installed {
   recorded
     .iter()
-    .map(|entry| (entry.name.clone(), entry.version_number.to_string()))
+    .map(|entry| {
+      let package = InstalledPackage {
+        author: entry.author_name.clone(),
+        version: entry.version_number.to_string(),
+        enabled: entry.enabled,
+        dependencies: entry
+          .dependencies
+          .iter()
+          .map(|dependency| {
+            dependency
+              .rsplit_once('-')
+              .map_or(dependency.as_str(), |(full_name, _version)| full_name)
+              .to_string()
+          })
+          .collect(),
+        installed_at: entry.installed_at_time,
+      };
+
+      (entry.name.clone(), package)
+    })
     .collect()
 }
 
@@ -711,11 +853,21 @@ mod tests {
     }
   }
 
-  fn installed(packages: &[(&str, &str)]) -> Installed {
-    packages
+  /// Each package of `profile` as its `Owner-Name`, version, and whether it
+  /// is enabled.
+  fn packages(profile: &Installed) -> Vec<(String, String, bool)> {
+    profile
       .iter()
-      .map(|(name, version)| (name.to_string(), version.to_string()))
+      .map(|(name, package)| (name.clone(), package.version.clone(), package.enabled))
       .collect()
+  }
+
+  fn enabled(name: &str) -> (String, String, bool) {
+    (name.to_string(), "1.0.0".to_string(), true)
+  }
+
+  fn disabled(name: &str) -> (String, String, bool) {
+    (name.to_string(), "1.0.0".to_string(), false)
   }
 
   fn names(names: &[&str]) -> Vec<String> {
@@ -799,27 +951,31 @@ mod tests {
 
     let (progress, answer) = run_reporting(install("Owner-ModC", &index), &config);
     let reopened = run_now(open_profile("valheim"), &config);
-    let profile = installed(&[("Owner-ModA", "1.0.0"), ("Owner-ModC", "1.0.0")]);
 
+    let Msg::OperationFinished {
+      operation: 3,
+      outcome: Ok(outcome),
+    } = answer
+    else {
+      panic!("unexpected answer {answer:?}");
+    };
+    let Msg::ProfileOpened {
+      installed: Ok(profile),
+      ..
+    } = reopened
+    else {
+      panic!("unexpected answer {reopened:?}");
+    };
+
+    assert_eq!(outcome.changed, names(&["Owner-ModA", "Owner-ModC"]));
+    assert_eq!(outcome.failed, vec![]);
+    assert_eq!(outcome.profile.as_ref(), Ok(&profile));
     assert_eq!(
-      answer,
-      Msg::InstallFinished {
-        operation: 3,
-        outcome: Ok(Outcome {
-          installed: names(&["Owner-ModA", "Owner-ModC"]),
-          failed: vec![],
-          profile: Ok(profile.clone()),
-        }),
-      }
+      packages(&profile),
+      [enabled("Owner-ModA"), enabled("Owner-ModC")]
     );
-    assert_eq!(
-      reopened,
-      Msg::ProfileOpened {
-        game: "valheim".to_string(),
-        profile: DEFAULT_PROFILE.to_string(),
-        installed: Ok(profile),
-      }
-    );
+    assert_eq!(profile["Owner-ModC"].author, "Owner");
+    assert_eq!(profile["Owner-ModC"].dependencies, names(&["Owner-ModA"]));
     assert!(
       default_profile(&config)
         .join("BepInEx/plugins/Owner-ModC/ModC.dll")
@@ -857,7 +1013,7 @@ mod tests {
 
     let answer = run_now(install("Owner-ModE", &index), &config);
 
-    let Msg::InstallFinished {
+    let Msg::OperationFinished {
       operation: 3,
       outcome: Ok(outcome),
     } = answer
@@ -865,8 +1021,11 @@ mod tests {
       panic!("unexpected answer {answer:?}");
     };
 
-    assert_eq!(outcome.installed, Vec::<String>::new());
-    assert_eq!(outcome.profile, Ok(installed(&[("Owner-ModB", "1.0.0")])));
+    assert_eq!(outcome.changed, Vec::<String>::new());
+    assert_eq!(
+      outcome.profile.as_ref().map(packages),
+      Ok(vec![enabled("Owner-ModB")])
+    );
     assert_eq!(
       outcome
         .failed
@@ -1017,18 +1176,21 @@ mod tests {
       &config,
     );
 
+    let Msg::ProfileOpened {
+      profile: opened,
+      installed: Ok(copied),
+      ..
+    } = copy
+    else {
+      panic!("unexpected answer {copy:?}");
+    };
+
     assert_eq!(answer, changed(duplicated, Ok(())));
     assert_eq!(list(&config), listed(&["Copy", "Default"]));
+    assert_eq!(opened, "Copy");
     assert_eq!(
-      copy,
-      Msg::ProfileOpened {
-        game: "valheim".to_string(),
-        profile: "Copy".to_string(),
-        installed: Ok(installed(&[
-          ("Owner-ModA", "1.0.0"),
-          ("Owner-ModC", "1.0.0")
-        ])),
-      }
+      packages(&copied),
+      [enabled("Owner-ModA"), enabled("Owner-ModC")]
     );
     assert!(
       profile_folder(&config, "Copy")
@@ -1086,6 +1248,197 @@ mod tests {
         .unwrap()
         .contains("profile = \"Modded\"")
     );
+  }
+
+  /// A config against a mock Thunderstore whose Default profile holds
+  /// `Owner-ModC` and the `Owner-ModA` it needs.
+  fn with_mod_c(dir: &TempDir, mock: &mut MockThunderstore) -> Config {
+    let config = config_for(dir, mock);
+    let index = mock_index(mock);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install("Owner-ModC", &index), &config);
+
+    config
+  }
+
+  fn set_enabled(packages: &[&str], enabled: bool) -> Command {
+    Command::SetEnabled(SetEnabled {
+      operation: 5,
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      packages: names(packages),
+      enabled,
+    })
+  }
+
+  fn check_uninstall(packages: &[&str]) -> Command {
+    Command::CheckUninstall {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      packages: names(packages),
+    }
+  }
+
+  fn uninstall(packages: &[&str], delete: Vec<PathBuf>) -> Command {
+    Command::Uninstall(Uninstall {
+      operation: 5,
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      packages: names(packages),
+      delete,
+    })
+  }
+
+  /// The outcome of operation 5.
+  fn finished(answer: Msg) -> Outcome {
+    match answer {
+      Msg::OperationFinished {
+        operation: 5,
+        outcome: Ok(outcome),
+      } => outcome,
+      other => panic!("unexpected answer {other:?}"),
+    }
+  }
+
+  #[test]
+  fn disabling_then_enabling_a_package_records_each_state() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+
+    let off = finished(run_now(set_enabled(&["Owner-ModC"], false), &config));
+    let on = finished(run_now(set_enabled(&["Owner-ModC"], true), &config));
+
+    assert_eq!(off.changed, names(&["Owner-ModC"]));
+    assert_eq!(off.failed, vec![]);
+    assert_eq!(
+      off.profile.as_ref().map(packages),
+      Ok(vec![enabled("Owner-ModA"), disabled("Owner-ModC")])
+    );
+    assert_eq!(on.changed, names(&["Owner-ModC"]));
+    assert_eq!(
+      on.profile.as_ref().map(packages),
+      Ok(vec![enabled("Owner-ModA"), enabled("Owner-ModC")])
+    );
+    assert!(
+      default_profile(&config)
+        .join("BepInEx/plugins/Owner-ModC/ModC.dll")
+        .is_file()
+    );
+  }
+
+  #[test]
+  fn uninstalling_a_package_leaves_its_dependency() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+
+    let outcome = finished(run_now(uninstall(&["Owner-ModC"], vec![]), &config));
+
+    assert_eq!(outcome.changed, names(&["Owner-ModC"]));
+    assert_eq!(outcome.failed, vec![]);
+    assert_eq!(
+      outcome.profile.as_ref().map(packages),
+      Ok(vec![enabled("Owner-ModA")])
+    );
+    assert!(
+      !default_profile(&config)
+        .join("BepInEx/plugins/Owner-ModC")
+        .exists()
+    );
+    assert!(
+      default_profile(&config)
+        .join("BepInEx/plugins/Owner-ModA/ModA.dll")
+        .is_file()
+    );
+  }
+
+  #[test]
+  fn checking_an_uninstall_lists_untracked_folders_and_changes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+    let stray = default_profile(&config).join("BepInEx/plugins/Someone-Stray");
+
+    std::fs::create_dir_all(&stray).unwrap();
+
+    let answer = run_now(check_uninstall(&["Owner-ModC"]), &config);
+
+    let Msg::UninstallChecked {
+      packages: checked,
+      untracked: Ok(untracked),
+      ..
+    } = answer
+    else {
+      panic!("unexpected answer {answer:?}");
+    };
+
+    assert_eq!(checked, names(&["Owner-ModC"]));
+    assert_eq!(untracked.len(), 1, "{untracked:?}");
+    assert!(untracked[0].ends_with("Someone-Stray"), "{untracked:?}");
+    assert!(stray.is_dir());
+    assert!(
+      default_profile(&config)
+        .join("BepInEx/plugins/Owner-ModC/ModC.dll")
+        .is_file()
+    );
+  }
+
+  #[test]
+  fn an_uninstall_deletes_untracked_folders_only_when_the_user_agreed() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+    let stray = default_profile(&config).join("BepInEx/plugins/Someone-Stray");
+
+    std::fs::create_dir_all(&stray).unwrap();
+
+    let Msg::UninstallChecked {
+      untracked: Ok(untracked),
+      ..
+    } = run_now(check_uninstall(&["Owner-ModC"]), &config)
+    else {
+      panic!("the check failed");
+    };
+
+    finished(run_now(uninstall(&["Owner-ModC"], vec![]), &config));
+
+    assert!(stray.is_dir());
+
+    finished(run_now(uninstall(&["Owner-ModA"], untracked), &config));
+
+    assert!(!stray.exists());
+  }
+
+  #[test]
+  fn checking_the_uninstall_of_a_package_not_installed_says_why() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+
+    let answer = run_now(check_uninstall(&["Owner-ModB"]), &config);
+
+    assert!(
+      matches!(&answer, Msg::UninstallChecked { untracked: Err(reason), .. } if reason.contains("Owner-ModB")),
+      "{answer:?}"
+    );
+  }
+
+  #[test]
+  fn config_files_survive_uninstalling_and_reinstalling() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+    let index = mock_index(&mut mock);
+    let settings = default_profile(&config).join("BepInEx/config/Owner.ModC.cfg");
+
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "volume = 3").unwrap();
+    finished(run_now(uninstall(&["Owner-ModC"], vec![]), &config));
+    run_now(install("Owner-ModC", &index), &config);
+
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "volume = 3");
   }
 
   const VALHEIM: u32 = 892970;

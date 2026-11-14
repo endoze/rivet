@@ -4,6 +4,7 @@
 pub mod browse;
 pub mod install;
 pub mod launch;
+pub mod manage;
 pub mod picker;
 pub mod settings;
 pub mod switcher;
@@ -11,6 +12,7 @@ pub mod switcher;
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
 use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
+use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
@@ -53,6 +55,10 @@ pub struct State {
   pub launches: u64,
   /// The open game's profiles. `None` outside a game.
   pub switcher: Option<Switcher>,
+  /// The tab shown in a game.
+  pub tab: Tab,
+  /// The Installed tab.
+  pub manage: Manage,
 }
 
 impl State {
@@ -76,6 +82,8 @@ impl State {
       confirmation: None,
       operation: None,
       operations: 0,
+      tab: Tab::default(),
+      manage: Manage::default(),
     }
   }
 }
@@ -166,14 +174,41 @@ pub enum Msg {
     operation: u64,
     progress: Progress,
   },
-  /// An [`Install`] ended, by operation id: what it did, or why it could not
-  /// run at all.
-  InstallFinished {
+  /// An operation ended, by its id: what it did, or why it could not run at
+  /// all.
+  OperationFinished {
     operation: u64,
     outcome: Result<Outcome, String>,
   },
-  /// The result of the last install was closed.
+  /// The result of the last operation was closed.
   OperationDismissed,
+  TabChosen(Tab),
+  /// The Installed tab's search text changed.
+  InstalledSearchChanged(String),
+  InstalledSortChosen(Sort),
+  /// Enable was pressed on an installed package, by `Owner-Name`.
+  EnablePressed(String),
+  /// Disable was pressed on an installed package, by `Owner-Name`.
+  DisablePressed(String),
+  /// Uninstall was pressed on an installed package, by `Owner-Name`.
+  UninstallPressed(String),
+  EnableAllPressed,
+  DisableAllPressed,
+  /// The user answered whether a change takes the package's dependants too.
+  DependantsChosen(Scope),
+  /// The user answered whether an uninstall deletes the folders no package
+  /// records.
+  FoldersChosen(Folders),
+  /// The question or refusal of the Installed tab was closed.
+  PendingDismissed,
+  /// An uninstall was checked: the folders no package records, which it
+  /// would offer to delete, or why it cannot go ahead.
+  UninstallChecked {
+    game: String,
+    profile: String,
+    packages: Vec<String>,
+    untracked: Result<Vec<PathBuf>, String>,
+  },
   /// A launch button was pressed.
   LaunchPressed(LaunchMode),
   /// A [`Launch`] ended, by its id: the game started, or why it did not.
@@ -244,8 +279,19 @@ pub enum Command {
   /// with [`Msg::ProfileOpened`].
   OpenProfile { game: String, profile: String },
   /// Answered with any number of [`Msg::InstallProgress`], then
-  /// [`Msg::InstallFinished`].
+  /// [`Msg::OperationFinished`].
   Install(Install),
+  /// Check what uninstalling `packages` from a game's profile would delete,
+  /// changing nothing. Answered with [`Msg::UninstallChecked`].
+  CheckUninstall {
+    game: String,
+    profile: String,
+    packages: Vec<String>,
+  },
+  /// Answered with [`Msg::OperationFinished`].
+  Uninstall(Uninstall),
+  /// Answered with [`Msg::OperationFinished`].
+  SetEnabled(SetEnabled),
   /// Prepare and start the game. Answered with [`Msg::LaunchFinished`].
   Launch(Launch),
   /// Write the game's Steam wrapper and read Steam's launch options for
@@ -315,6 +361,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.confirmation = None;
       state.launcher = None;
       state.switcher = None;
+      state.manage.pending = None;
 
       if !state.is_launching() {
         state.launch = None;
@@ -354,10 +401,43 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       operation,
       progress,
     } => install::install_progress(state, operation, progress),
-    Msg::InstallFinished { operation, outcome } => {
-      install::install_finished(state, operation, outcome)
+    Msg::OperationFinished { operation, outcome } => {
+      install::operation_finished(state, operation, outcome)
     }
     Msg::OperationDismissed => install::operation_dismissed(state),
+    Msg::TabChosen(tab) => {
+      state.tab = tab;
+
+      Vec::new()
+    }
+    Msg::InstalledSearchChanged(query) => {
+      state.manage.query = query;
+
+      Vec::new()
+    }
+    Msg::InstalledSortChosen(sort) => {
+      state.manage.sort = sort;
+
+      Vec::new()
+    }
+    Msg::EnablePressed(package) => manage::enable_pressed(state, package),
+    Msg::DisablePressed(package) => manage::disable_pressed(state, package),
+    Msg::UninstallPressed(package) => manage::uninstall_pressed(state, package),
+    Msg::EnableAllPressed => manage::set_all(state, true),
+    Msg::DisableAllPressed => manage::set_all(state, false),
+    Msg::DependantsChosen(scope) => manage::dependants_chosen(state, scope),
+    Msg::FoldersChosen(folders) => manage::folders_chosen(state, folders),
+    Msg::PendingDismissed => {
+      state.manage.pending = None;
+
+      Vec::new()
+    }
+    Msg::UninstallChecked {
+      game,
+      profile,
+      packages,
+      untracked,
+    } => manage::uninstall_checked(state, game, profile, packages, untracked),
     Msg::LaunchPressed(mode) => launch::launch_pressed(state, mode),
     Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
     Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),
@@ -608,10 +688,36 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
           "meta": { "displayName": "A Game Without A Package Index" },
           "r2modman": [{ "gameInstanceType": "game", "exeNames": ["game.exe"] }]
         }
-      }
+      },
+      "modloaderPackages": [
+        { "packageId": "denikson-BepInExPack_Valheim", "rootFolder": "BepInExPack_Valheim", "loader": "bepinex" }
+      ]
     }"#,
   )
   .expect("test ecosystem parses")
+}
+
+/// A profile holding each `(Owner-Name, version)`, enabled and needing
+/// nothing.
+#[cfg(test)]
+pub(crate) fn test_installed(packages: &[(&str, &str)]) -> Installed {
+  packages
+    .iter()
+    .map(|(full_name, version)| {
+      let author = full_name.split_once('-').map_or("", |(author, _)| author);
+
+      (
+        full_name.to_string(),
+        install::InstalledPackage {
+          author: author.to_string(),
+          version: version.to_string(),
+          enabled: true,
+          dependencies: Vec::new(),
+          installed_at: 0,
+        },
+      )
+    })
+    .collect()
 }
 
 #[cfg(test)]

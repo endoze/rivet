@@ -10,8 +10,46 @@ use thunderstore_engine::models::{DependencyGraph, PackageIndex};
 /// The profile every game has, created the first time the game is opened.
 pub const DEFAULT_PROFILE: &str = "Default";
 
-/// The packages recorded in a profile: each `Owner-Name` with its version.
-pub type Installed = BTreeMap<String, String>;
+/// The packages recorded in a profile, by `Owner-Name`.
+pub type Installed = BTreeMap<String, InstalledPackage>;
+
+/// One package recorded in a profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledPackage {
+  /// The owner, as Thunderstore spells it.
+  pub author: String,
+  pub version: String,
+  pub enabled: bool,
+  /// The packages it requires, by `Owner-Name`.
+  pub dependencies: Vec<String>,
+  /// When it was installed, in Unix milliseconds.
+  pub installed_at: u64,
+}
+
+impl InstalledPackage {
+  /// The name of `full_name` without its owner, such as `Mod` for
+  /// `Owner-Mod`.
+  ///
+  /// ```
+  /// use rivet_core::install::InstalledPackage;
+  ///
+  /// let package = InstalledPackage {
+  ///   author: "Owner".to_string(),
+  ///   version: "1.0.0".to_string(),
+  ///   enabled: true,
+  ///   dependencies: vec![],
+  ///   installed_at: 0,
+  /// };
+  ///
+  /// assert_eq!(package.name("Owner-Mod"), "Mod");
+  /// ```
+  pub fn name<'a>(&self, full_name: &'a str) -> &'a str {
+    full_name
+      .strip_prefix(self.author.as_str())
+      .and_then(|rest| rest.strip_prefix('-'))
+      .unwrap_or(full_name)
+  }
+}
 
 /// The open game's selected profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +110,7 @@ impl Confirmation {
   }
 }
 
-/// An install the user confirmed.
+/// A change to a profile the user asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Operation {
   /// Unique per app run, so progress and the result can be matched to it.
@@ -80,9 +118,33 @@ pub struct Operation {
   /// The game, by its key in the game definitions.
   pub game: String,
   pub profile: String,
-  /// The package the user asked for, as `Owner-Name`.
-  pub package: String,
+  pub action: Action,
   pub status: OperationStatus,
+}
+
+/// What an [`Operation`] changes, naming packages as `Owner-Name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+  /// Install the package the user asked for, with everything it needs.
+  Install(String),
+  /// Uninstall these packages, the one the user named first.
+  Uninstall(Vec<String>),
+  /// Enable or disable these packages, the one the user named first.
+  SetEnabled {
+    packages: Vec<String>,
+    enabled: bool,
+  },
+}
+
+impl Action {
+  /// The packages the user asked to change. An install's dependencies are not
+  /// among them.
+  pub fn packages(&self) -> &[String] {
+    match self {
+      Action::Install(package) => std::slice::from_ref(package),
+      Action::Uninstall(packages) | Action::SetEnabled { packages, .. } => packages,
+    }
+  }
 }
 
 /// Where an [`Operation`] is.
@@ -90,13 +152,13 @@ pub struct Operation {
 pub enum OperationStatus {
   /// Running, with the latest progress once there is some.
   Running(Option<Progress>),
-  /// Every package installed. `installed` lists those that changed.
-  Finished { installed: Vec<String> },
-  /// Something failed. `installed` lists the packages that changed before or
+  /// Everything went through. `changed` lists the packages that changed.
+  Finished { changed: Vec<String> },
+  /// Something failed. `changed` lists the packages that changed before or
   /// despite the failure, and is empty when the profile is as it was.
   Failed {
     failed: Vec<FailedPackage>,
-    installed: Vec<String>,
+    changed: Vec<String>,
   },
 }
 
@@ -121,23 +183,23 @@ pub enum Stage {
   Installing,
 }
 
-/// A package an install could not install, with the reason.
+/// A package an operation could not change, with the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailedPackage {
-  /// The package, as `Owner-Name`.
+  /// The package as `Owner-Name`, or a folder an uninstall could not delete.
   pub package: String,
   pub reason: String,
 }
 
-/// What an install did to the profile.
+/// What an operation did to the profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
-  /// The packages added or changed, by `Owner-Name`, sorted.
-  pub installed: Vec<String>,
-  /// What failed. Empty when the install succeeded.
+  /// The packages added, changed, or removed, by `Owner-Name`, sorted.
+  pub changed: Vec<String>,
+  /// What failed. Empty when the operation succeeded.
   pub failed: Vec<FailedPackage>,
   /// Every package in the profile afterwards, or why the profile could not be
-  /// read back after the install.
+  /// read back after the operation.
   pub profile: Result<Installed, String>,
 }
 
@@ -168,7 +230,7 @@ impl State {
       .is_some_and(|installed| installed.contains_key(full_name))
   }
 
-  /// Whether an install is running, so no other can start.
+  /// Whether an operation is running, so no other can start.
   pub fn is_busy(&self) -> bool {
     self
       .operation
@@ -176,19 +238,41 @@ impl State {
       .is_some_and(|operation| matches!(operation.status, OperationStatus::Running(_)))
   }
 
-  /// Whether an install can start: the open profile has been read, and no
-  /// install is running, no launch is being prepared, and no profile change
-  /// is being made.
+  /// Whether an operation can start: the open profile has been read, no
+  /// operation is running or being checked, no launch is being prepared, and
+  /// no profile change is being made.
   pub fn can_install(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
-    ready && !self.is_busy() && !self.is_launching() && !self.is_changing_profile()
+    ready
+      && !self.is_busy()
+      && !self.is_checking()
+      && !self.is_launching()
+      && !self.is_changing_profile()
   }
+}
+
+/// Starts `action` on the open profile as a new [`Operation`], returning its
+/// id. `None` when no profile is open.
+pub(crate) fn start(state: &mut State, action: Action) -> Option<u64> {
+  let profile = state.profile.as_ref()?;
+
+  state.operations += 1;
+  state.operation = Some(Operation {
+    id: state.operations,
+    game: profile.game.clone(),
+    profile: profile.name.clone(),
+    action,
+    status: OperationStatus::Running(None),
+  });
+
+  Some(state.operations)
 }
 
 /// Opens `game`'s `name` profile as the selected one, creating it if the game
 /// does not have it.
 pub(crate) fn open_profile(state: &mut State, game: &str, name: &str) -> Vec<Effect> {
+  state.manage.pending = None;
   state.profile = Some(Profile {
     game: game.to_string(),
     name: name.to_string(),
@@ -256,7 +340,9 @@ fn plan(index: &PackageIndex, installed: &Installed, full_name: &str) -> Option<
     .keys()
     .filter_map(|file| parse_package_filename(file))
     .map(|(name, version)| Planned {
-      installed: installed.get(&name) == Some(&version),
+      installed: installed
+        .get(&name)
+        .is_some_and(|package| package.version == version),
       full_name: name,
       version,
     })
@@ -297,32 +383,24 @@ pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
   let Some(index) = browse.index.clone() else {
     return Vec::new();
   };
+  let (game, name) = (profile.game.clone(), profile.name.clone());
   let community = browse.community.clone();
   let Some(confirmation) = state.confirmation.take() else {
     return Vec::new();
   };
-
-  state.operations += 1;
-
-  let operation = Operation {
-    id: state.operations,
-    game: profile.game.clone(),
-    profile: profile.name.clone(),
-    package: confirmation.package.full_name,
-    status: OperationStatus::Running(None),
+  let package = confirmation.package.full_name;
+  let Some(operation) = start(state, Action::Install(package.clone())) else {
+    return Vec::new();
   };
-  let install = Install {
-    operation: operation.id,
-    game: operation.game.clone(),
+
+  vec![Effect::Run(Command::Install(Install {
+    operation,
+    game,
     community,
-    profile: operation.profile.clone(),
-    package: operation.package.clone(),
+    profile: name,
+    package,
     index,
-  };
-
-  state.operation = Some(operation);
-
-  vec![Effect::Run(Command::Install(install))]
+  }))]
 }
 
 /// The running operation with id `id`, if there is one.
@@ -342,7 +420,7 @@ pub(crate) fn install_progress(state: &mut State, id: u64, progress: Progress) -
 
 /// Applies the result of operation `id`: what it did, or why it could not run
 /// at all, which leaves the profile as it was.
-pub(crate) fn install_finished(
+pub(crate) fn operation_finished(
   state: &mut State,
   id: u64,
   outcome: Result<Outcome, String>,
@@ -352,7 +430,7 @@ pub(crate) fn install_finished(
   };
 
   let Outcome {
-    installed,
+    changed,
     failed,
     profile,
   } = match outcome {
@@ -360,10 +438,10 @@ pub(crate) fn install_finished(
     Err(reason) => {
       operation.status = OperationStatus::Failed {
         failed: vec![FailedPackage {
-          package: operation.package.clone(),
+          package: operation.action.packages().join(", "),
           reason,
         }],
-        installed: Vec::new(),
+        changed: Vec::new(),
       };
 
       return Vec::new();
@@ -371,9 +449,9 @@ pub(crate) fn install_finished(
   };
 
   operation.status = if failed.is_empty() {
-    OperationStatus::Finished { installed }
+    OperationStatus::Finished { changed }
   } else {
-    OperationStatus::Failed { failed, installed }
+    OperationStatus::Failed { failed, changed }
   };
 
   let (game, name) = (operation.game.clone(), operation.profile.clone());
@@ -392,7 +470,7 @@ pub(crate) fn install_finished(
   Vec::new()
 }
 
-/// Clears the result of an install that has ended.
+/// Clears the result of an operation that has ended.
 pub(crate) fn operation_dismissed(state: &mut State) -> Vec<Effect> {
   if !state.is_busy() {
     state.operation = None;
@@ -433,10 +511,14 @@ mod tests {
   }
 
   fn installed(packages: &[(&str, &str)]) -> Installed {
-    packages
-      .iter()
-      .map(|(name, version)| (name.to_string(), version.to_string()))
-      .collect()
+    crate::test_installed(packages)
+  }
+
+  fn action(state: &State) -> Option<Action> {
+    state
+      .operation
+      .as_ref()
+      .map(|operation| operation.action.clone())
   }
 
   fn profile_opened(game: &str, packages: Result<Installed, &str>) -> Msg {
@@ -622,7 +704,7 @@ mod tests {
   }
 
   fn finished(operation: u64, outcome: Result<Outcome, &str>) -> Msg {
-    Msg::InstallFinished {
+    Msg::OperationFinished {
       operation,
       outcome: outcome.map_err(str::to_string),
     }
@@ -653,6 +735,10 @@ mod tests {
       }))]
     );
     assert_eq!(state.confirmation, None);
+    assert_eq!(
+      action(&state),
+      Some(Action::Install("Owner-Pack".to_string()))
+    );
     assert_eq!(status(&state), Some(OperationStatus::Running(None)));
   }
 
@@ -708,7 +794,7 @@ mod tests {
       finished(
         1,
         Ok(Outcome {
-          installed: names(&["Owner-Core", "Owner-Lib", "Owner-Pack"]),
+          changed: names(&["Owner-Core", "Owner-Lib", "Owner-Pack"]),
           failed: vec![],
           profile: Ok(profile),
         }),
@@ -719,7 +805,7 @@ mod tests {
     assert_eq!(
       status(&state),
       Some(OperationStatus::Finished {
-        installed: names(&["Owner-Core", "Owner-Lib", "Owner-Pack"]),
+        changed: names(&["Owner-Core", "Owner-Lib", "Owner-Pack"]),
       })
     );
     assert!(state.is_installed("Owner-Pack"));
@@ -739,7 +825,7 @@ mod tests {
       finished(
         1,
         Ok(Outcome {
-          installed: names(&["Owner-Core"]),
+          changed: names(&["Owner-Core"]),
           failed: vec![failure.clone()],
           profile: Ok(installed(&[("Owner-Core", "1.0.0")])),
         }),
@@ -750,7 +836,7 @@ mod tests {
       status(&state),
       Some(OperationStatus::Failed {
         failed: vec![failure],
-        installed: names(&["Owner-Core"]),
+        changed: names(&["Owner-Core"]),
       })
     );
     assert!(state.is_installed("Owner-Core"));
@@ -772,7 +858,7 @@ mod tests {
           package: "Owner-Pack".to_string(),
           reason: "disk full".to_string(),
         }],
-        installed: vec![],
+        changed: vec![],
       })
     );
     assert!(state.is_installed("Owner-Core"));
@@ -789,7 +875,7 @@ mod tests {
       finished(
         1,
         Ok(Outcome {
-          installed: names(&["Owner-Lib", "Owner-Pack"]),
+          changed: names(&["Owner-Lib", "Owner-Pack"]),
           failed: vec![],
           profile: Err("mods.yml: permission denied".to_string()),
         }),
@@ -799,7 +885,7 @@ mod tests {
     assert_eq!(
       status(&state),
       Some(OperationStatus::Finished {
-        installed: names(&["Owner-Lib", "Owner-Pack"]),
+        changed: names(&["Owner-Lib", "Owner-Pack"]),
       })
     );
     assert_eq!(
@@ -820,7 +906,7 @@ mod tests {
       finished(
         1,
         Ok(Outcome {
-          installed: names(&["Owner-Pack"]),
+          changed: names(&["Owner-Pack"]),
           failed: vec![],
           profile: Ok(installed(&[("Owner-Pack", "2.0.0")])),
         }),
@@ -830,7 +916,7 @@ mod tests {
     assert_eq!(
       status(&state),
       Some(OperationStatus::Finished {
-        installed: names(&["Owner-Pack"]),
+        changed: names(&["Owner-Pack"]),
       })
     );
     assert_eq!(state.profile, None);

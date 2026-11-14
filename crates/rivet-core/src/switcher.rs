@@ -1033,12 +1033,12 @@ mod tests {
     update(&mut state, opened("Default"));
     update(
       &mut state,
-      Msg::InstallFinished {
+      Msg::OperationFinished {
         operation: 1,
         outcome: Ok(Outcome {
-          installed: strings(&["Owner-Pack"]),
+          changed: strings(&["Owner-Pack"]),
           failed: vec![],
-          profile: Ok([("Owner-Pack".to_string(), "1.0.0".to_string())].into()),
+          profile: Ok(crate::test_installed(&[("Owner-Pack", "1.0.0")])),
         }),
       },
     );

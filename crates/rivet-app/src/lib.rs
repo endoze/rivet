@@ -20,8 +20,11 @@ use gpui_kit::{
 };
 use icons::IconCache;
 use rivet_core::browse::{Browse, SortKey, View};
-use rivet_core::install::{Confirmation, Operation, OperationStatus, ProfileStatus};
+use rivet_core::install::{
+  Action, Confirmation, InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus,
+};
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
+use rivet_core::manage::{Folders, Pending, Scope, Sort, Tab};
 use rivet_core::picker::Step;
 use rivet_core::switcher::Naming;
 use rivet_core::{Command, Effect, Msg, Screen, State};
@@ -39,6 +42,7 @@ pub struct Shell {
   /// Text for the profile name field, put there and focused on the next
   /// render, since setting it needs the window.
   fill_profile_name: Option<String>,
+  installed_search: Entity<InputState>,
   icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
   _inbox: Task<()>,
@@ -89,6 +93,19 @@ impl Shell {
         }
       },
     );
+    let installed_search =
+      cx.new(|cx| InputState::new(window, cx).placeholder(text::INSTALLED_SEARCH_PLACEHOLDER));
+    let installed_searched = cx.subscribe_in(
+      &installed_search,
+      window,
+      |this: &mut Self, input, event: &InputEvent, _, cx| {
+        if let InputEvent::Change = event {
+          let query = input.read(cx).value().to_string();
+
+          this.dispatch(Msg::InstalledSearchChanged(query), cx);
+        }
+      },
+    );
     let _inbox = cx.spawn(async move |this, cx| {
       while let Some(msg) = inbox.next().await {
         if this.update(cx, |this, cx| this.dispatch(msg, cx)).is_err() {
@@ -103,8 +120,9 @@ impl Shell {
       package_search,
       profile_name,
       fill_profile_name: None,
+      installed_search,
       icons: cx.new(|_| IconCache::new()),
-      _subscriptions: vec![searched, package_searched, named],
+      _subscriptions: vec![searched, package_searched, named, installed_searched],
       _inbox,
     };
 
@@ -307,12 +325,99 @@ impl Shell {
           .as_ref()
           .map(|confirmation| render_confirmation(confirmation, cx)),
       )
-      .children(
-        self
+      .child(render_tabs(self.state.tab, cx))
+      .children(match self.state.tab {
+        Tab::Browse => self
           .state
           .browse
           .as_ref()
           .map(|browse| render_browse(browse, &self.package_search, &self.icons, cx)),
+        Tab::Installed => Some(self.render_installed(cx)),
+      })
+      .into_any_element()
+  }
+
+  /// The open profile's packages, with search, sort, the bulk toggles, and
+  /// the question a change is waiting on.
+  fn render_installed(&self, cx: &mut Context<Self>) -> AnyElement {
+    let state = &self.state;
+    let can_change = state.can_install();
+    let manage = &state.manage;
+    let sort_button = |id: &'static str, label: &'static str, sort: Sort| {
+      Button::new(id)
+        .label(label)
+        .small()
+        .when(manage.sort == sort, |button| button.primary())
+        .on_click(cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::InstalledSortChosen(sort), cx);
+        }))
+    };
+    let controls = h_flex()
+      .gap_2()
+      .child(div().flex_1().child(Input::new(&self.installed_search)))
+      .child(sort_button(
+        "installed-sort-name",
+        text::SORT_NAME,
+        Sort::Name,
+      ))
+      .child(sort_button(
+        "installed-sort-author",
+        text::SORT_AUTHOR,
+        Sort::Author,
+      ))
+      .child(sort_button(
+        "installed-sort-newest",
+        text::SORT_NEWEST,
+        Sort::Newest,
+      ))
+      .child(
+        Button::new("enable-all")
+          .label(text::ENABLE_ALL)
+          .small()
+          .disabled(!can_change)
+          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::EnableAllPressed, cx))),
+      )
+      .child(
+        Button::new("disable-all")
+          .label(text::DISABLE_ALL)
+          .small()
+          .disabled(!can_change)
+          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::DisableAllPressed, cx))),
+      );
+    let pending = manage
+      .pending
+      .as_ref()
+      .map(|pending| render_pending(pending, cx));
+    let installed = state.profile.as_ref().and_then(Profile::installed);
+    let rows: Vec<AnyElement> = installed
+      .map(|installed| rivet_core::manage::rows(installed, &manage.query, manage.sort))
+      .unwrap_or_default()
+      .into_iter()
+      .map(|(full_name, package)| {
+        let toggle = state.can_toggle(full_name);
+
+        installed_row(full_name, package, toggle, can_change, cx)
+      })
+      .collect();
+    let empty = match installed {
+      Some(installed) if installed.is_empty() => Some(text::NO_INSTALLED),
+      Some(_) if rows.is_empty() => Some(text::NO_INSTALLED_MATCHES),
+      _ => None,
+    };
+
+    v_flex()
+      .flex_1()
+      .gap_2()
+      .overflow_hidden()
+      .child(controls)
+      .children(pending)
+      .children(empty)
+      .child(
+        v_flex()
+          .id("installed-packages")
+          .flex_1()
+          .overflow_y_scroll()
+          .children(rows),
       )
       .into_any_element()
   }
@@ -645,27 +750,247 @@ fn render_operation(operation: &Operation, cx: &mut Context<Shell>) -> AnyElemen
   let dismiss = Button::new("dismiss-operation")
     .label(text::DISMISS)
     .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::OperationDismissed, cx)));
+  let action = &operation.action;
 
-  match &operation.status {
-    OperationStatus::Running(progress) => div()
-      .child(text::installing(&operation.package, progress.as_ref()))
+  match (&operation.status, action) {
+    (OperationStatus::Running(progress), Action::Install(package)) => div()
+      .child(text::installing(package, progress.as_ref()))
       .into_any_element(),
-    OperationStatus::Finished { installed } => h_flex()
-      .gap_2()
-      .justify_between()
-      .child(text::installed(&operation.package, installed))
-      .child(dismiss)
+    (OperationStatus::Running(_), action) => div()
+      .id("operation-running")
+      .child(text::changing_packages(action))
+      .test_support()
       .into_any_element(),
-    OperationStatus::Failed { failed, installed } => v_flex()
+    (OperationStatus::Finished { changed }, action) => {
+      let message = match action {
+        Action::Install(package) => text::installed(package, changed),
+        action => text::changed(action, changed),
+      };
+
+      h_flex()
+        .gap_2()
+        .justify_between()
+        .child(message)
+        .child(dismiss)
+        .into_any_element()
+    }
+    (OperationStatus::Failed { failed, changed }, action) => {
+      let message = match action {
+        Action::Install(package) => text::install_failed(package, failed, changed),
+        action => text::change_failed(action, failed, changed),
+      };
+
+      v_flex()
+        .gap_2()
+        .child(failure(message))
+        .child(dismiss)
+        .into_any_element()
+    }
+  }
+}
+
+fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
+  let tab_button = |id: &'static str, label: &'static str, this_tab: Tab| {
+    Button::new(id)
+      .label(label)
+      .when(tab == this_tab, |button| button.primary())
+      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(Msg::TabChosen(this_tab), cx)))
+  };
+
+  h_flex()
+    .gap_2()
+    .child(tab_button("tab-browse", text::TAB_BROWSE, Tab::Browse))
+    .child(tab_button(
+      "tab-installed",
+      text::TAB_INSTALLED,
+      Tab::Installed,
+    ))
+    .into_any_element()
+}
+
+/// The question or refusal a change in the Installed tab is waiting on.
+fn render_pending(pending: &Pending, cx: &mut Context<Shell>) -> AnyElement {
+  let cancel = Button::new("dismiss-pending")
+    .label(text::CANCEL)
+    .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::PendingDismissed, cx)));
+  let panel = || {
+    v_flex()
       .gap_2()
-      .child(failure(text::install_failed(
-        &operation.package,
-        failed,
-        installed,
-      )))
-      .child(dismiss)
+      .p_3()
+      .border_1()
+      .border_color(rgb(0x606060))
+  };
+  let list = |items: Vec<String>| {
+    items
+      .into_iter()
+      .map(|item| div().pl_3().child(item))
+      .collect::<Vec<_>>()
+  };
+
+  match pending {
+    Pending::Dependants {
+      removal,
+      package,
+      dependants,
+    } => panel()
+      .id("dependants-question")
+      .child(
+        div()
+          .font_weight(FontWeight::SEMIBOLD)
+          .child(text::dependants_question(*removal, package)),
+      )
+      .children(list(dependants.clone()))
+      .child(
+        h_flex()
+          .gap_2()
+          .child(
+            Button::new("package-only")
+              .label(text::PACKAGE_ONLY)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::DependantsChosen(Scope::PackageOnly), cx);
+              })),
+          )
+          .child(
+            Button::new("with-dependants")
+              .label(text::WITH_DEPENDANTS)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::DependantsChosen(Scope::WithDependants), cx);
+              })),
+          )
+          .child(cancel),
+      )
+      .test_support()
+      .into_any_element(),
+    Pending::Checking { .. } => div().child(text::CHECKING_UNINSTALL).into_any_element(),
+    Pending::Untracked { packages, folders } => panel()
+      .id("untracked-question")
+      .child(
+        div()
+          .font_weight(FontWeight::SEMIBOLD)
+          .child(text::untracked_question(packages)),
+      )
+      .child(text::UNTRACKED_LEAD)
+      .children(list(
+        folders
+          .iter()
+          .map(|folder| folder.display().to_string())
+          .collect(),
+      ))
+      .child(
+        h_flex()
+          .gap_2()
+          .child(
+            Button::new("delete-folders")
+              .label(text::DELETE_FOLDERS)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::FoldersChosen(Folders::Delete), cx);
+              })),
+          )
+          .child(
+            Button::new("keep-folders")
+              .label(text::KEEP_FOLDERS)
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::FoldersChosen(Folders::Keep), cx);
+              })),
+          )
+          .child(cancel),
+      )
+      .test_support()
+      .into_any_element(),
+    Pending::Refused { packages, reason } => v_flex()
+      .gap_2()
+      .child(failure(text::uninstall_refused(packages, reason)))
+      .child(
+        Button::new("dismiss-pending")
+          .label(text::DISMISS)
+          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::PendingDismissed, cx))),
+      )
       .into_any_element(),
   }
+}
+
+/// One package of the Installed tab: its name, author, version, whether it
+/// is enabled, and the buttons that change it.
+fn installed_row(
+  full_name: &str,
+  package: &InstalledPackage,
+  can_toggle: bool,
+  can_change: bool,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
+  let muted = rgb(0x999999);
+  let (state_id, state_label) = match (can_toggle, package.enabled) {
+    (false, _) => ("loader", text::MOD_LOADER),
+    (true, true) => ("enabled", text::ENABLED),
+    (true, false) => ("disabled", text::DISABLED),
+  };
+  let toggle = can_toggle.then(|| {
+    let (id, label, msg) = if package.enabled {
+      (
+        "disable",
+        text::DISABLE,
+        Msg::DisablePressed(full_name.to_string()),
+      )
+    } else {
+      (
+        "enable",
+        text::ENABLE,
+        Msg::EnablePressed(full_name.to_string()),
+      )
+    };
+
+    Button::new(SharedString::from(format!("{id}-{full_name}")))
+      .label(label)
+      .small()
+      .disabled(!can_change)
+      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
+  });
+  let uninstall = full_name.to_string();
+
+  h_flex()
+    .id(SharedString::from(format!("profile-{full_name}")))
+    .w_full()
+    .px_3()
+    .py_2()
+    .gap_3()
+    .when(!package.enabled, |row| row.opacity(0.6))
+    .child(
+      h_flex()
+        .flex_1()
+        .gap_2()
+        .overflow_hidden()
+        .child(
+          div()
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(SharedString::from(package.name(full_name).to_string())),
+        )
+        .child(
+          div()
+            .text_sm()
+            .text_color(muted)
+            .child(text::byline(&package.author, &package.version)),
+        ),
+    )
+    .child(
+      div()
+        .id(SharedString::from(format!("{state_id}-{full_name}")))
+        .flex_none()
+        .text_sm()
+        .child(state_label)
+        .test_support(),
+    )
+    .children(toggle)
+    .child(
+      Button::new(SharedString::from(format!("uninstall-{full_name}")))
+        .label(text::UNINSTALL)
+        .small()
+        .disabled(!can_change)
+        .on_click(cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::UninstallPressed(uninstall.clone()), cx);
+        })),
+    )
+    .test_support()
+    .into_any_element()
 }
 
 /// The install button of a package row, or a mark when the open profile

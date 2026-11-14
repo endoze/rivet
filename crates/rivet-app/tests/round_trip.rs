@@ -3,7 +3,7 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, TestAppContext, WindowOptions};
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
-use rivet_core::install::{DEFAULT_PROFILE, Installed, Outcome};
+use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome};
 use rivet_core::settings::{GameSettings, Settings};
 use rivet_core::{Command, Msg, Screen, State};
 use std::path::PathBuf;
@@ -228,15 +228,15 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
   assert_eq!(install.package, "Owner-ModC");
 
   answers
-    .unbounded_send(Msg::InstallFinished {
+    .unbounded_send(Msg::OperationFinished {
       operation: install.operation,
       outcome: Ok(Outcome {
-        installed: vec!["Owner-ModA".to_string(), "Owner-ModC".to_string()],
+        changed: vec!["Owner-ModA".to_string(), "Owner-ModC".to_string()],
         failed: vec![],
         profile: Ok(
           [
-            ("Owner-ModA".to_string(), "1.0.0".to_string()),
-            ("Owner-ModC".to_string(), "1.0.0".to_string()),
+            package("Owner-ModA", &[]),
+            package("Owner-ModC", &["Owner-ModA"]),
           ]
           .into(),
         ),
@@ -251,6 +251,84 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
     assert!(window.try_find("install-Owner-ModC").is_none());
   })
   .unwrap();
+}
+
+/// An enabled 1.0.0 `Owner-` package needing `dependencies`.
+fn package(full_name: &str, dependencies: &[&str]) -> (String, InstalledPackage) {
+  (
+    full_name.to_string(),
+    InstalledPackage {
+      author: "Owner".to_string(),
+      version: "1.0.0".to_string(),
+      enabled: true,
+      dependencies: dependencies.iter().map(|name| name.to_string()).collect(),
+      installed_at: 0,
+    },
+  )
+}
+
+#[gpui_kit::test]
+fn the_installed_tab_lists_the_profile_and_asks_before_disabling_a_dependency(
+  cx: &mut TestAppContext,
+) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(
+        [
+          package("Owner-ModA", &[]),
+          package("Owner-ModC", &["Owner-ModA"]),
+        ]
+        .into(),
+      ),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-Owner-ModA").is_none());
+
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-Owner-ModA").is_some());
+    assert!(window.try_find("enabled-Owner-ModC").is_some());
+
+    window.click("disable-Owner-ModA", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("dependants-question").is_some());
+
+    window.click("with-dependants", cx);
+  })
+  .unwrap();
+
+  let set = std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::SetEnabled(set) => Some(set),
+      _ => None,
+    })
+    .expect("a disable was sent");
+
+  assert_eq!(set.packages, ["Owner-ModA", "Owner-ModC"]);
+  assert!(!set.enabled);
 }
 
 fn valheim_refresh(id: u64) -> Refresh {
