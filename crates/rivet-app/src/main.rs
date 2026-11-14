@@ -10,7 +10,9 @@ fn main() {
     settings: rivet_platform::paths::settings_file()
       .expect("the platform reports no config location"),
     cache: rivet_platform::paths::cache_folder().expect("the platform reports no cache location"),
+    data: rivet_platform::paths::data_folder().expect("the platform reports no data location"),
     thunderstore: rivet_commands::THUNDERSTORE.to_string(),
+    ecosystem: Ecosystem::bundled(),
   };
 
   gpui_kit::application().run(move |cx| {
@@ -21,8 +23,8 @@ fn main() {
 
     cx.set_http_client(Arc::new(images));
 
+    let state = State::new(config.ecosystem.clone());
     let (commands, inbox) = rivet_commands::spawn(config);
-    let state = State::new(Ecosystem::bundled());
 
     gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
       cx.new(|cx| Shell::new(state, commands, inbox, window, cx))

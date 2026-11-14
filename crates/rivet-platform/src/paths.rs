@@ -18,3 +18,10 @@ pub fn settings_file() -> Option<PathBuf> {
 pub fn cache_folder() -> Option<PathBuf> {
   dirs::cache_dir().map(|cache| cache.join(APP_FOLDER))
 }
+
+/// The folder for profiles and the packages installed into them, in the
+/// platform's data location: `~/.local/share/rivet` on Linux. `None` when the
+/// platform reports no data location.
+pub fn data_folder() -> Option<PathBuf> {
+  dirs::data_dir().map(|data| data.join(APP_FOLDER))
+}

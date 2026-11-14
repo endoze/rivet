@@ -3,6 +3,7 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{AppContext as _, TestAppContext, WindowOptions};
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
+use rivet_core::install::{DEFAULT_PROFILE, Installed, Outcome};
 use rivet_core::settings::{GameSettings, Settings};
 use rivet_core::{Command, Msg, Screen, State};
 use std::path::PathBuf;
@@ -51,6 +52,7 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
     sent.try_recv().ok(),
     Some(Command::ReadCachedIndex("valheim".to_string()))
   );
+  assert_eq!(sent.try_recv().ok(), Some(open_default_profile()));
 
   answers
     .unbounded_send(Msg::CachedIndexRead {
@@ -92,6 +94,98 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
       fetch: Fetch::Always,
     })
   );
+}
+
+fn open_default_profile() -> Command {
+  Command::OpenProfile {
+    game: "valheim".to_string(),
+    profile: DEFAULT_PROFILE.to_string(),
+  }
+}
+
+fn valheim_settings() -> Settings {
+  Settings {
+    last_game: Some("valheim".to_string()),
+    games: [(
+      "valheim".to_string(),
+      GameSettings {
+        folder: PathBuf::from("/games/Valheim"),
+      },
+    )]
+    .into(),
+  }
+}
+
+#[gpui_kit::test]
+fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(Installed::new()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("install-Owner-ModC", cx);
+    window.render_frame(cx);
+    window.click("confirm-install", cx);
+  })
+  .unwrap();
+
+  let install = std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::Install(install) => Some(install),
+      _ => None,
+    })
+    .expect("an install was sent");
+
+  assert_eq!(install.package, "Owner-ModC");
+
+  answers
+    .unbounded_send(Msg::InstallFinished {
+      operation: install.operation,
+      outcome: Ok(Outcome {
+        installed: vec!["Owner-ModA".to_string(), "Owner-ModC".to_string()],
+        failed: vec![],
+        profile: Ok(
+          [
+            ("Owner-ModA".to_string(), "1.0.0".to_string()),
+            ("Owner-ModC".to_string(), "1.0.0".to_string()),
+          ]
+          .into(),
+        ),
+      }),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("installed-Owner-ModC").is_some());
+    assert!(window.try_find("install-Owner-ModC").is_none());
+  })
+  .unwrap();
 }
 
 fn valheim_refresh(id: u64) -> Refresh {

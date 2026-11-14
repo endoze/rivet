@@ -7,9 +7,9 @@ pub mod text;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::component::{Disableable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
   AnyElement, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
@@ -18,6 +18,7 @@ use gpui_kit::{
 };
 use icons::IconCache;
 use rivet_core::browse::{Browse, View};
+use rivet_core::install::{Confirmation, Operation, OperationStatus, Profile, ProfileStatus};
 use rivet_core::picker::Step;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
@@ -219,12 +220,143 @@ impl Shell {
       .children(
         self
           .state
+          .profile
+          .as_ref()
+          .and_then(|profile| match &profile.status {
+            ProfileStatus::Failed(reason) => {
+              Some(failure(text::profile_failed(&profile.name, reason)))
+            }
+            _ => None,
+          }),
+      )
+      .children(
+        self
+          .state
+          .operation
+          .as_ref()
+          .map(|operation| render_operation(operation, cx)),
+      )
+      .children(
+        self
+          .state
+          .confirmation
+          .as_ref()
+          .map(|confirmation| render_confirmation(confirmation, cx)),
+      )
+      .children(
+        self
+          .state
           .browse
           .as_ref()
           .map(|browse| render_browse(browse, &self.icons, cx)),
       )
       .into_any_element()
   }
+}
+
+fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> AnyElement {
+  let dependencies: Vec<_> = confirmation
+    .dependencies
+    .iter()
+    .map(|package| div().pl_3().child(text::planned(package)))
+    .collect();
+  let lead = if dependencies.is_empty() {
+    text::NO_DEPENDENCIES
+  } else {
+    text::WITH_DEPENDENCIES
+  };
+  let can_confirm = confirmation.can_confirm();
+
+  v_flex()
+    .gap_2()
+    .p_3()
+    .border_1()
+    .border_color(rgb(0x606060))
+    .child(
+      div()
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(text::confirm_install(&confirmation.package)),
+    )
+    .child(lead)
+    .children(dependencies)
+    .when(!can_confirm, |panel| {
+      panel.child(failure(text::missing_dependencies(&confirmation.missing)))
+    })
+    .child(
+      h_flex()
+        .gap_2()
+        .when(can_confirm, |buttons| {
+          buttons.child(
+            Button::new("confirm-install")
+              .label(text::INSTALL)
+              .primary()
+              .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::InstallConfirmed, cx))),
+          )
+        })
+        .child(
+          Button::new("dismiss-install")
+            .label(text::CANCEL)
+            .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::InstallDismissed, cx))),
+        ),
+    )
+    .into_any_element()
+}
+
+fn render_operation(operation: &Operation, cx: &mut Context<Shell>) -> AnyElement {
+  let dismiss = Button::new("dismiss-operation")
+    .label(text::DISMISS)
+    .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::OperationDismissed, cx)));
+
+  match &operation.status {
+    OperationStatus::Running(progress) => div()
+      .child(text::installing(&operation.package, progress.as_ref()))
+      .into_any_element(),
+    OperationStatus::Finished { installed } => h_flex()
+      .gap_2()
+      .justify_between()
+      .child(text::installed(&operation.package, installed))
+      .child(dismiss)
+      .into_any_element(),
+    OperationStatus::Failed { failed, installed } => v_flex()
+      .gap_2()
+      .child(failure(text::install_failed(
+        &operation.package,
+        failed,
+        installed,
+      )))
+      .child(dismiss)
+      .into_any_element(),
+  }
+}
+
+/// The install button of a package row, or a mark when the open profile
+/// already holds the package.
+fn install_action(
+  full_name: &str,
+  installed: bool,
+  can_install: bool,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
+  if installed {
+    return div()
+      .id(SharedString::from(format!("installed-{full_name}")))
+      .flex_none()
+      .text_sm()
+      .child(text::INSTALLED)
+      .test_support()
+      .into_any_element();
+  }
+
+  let package = full_name.to_string();
+
+  Button::new(SharedString::from(format!("install-{full_name}")))
+    .label(text::INSTALL)
+    .small()
+    .disabled(!can_install)
+    .on_click(cx.listener(move |this, _, _, cx| {
+      this.dispatch(Msg::InstallPressed(package.clone()), cx);
+    }))
+    .into_any_element()
 }
 
 /// Fixed so the list can be virtualized: only the rows in view are built.
@@ -244,18 +376,31 @@ fn render_browse(
       let rows = uniform_list(
         "packages",
         count,
-        cx.processor(|this, range: Range<usize>, _, _| {
-          let Some(browse) = this.state.browse.as_ref() else {
+        cx.processor(|this, range: Range<usize>, _, cx| {
+          let state = &this.state;
+          let Some(browse) = state.browse.as_ref() else {
             return Vec::new();
           };
           let Some(index) = browse.index.as_ref() else {
             return Vec::new();
           };
+          let can_install = state
+            .profile
+            .as_ref()
+            .and_then(Profile::installed)
+            .is_some()
+            && !state.is_busy();
 
           browse.rows[range]
             .iter()
             .filter_map(|&row| PackageRow::new(&index.0, row))
-            .map(package_row)
+            .map(|row| {
+              let full_name = row.full_name().unwrap_or_default();
+              let action =
+                install_action(full_name, state.is_installed(full_name), can_install, cx);
+
+              package_row(row, action)
+            })
             .collect()
         }),
       )
@@ -280,7 +425,7 @@ fn render_browse(
   }
 }
 
-fn package_row(row: PackageRow<'_>) -> AnyElement {
+fn package_row(row: PackageRow<'_>, action: AnyElement) -> AnyElement {
   let muted = rgb(0x999999);
   let icon = match row.icon() {
     Some(url) => img(SharedString::from(url.to_string()))
@@ -323,6 +468,7 @@ fn package_row(row: PackageRow<'_>) -> AnyElement {
             .child(text(row.description())),
         ),
     )
+    .child(action)
     .test_support()
     .into_any_element()
 }

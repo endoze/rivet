@@ -515,12 +515,9 @@ mod tests {
       },
     );
 
-    assert_eq!(
-      effects.last(),
-      Some(&Effect::Run(Command::ReadCachedIndex(
-        "riskofrain2".to_string()
-      )))
-    );
+    assert!(effects.contains(&Effect::Run(Command::ReadCachedIndex(
+      "riskofrain2".to_string()
+    ))));
 
     let from_cache = update(&mut state, cache_read("valheim", Ok(Some(two_packages()))));
     let from_network = update(&mut state, refreshed("valheim", 1, Ok(two_packages())));

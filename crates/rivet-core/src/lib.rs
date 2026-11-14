@@ -2,10 +2,12 @@
 //! the effects the shell must run. Nothing here does IO.
 
 pub mod browse;
+pub mod install;
 pub mod picker;
 pub mod settings;
 
 use browse::{Browse, Fetch, Index, Refresh};
+use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Progress};
 use picker::{FolderRefusal, Picker, Refusal, Step};
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
@@ -25,6 +27,15 @@ pub struct State {
   pub browse: Option<Browse>,
   /// How many index fetches have been started, so each gets its own id.
   pub refreshes: u64,
+  /// The open game's profile. `None` outside a game.
+  pub profile: Option<Profile>,
+  /// An install waiting for the user to confirm it.
+  pub confirmation: Option<Confirmation>,
+  /// The latest install, kept after it ends so its result can be shown. It
+  /// outlives leaving the game it belongs to.
+  pub operation: Option<Operation>,
+  /// How many operations have been started, so each gets its own id.
+  pub operations: u64,
 }
 
 impl State {
@@ -38,6 +49,10 @@ impl State {
       settings_error: None,
       browse: None,
       refreshes: 0,
+      profile: None,
+      confirmation: None,
+      operation: None,
+      operations: 0,
     }
   }
 }
@@ -93,6 +108,30 @@ pub enum Msg {
     index: Result<Option<Index>, String>,
   },
   RefreshPressed,
+  /// A game's profile was opened: its packages, or why it could not be
+  /// created or read.
+  ProfileOpened {
+    game: String,
+    profile: String,
+    installed: Result<Installed, String>,
+  },
+  /// Install was pressed on a package, by `Owner-Name`.
+  InstallPressed(String),
+  InstallConfirmed,
+  InstallDismissed,
+  /// An [`Install`] moved on, by operation id.
+  InstallProgress {
+    operation: u64,
+    progress: Progress,
+  },
+  /// An [`Install`] ended, by operation id: what it did, or why it could not
+  /// run at all.
+  InstallFinished {
+    operation: u64,
+    outcome: Result<Outcome, String>,
+  },
+  /// The result of the last install was closed.
+  OperationDismissed,
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -121,6 +160,12 @@ pub enum Command {
   /// Fetch a community's package index and cache it. Answered with
   /// [`Msg::IndexRefreshed`].
   RefreshIndex { refresh: Refresh, fetch: Fetch },
+  /// Read a game's profile, creating it first if it does not exist. Answered
+  /// with [`Msg::ProfileOpened`].
+  OpenProfile { game: String, profile: String },
+  /// Answered with any number of [`Msg::InstallProgress`], then
+  /// [`Msg::InstallFinished`].
+  Install(Install),
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -175,6 +220,8 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.picker.step = Step::Idle;
       state.picker.refusal = None;
       state.browse = None;
+      state.profile = None;
+      state.confirmation = None;
 
       Vec::new()
     }
@@ -186,6 +233,26 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::CachedIndexRead { community, index } => browse::cache_read(state, community, index),
     Msg::IndexRefreshed { refresh, index } => browse::refreshed(state, refresh, index),
     Msg::RefreshPressed => browse::refresh_pressed(state),
+    Msg::ProfileOpened {
+      game,
+      profile,
+      installed,
+    } => install::profile_opened(state, game, profile, installed),
+    Msg::InstallPressed(package) => install::install_pressed(state, package),
+    Msg::InstallConfirmed => install::install_confirmed(state),
+    Msg::InstallDismissed => {
+      state.confirmation = None;
+
+      Vec::new()
+    }
+    Msg::InstallProgress {
+      operation,
+      progress,
+    } => install::install_progress(state, operation, progress),
+    Msg::InstallFinished { operation, outcome } => {
+      install::install_finished(state, operation, outcome)
+    }
+    Msg::OperationDismissed => install::operation_dismissed(state),
   }
 }
 
@@ -294,13 +361,14 @@ fn open_game(state: &mut State, game: String) -> Vec<Effect> {
   effects
 }
 
-/// Shows `game` and starts loading its package list.
+/// Shows `game` and starts loading its package list and its profile.
 fn show_game(state: &mut State, game: String) -> Vec<Effect> {
   let community = state
     .ecosystem
     .game(&game)
     .and_then(|definition| definition.community())
     .map(str::to_string);
+  let profile = install::open_profile(state, &game);
 
   state.screen = Screen::Game(game);
   state.browse = community.clone().map(Browse::new);
@@ -308,6 +376,7 @@ fn show_game(state: &mut State, game: String) -> Vec<Effect> {
   community
     .map(|community| Effect::Run(Command::ReadCachedIndex(community)))
     .into_iter()
+    .chain(profile)
     .collect()
 }
 
@@ -391,6 +460,13 @@ mod tests {
     Effect::Run(Command::ReadCachedIndex(community.to_string()))
   }
 
+  fn open_profile(game: &str) -> Effect {
+    Effect::Run(Command::OpenProfile {
+      game: game.to_string(),
+      profile: install::DEFAULT_PROFILE.to_string(),
+    })
+  }
+
   #[test]
   fn starting_loads_the_settings() {
     let mut state = State::new(test_ecosystem());
@@ -420,7 +496,10 @@ mod tests {
 
     assert_eq!(state.screen, Screen::Game("valheim".to_string()));
     assert_eq!(state.settings, settings);
-    assert_eq!(effects, vec![read_cache("valheim")]);
+    assert_eq!(
+      effects,
+      vec![read_cache("valheim"), open_profile("valheim")]
+    );
   }
 
   #[test]
@@ -518,6 +597,7 @@ mod tests {
       vec![
         Effect::Run(Command::SaveSettings(state.settings.clone())),
         read_cache("valheim"),
+        open_profile("valheim"),
       ]
     );
   }
@@ -594,6 +674,7 @@ mod tests {
           "/games/valheim"
         ))),
         read_cache("valheim"),
+        open_profile("valheim"),
       ]
     );
   }
