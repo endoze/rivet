@@ -137,7 +137,17 @@ impl Shell {
       .refusal
       .as_ref()
       .map(|refusal| text::refusal(&self.game_name(&refusal.game), refusal));
+    let fallback = picker.fallback.as_ref().map(|fallback| {
+      div()
+        .id("steam-fallback")
+        .child(text::fallback(
+          &self.game_name(&fallback.game),
+          &fallback.reason,
+        ))
+        .test_support()
+    });
     let checking = match &picker.step {
+      Step::Locating(game) => Some(text::locating(&self.game_name(game))),
       Step::Checking { folder, .. } => Some(text::checking(folder)),
       _ => None,
     };
@@ -177,6 +187,7 @@ impl Shell {
           .as_ref()
           .map(|error| failure(text::settings_error(error))),
       )
+      .children(fallback)
       .children(refusal.map(failure))
       .children(checking)
       .child(Input::new(&self.search))

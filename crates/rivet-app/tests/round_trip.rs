@@ -300,6 +300,116 @@ fn native_steam_game() -> Ecosystem {
   .unwrap()
 }
 
+#[gpui_kit::test]
+fn picking_a_steam_game_finds_its_folder_with_no_user_action(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let folder = PathBuf::from("/steam/steamapps/common/Valheim");
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, shell) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(native_steam_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(Settings::default())))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("valheim", cx);
+  })
+  .unwrap();
+
+  assert_eq!(
+    std::iter::from_fn(|| sent.try_recv().ok()).last(),
+    Some(Command::FindInSteam {
+      game: "valheim".to_string(),
+      app_id: 892970,
+    })
+  );
+
+  answers
+    .unbounded_send(Msg::SteamSearched {
+      game: "valheim".to_string(),
+      folder: Ok(folder.clone()),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert_eq!(
+    sent.try_recv().ok(),
+    Some(Command::ListFolder(folder.clone()))
+  );
+
+  answers
+    .unbounded_send(Msg::FolderListed {
+      folder: folder.clone(),
+      entries: Ok(vec!["valheim.x86_64".to_string()]),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert!(!cx.did_prompt_for_paths());
+  assert_eq!(
+    shell.read_with(cx, |shell, _| shell.state().screen.clone()),
+    Screen::Game("valheim".to_string())
+  );
+  assert_eq!(
+    shell.read_with(cx, |shell, _| shell
+      .state()
+      .settings
+      .folder("valheim")
+      .map(PathBuf::from)),
+    Some(folder)
+  );
+}
+
+#[gpui_kit::test]
+fn a_steam_game_steam_does_not_have_asks_for_its_folder_saying_why(cx: &mut TestAppContext) {
+  use rivet_core::picker::NotFound;
+
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(native_steam_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(Settings::default())))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("valheim", cx);
+  })
+  .unwrap();
+  answers
+    .unbounded_send(Msg::SteamSearched {
+      game: "valheim".to_string(),
+      folder: Err(NotFound::NotInstalled),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert!(cx.did_prompt_for_paths());
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("steam-fallback").is_some());
+  })
+  .unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[gpui_kit::test]
 fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppContext) {

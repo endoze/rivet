@@ -4,7 +4,7 @@
 use rivet_core::SettingsError;
 use rivet_core::install::{FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
-use rivet_core::picker::{FolderRefusal, Refusal};
+use rivet_core::picker::{FolderRefusal, NotFound, Refusal};
 use std::path::Path;
 use thunderstore_engine::ecosystem::LoaderKind;
 use thunderstore_engine::profile::launch::LaunchMode;
@@ -29,6 +29,28 @@ pub struct Failure {
 
 pub fn checking(folder: &Path) -> String {
   format!("Checking {}", folder.display())
+}
+
+pub fn locating(game: &str) -> String {
+  format!("Looking for {game} in Steam")
+}
+
+/// Why the user is asked to choose `game`'s folder by hand.
+pub fn fallback(game: &str, reason: &NotFound) -> String {
+  match reason {
+    NotFound::NotOnSteam => {
+      format!("{game} is not a Steam game, so choose the folder it is installed in.")
+    }
+    NotFound::NoSteam => {
+      format!("Steam was not found on this computer, so choose the folder {game} is installed in.")
+    }
+    NotFound::NotInstalled => {
+      format!("Steam does not have {game} installed, so choose the folder it is installed in.")
+    }
+    NotFound::Unreadable(reason) => format!(
+      "Steam's game list could not be read ({reason}), so choose the folder {game} is installed in."
+    ),
+  }
 }
 
 pub fn installed_in(folder: &Path) -> String {

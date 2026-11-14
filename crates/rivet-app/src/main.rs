@@ -14,6 +14,7 @@ fn main() {
     thunderstore: rivet_commands::THUNDERSTORE.to_string(),
     ecosystem: Ecosystem::bundled(),
     steam: rivet_platform::steam::root(),
+    steam_installs: rivet_platform::steam::installs(),
     spawn: rivet_commands::spawn_detached,
   };
 

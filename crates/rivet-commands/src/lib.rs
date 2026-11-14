@@ -6,6 +6,7 @@ use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use rivet_core::browse::{Fetch, Index};
 use rivet_core::install::{FailedPackage, Install, Installed, Outcome, Progress, Stage};
 use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
+use rivet_core::picker::NotFound;
 use rivet_core::settings::Settings;
 use rivet_core::{Command, Msg};
 use std::path::{Path, PathBuf};
@@ -36,6 +37,9 @@ pub struct Config {
   /// The Steam install whose launch options are read, or `None` when none
   /// was found.
   pub steam: Option<PathBuf>,
+  /// Every Steam install searched for a game's folder, in order. Empty when
+  /// none was found.
+  pub steam_installs: Vec<PathBuf>,
   /// Starts a prepared game, such as [`spawn_detached`].
   pub spawn: fn(std::process::Command) -> std::io::Result<()>,
 }
@@ -69,6 +73,10 @@ pub async fn run(command: Command, config: &Config, progress: &UnboundedSender<M
     Command::SaveSettings(settings) => {
       Msg::SettingsSaved(save_settings(&config.settings, &settings).await)
     }
+    Command::FindInSteam { game, app_id } => Msg::SteamSearched {
+      game,
+      folder: find_in_steam(config, app_id).await,
+    },
     Command::ListFolder(folder) => {
       let entries = list_folder(&folder).await;
 
@@ -159,6 +167,22 @@ fn launch_failure(error: thunderstore_engine::Error) -> LaunchFailure {
     thunderstore_engine::Error::MissingGameDir { path } => LaunchFailure::MissingGameFolder(path),
     other => LaunchFailure::Other(other.to_string()),
   }
+}
+
+/// The folder the game sold on Steam as `app_id` is installed in, searching
+/// every library of every Steam install in `config`.
+async fn find_in_steam(config: &Config, app_id: u32) -> Result<PathBuf, NotFound> {
+  let installs = config.steam_installs.clone();
+
+  if installs.is_empty() {
+    return Err(NotFound::NoSteam);
+  }
+
+  tokio::task::spawn_blocking(move || rivet_platform::steam::game_folder(&installs, app_id))
+    .await
+    .map_err(|error| NotFound::Unreadable(error.to_string()))?
+    .map_err(NotFound::Unreadable)?
+    .ok_or(NotFound::NotInstalled)
 }
 
 /// Writes the game's Steam wrapper at `script`, so the line naming it works
@@ -426,6 +450,7 @@ mod tests {
   use rivet_core::browse::{Fetch, Refresh};
   use rivet_core::install::{DEFAULT_PROFILE, Install, Installed, Outcome, Stage};
   use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
+  use rivet_core::picker::NotFound;
   use rivet_core::settings::GameSettings;
   use tempfile::TempDir;
   use thunderstore_engine::ecosystem::LoaderKind;
@@ -444,6 +469,7 @@ mod tests {
       thunderstore: THUNDERSTORE.to_string(),
       ecosystem: Ecosystem::bundled(),
       steam: None,
+      steam_installs: Vec::new(),
       spawn: |_| panic!("a test tried to start a game"),
     }
   }
@@ -841,6 +867,96 @@ mod tests {
     .unwrap();
 
     root
+  }
+
+  fn find_valheim() -> Command {
+    Command::FindInSteam {
+      game: "valheim".to_string(),
+      app_id: VALHEIM,
+    }
+  }
+
+  fn steam_searched(folder: Result<PathBuf, NotFound>) -> Msg {
+    Msg::SteamSearched {
+      game: "valheim".to_string(),
+      folder,
+    }
+  }
+
+  #[test]
+  fn finding_a_game_in_steam_names_its_folder() {
+    let dir = TempDir::new().unwrap();
+    let install = dir.path().join("Steam");
+    let steamapps = install.join("steamapps");
+
+    std::fs::create_dir_all(&steamapps).unwrap();
+    std::fs::write(
+      steamapps.join(format!("appmanifest_{VALHEIM}.acf")),
+      r#""AppState" { "installdir" "Valheim" }"#,
+    )
+    .unwrap();
+
+    let config = Config {
+      steam_installs: vec![install],
+      ..config_in(&dir)
+    };
+
+    assert_eq!(
+      run_now(find_valheim(), &config),
+      steam_searched(Ok(steamapps.join("common/Valheim")))
+    );
+  }
+
+  #[test]
+  fn finding_a_game_steam_has_not_installed_says_so() {
+    let dir = TempDir::new().unwrap();
+    let install = dir.path().join("Steam");
+
+    std::fs::create_dir_all(install.join("steamapps")).unwrap();
+
+    let config = Config {
+      steam_installs: vec![install],
+      ..config_in(&dir)
+    };
+
+    assert_eq!(
+      run_now(find_valheim(), &config),
+      steam_searched(Err(NotFound::NotInstalled))
+    );
+  }
+
+  #[test]
+  fn finding_a_game_without_steam_says_so() {
+    let dir = TempDir::new().unwrap();
+
+    assert_eq!(
+      run_now(find_valheim(), &config_in(&dir)),
+      steam_searched(Err(NotFound::NoSteam))
+    );
+  }
+
+  #[test]
+  fn finding_a_game_in_unreadable_steam_files_says_why() {
+    let dir = TempDir::new().unwrap();
+    let install = dir.path().join("Steam");
+
+    std::fs::create_dir_all(install.join("steamapps")).unwrap();
+    std::fs::write(install.join("steamapps/libraryfolders.vdf"), "{").unwrap();
+
+    let config = Config {
+      steam_installs: vec![install],
+      ..config_in(&dir)
+    };
+    let answer = run_now(find_valheim(), &config);
+
+    assert!(
+      matches!(
+        &answer,
+        Msg::SteamSearched { folder: Err(NotFound::Unreadable(reason)), .. }
+          if reason.contains("libraryfolders.vdf")
+      ),
+      "{answer:?}"
+    );
   }
 
   fn read_steam_option() -> Command {

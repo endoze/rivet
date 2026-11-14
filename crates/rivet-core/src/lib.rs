@@ -10,7 +10,7 @@ pub mod settings;
 use browse::{Browse, Fetch, Index, Refresh};
 use install::{Confirmation, Install, Installed, Operation, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
-use picker::{FolderRefusal, Picker, Refusal, Step};
+use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
 use thunderstore_engine::ecosystem::Ecosystem;
@@ -105,6 +105,12 @@ pub enum Msg {
   SearchChanged(String),
   /// A game in the picker was clicked, by community slug.
   GamePicked(String),
+  /// Steam's libraries were searched for a game: the folder it is installed
+  /// in, or why none was found.
+  SteamSearched {
+    game: String,
+    folder: Result<PathBuf, NotFound>,
+  },
   /// The folder dialog closed, with `None` if it was cancelled.
   FolderChosen(Option<PathBuf>),
   /// A folder was listed: the names of its entries, or why it could not be.
@@ -180,6 +186,9 @@ pub enum Command {
   LoadSettings,
   /// Answered with [`Msg::SettingsSaved`].
   SaveSettings(Settings),
+  /// Search every Steam library on the computer for the game sold on Steam
+  /// as `app_id`. Answered with [`Msg::SteamSearched`].
+  FindInSteam { game: String, app_id: u32 },
   /// Answered with [`Msg::FolderListed`].
   ListFolder(PathBuf),
   /// Read a community's cached package index without touching the network.
@@ -246,12 +255,14 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       Vec::new()
     }
     Msg::GamePicked(game) => pick_game(state, game),
+    Msg::SteamSearched { game, folder } => steam_searched(state, game, folder),
     Msg::FolderChosen(folder) => folder_chosen(state, folder),
     Msg::FolderListed { folder, entries } => folder_listed(state, folder, entries),
     Msg::SwitchGamePressed => {
       state.screen = Screen::Picker;
       state.picker.step = Step::Idle;
       state.picker.refusal = None;
+      state.picker.fallback = None;
       state.browse = None;
       state.profile = None;
       state.confirmation = None;
@@ -309,6 +320,7 @@ fn pick_game(state: &mut State, game: String) -> Vec<Effect> {
   }
 
   state.picker.refusal = None;
+  state.picker.fallback = None;
 
   if state.settings.folder(&game).is_some() {
     state.picker.step = Step::Idle;
@@ -316,6 +328,48 @@ fn pick_game(state: &mut State, game: String) -> Vec<Effect> {
     return open_game(state, game);
   }
 
+  let app_id = state.ecosystem.game(&game).and_then(picker::steam_app_id);
+
+  match app_id {
+    Some(app_id) => {
+      state.picker.step = Step::Locating(game.clone());
+
+      vec![Effect::Run(Command::FindInSteam { game, app_id })]
+    }
+    None => choose_by_hand(state, game, NotFound::NotOnSteam),
+  }
+}
+
+fn steam_searched(
+  state: &mut State,
+  game: String,
+  folder: Result<PathBuf, NotFound>,
+) -> Vec<Effect> {
+  if state.picker.step != Step::Locating(game.clone()) {
+    return Vec::new();
+  }
+
+  match folder {
+    Ok(folder) => {
+      state.picker.step = Step::Checking {
+        game,
+        folder: folder.clone(),
+        from_steam: true,
+      };
+
+      vec![Effect::Run(Command::ListFolder(folder))]
+    }
+    Err(reason) => choose_by_hand(state, game, reason),
+  }
+}
+
+/// Opens the folder dialog for `game`, recording why Steam could not name
+/// its folder.
+fn choose_by_hand(state: &mut State, game: String, reason: NotFound) -> Vec<Effect> {
+  state.picker.fallback = Some(Fallback {
+    game: game.clone(),
+    reason,
+  });
   state.picker.step = Step::Choosing(game);
 
   vec![Effect::ChooseFolder]
@@ -331,6 +385,7 @@ fn folder_chosen(state: &mut State, folder: Option<PathBuf>) -> Vec<Effect> {
       state.picker.step = Step::Checking {
         game: game.clone(),
         folder: folder.clone(),
+        from_steam: false,
       };
 
       vec![Effect::Run(Command::ListFolder(folder))]
@@ -351,6 +406,7 @@ fn folder_listed(
   let Step::Checking {
     game,
     folder: checking,
+    from_steam,
   } = &state.picker.step
   else {
     return Vec::new();
@@ -360,7 +416,7 @@ fn folder_listed(
     return Vec::new();
   }
 
-  let game = game.clone();
+  let (game, from_steam) = (game.clone(), *from_steam);
 
   state.picker.step = Step::Idle;
 
@@ -382,12 +438,18 @@ fn folder_listed(
     }
     Err(reason) => {
       state.picker.refusal = Some(Refusal {
-        game,
+        game: game.clone(),
         folder,
         reason,
       });
 
-      Vec::new()
+      if !from_steam {
+        return Vec::new();
+      }
+
+      state.picker.step = Step::Choosing(game);
+
+      vec![Effect::ChooseFolder]
     }
   }
 }
@@ -456,6 +518,7 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
           "r2modman": [{
             "gameInstanceType": "game",
             "exeNames": ["Lethal Company.exe"],
+            "distributions": [{ "platform": "steam", "identifier": "1966720" }],
             "packageIndex": "https://thunderstore.io/c/lethal-company/api/v1/package/"
           }]
         },
@@ -478,6 +541,8 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use picker::{Fallback, NotFound};
+  use std::path::Path;
 
   fn started() -> State {
     let mut state = State::new(test_ecosystem());
@@ -614,6 +679,137 @@ mod tests {
 
     assert_eq!(state.picker.step, Step::Choosing("valheim".to_string()));
     assert_eq!(effects, vec![Effect::ChooseFolder]);
+    assert_eq!(
+      state.picker.fallback,
+      Some(Fallback {
+        game: "valheim".to_string(),
+        reason: NotFound::NotOnSteam,
+      })
+    );
+  }
+
+  const LETHAL: &str = "lethal-company";
+
+  fn steam_searched(folder: Result<&str, NotFound>) -> Msg {
+    Msg::SteamSearched {
+      game: LETHAL.to_string(),
+      folder: folder.map(PathBuf::from),
+    }
+  }
+
+  #[test]
+  fn picking_a_steam_game_without_a_folder_looks_for_it_in_steam() {
+    let mut state = on_picker();
+
+    let effects = update(&mut state, Msg::GamePicked(LETHAL.to_string()));
+
+    assert_eq!(state.picker.step, Step::Locating(LETHAL.to_string()));
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::FindInSteam {
+        game: LETHAL.to_string(),
+        app_id: 1966720,
+      })]
+    );
+  }
+
+  #[test]
+  fn a_folder_steam_finds_is_checked_and_opened_with_no_user_action() {
+    let mut state = on_picker();
+    let folder = "/steam/steamapps/common/Lethal Company";
+
+    update(&mut state, Msg::GamePicked(LETHAL.to_string()));
+
+    let effects = update(&mut state, steam_searched(Ok(folder)));
+
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::ListFolder(PathBuf::from(folder)))]
+    );
+
+    update(&mut state, listed(folder, &["Lethal Company.exe"]));
+
+    assert_eq!(state.screen, Screen::Game(LETHAL.to_string()));
+    assert_eq!(state.settings.folder(LETHAL), Some(Path::new(folder)));
+  }
+
+  #[test]
+  fn a_game_steam_does_not_have_falls_back_to_choosing_its_folder_saying_why() {
+    let mut state = on_picker();
+
+    update(&mut state, Msg::GamePicked(LETHAL.to_string()));
+
+    let effects = update(&mut state, steam_searched(Err(NotFound::NotInstalled)));
+
+    assert_eq!(state.picker.step, Step::Choosing(LETHAL.to_string()));
+    assert_eq!(effects, vec![Effect::ChooseFolder]);
+    assert_eq!(
+      state.picker.fallback,
+      Some(Fallback {
+        game: LETHAL.to_string(),
+        reason: NotFound::NotInstalled,
+      })
+    );
+  }
+
+  #[test]
+  fn a_folder_steam_finds_without_the_game_falls_back_to_choosing_its_folder() {
+    let mut state = on_picker();
+    let folder = "/steam/steamapps/common/Lethal Company";
+
+    update(&mut state, Msg::GamePicked(LETHAL.to_string()));
+    update(&mut state, steam_searched(Ok(folder)));
+
+    let effects = update(&mut state, listed(folder, &[]));
+
+    assert_eq!(state.screen, Screen::Picker);
+    assert_eq!(state.picker.step, Step::Choosing(LETHAL.to_string()));
+    assert_eq!(effects, vec![Effect::ChooseFolder]);
+    assert!(state.picker.refusal.is_some());
+  }
+
+  #[test]
+  fn a_steam_search_for_a_game_no_longer_picked_is_ignored() {
+    let mut state = on_picker();
+
+    update(&mut state, Msg::GamePicked(LETHAL.to_string()));
+    update(&mut state, Msg::GamePicked("valheim".to_string()));
+
+    let effects = update(&mut state, steam_searched(Ok("/steam/Lethal Company")));
+
+    assert_eq!(state.picker.step, Step::Choosing("valheim".to_string()));
+    assert_eq!(effects, vec![]);
+  }
+
+  #[test]
+  fn a_saved_folder_is_used_instead_of_searching_steam() {
+    let mut state = started();
+
+    update(
+      &mut state,
+      Msg::SettingsLoaded(Ok(settings_with(LETHAL, "/games/lethal"))),
+    );
+    update(&mut state, Msg::SwitchGamePressed);
+
+    let effects = update(&mut state, Msg::GamePicked(LETHAL.to_string()));
+
+    assert_eq!(state.screen, Screen::Game(LETHAL.to_string()));
+    assert!(
+      !effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::Run(Command::FindInSteam { .. })))
+    );
+  }
+
+  #[test]
+  fn switching_game_forgets_why_a_folder_was_asked_for() {
+    let mut state = on_picker();
+
+    update(&mut state, Msg::GamePicked("valheim".to_string()));
+    update(&mut state, Msg::FolderChosen(None));
+    update(&mut state, Msg::SwitchGamePressed);
+
+    assert_eq!(state.picker.fallback, None);
   }
 
   #[test]
@@ -675,6 +871,7 @@ mod tests {
       Step::Checking {
         game: "valheim".to_string(),
         folder: PathBuf::from("/games/valheim"),
+        from_steam: false,
       }
     );
     assert_eq!(

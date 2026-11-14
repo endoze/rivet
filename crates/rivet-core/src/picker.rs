@@ -12,6 +12,9 @@ pub struct Picker {
   pub step: Step,
   /// The last folder refused, shown until another game or folder is picked.
   pub refusal: Option<Refusal>,
+  /// Why the user was last asked to choose a folder by hand, shown until
+  /// another game is picked.
+  pub fallback: Option<Fallback>,
 }
 
 /// How far choosing a game's folder has got.
@@ -19,10 +22,42 @@ pub struct Picker {
 pub enum Step {
   #[default]
   Idle,
+  /// Steam's libraries are being searched for this game.
+  Locating(String),
   /// The folder dialog is open for this game.
   Choosing(String),
-  /// This folder is being listed to check it holds this game.
-  Checking { game: String, folder: PathBuf },
+  /// This folder is being listed to check it holds this game. `from_steam`
+  /// when Steam named the folder rather than the user.
+  Checking {
+    game: String,
+    folder: PathBuf,
+    from_steam: bool,
+  },
+}
+
+/// A game whose folder the user must choose by hand, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fallback {
+  pub game: String,
+  pub reason: NotFound,
+}
+
+/// Why Steam could not name a game's folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotFound {
+  /// The game is not sold on Steam.
+  NotOnSteam,
+  /// No Steam install was found on this computer.
+  NoSteam,
+  /// No Steam library has the game installed.
+  NotInstalled,
+  /// Steam's files could not be read. The detail is the reason.
+  Unreadable(String),
+}
+
+/// `game`'s Steam app id, or `None` when it is not sold on Steam.
+pub(crate) fn steam_app_id(game: &GameDef) -> Option<u32> {
+  game.profile().and_then(|profile| profile.steam_app_id())
 }
 
 /// A folder refused as a game's install folder.
