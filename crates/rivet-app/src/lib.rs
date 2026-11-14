@@ -1316,29 +1316,32 @@ fn render_filters(
   cx: &mut Context<Shell>,
 ) -> AnyElement {
   let filters = &browse.filters;
-  let sorts: Vec<_> = [
-    SortKey::LastUpdated,
-    SortKey::Name,
-    SortKey::Downloads,
-    SortKey::Rating,
-  ]
-  .into_iter()
-  .map(|key| {
-    let current = (filters.sort == key).then_some(filters.direction);
-    let id = match key {
-      SortKey::LastUpdated => "sort-last-updated",
-      SortKey::Name => "sort-name",
-      SortKey::Downloads => "sort-downloads",
-      SortKey::Rating => "sort-rating",
-    };
+  let best_match = (!filters.search.is_empty()).then_some(SortKey::BestMatch);
+  let sorts: Vec<_> = best_match
+    .into_iter()
+    .chain([
+      SortKey::LastUpdated,
+      SortKey::Name,
+      SortKey::Downloads,
+      SortKey::Rating,
+    ])
+    .map(|key| {
+      let current = (filters.sort == key).then_some(filters.direction);
+      let id = match key {
+        SortKey::BestMatch => "sort-best-match",
+        SortKey::LastUpdated => "sort-last-updated",
+        SortKey::Name => "sort-name",
+        SortKey::Downloads => "sort-downloads",
+        SortKey::Rating => "sort-rating",
+      };
 
-    Button::new(id)
-      .label(text::sort(key, current))
-      .small()
-      .selected(current.is_some())
-      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(Msg::SortPressed(key), cx)))
-  })
-  .collect();
+      Button::new(id)
+        .label(text::sort(key, current))
+        .small()
+        .selected(current.is_some())
+        .on_click(cx.listener(move |this, _, _, cx| this.dispatch(Msg::SortPressed(key), cx)))
+    })
+    .collect();
   let categories: Vec<_> = browse
     .categories
     .iter()

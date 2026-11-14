@@ -75,7 +75,8 @@ pub const HIDDEN_PACKAGES: &[&str] = &[
 /// updated first, every category, NSFW and deprecated packages hidden.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filters {
-  /// Words that each must appear in a package's name, author, or description.
+  /// Words to find in a package's name, author, or description. Set it with
+  /// [`Filters::set_search`] so the sort follows it.
   pub search: String,
   pub sort: SortKey,
   pub direction: SortDirection,
@@ -83,6 +84,10 @@ pub struct Filters {
   pub categories: BTreeSet<String>,
   pub show_nsfw: bool,
   pub show_deprecated: bool,
+  /// The sort that was active when the search went from empty to typed,
+  /// brought back when the search empties while still sorted by
+  /// [`SortKey::BestMatch`]. `None` while the search is empty.
+  pub sort_before_search: Option<(SortKey, SortDirection)>,
 }
 
 impl Default for Filters {
@@ -94,6 +99,7 @@ impl Default for Filters {
       categories: BTreeSet::new(),
       show_nsfw: false,
       show_deprecated: false,
+      sort_before_search: None,
     }
   }
 }
@@ -105,13 +111,39 @@ impl Filters {
     !self.search.is_empty() || !self.categories.is_empty() || self.show_nsfw || self.show_deprecated
   }
 
-  /// Resets the search and filters, keeping the sort.
+  /// Resets the search and filters, keeping the sort, or bringing back the one
+  /// from before the search as emptying the search does.
   pub fn clear(&mut self) {
+    self.set_search(String::new());
+
     *self = Self {
       sort: self.sort,
       direction: self.direction,
       ..Self::default()
     };
+  }
+
+  /// Searches for `search`. Typing into an empty search sorts by
+  /// [`SortKey::BestMatch`], and emptying it brings back the sort from before
+  /// unless another was picked while searching.
+  pub fn set_search(&mut self, search: String) {
+    if self.search.is_empty() && !search.is_empty() {
+      self.sort_before_search = Some((self.sort, self.direction));
+      self.sort = SortKey::BestMatch;
+      self.direction = SortDirection::Descending;
+    }
+
+    if search.is_empty() {
+      let before = self.sort_before_search.take();
+
+      if self.sort == SortKey::BestMatch {
+        let defaults = Self::default();
+
+        (self.sort, self.direction) = before.unwrap_or((defaults.sort, defaults.direction));
+      }
+    }
+
+    self.search = search;
   }
 
   /// Adds `category` to the chosen ones, or removes it if already chosen.
@@ -123,9 +155,9 @@ impl Filters {
 
   /// Sorts by `key`: reversed when it is already the sort, otherwise in the
   /// direction that reads first for it, `A` to `Z` for names and largest or
-  /// latest first for the rest.
+  /// latest first for the rest. [`SortKey::BestMatch`] is never reversed.
   pub fn sort_by(&mut self, key: SortKey) {
-    if self.sort == key {
+    if self.sort == key && key != SortKey::BestMatch {
       self.direction = match self.direction {
         SortDirection::Ascending => SortDirection::Descending,
         SortDirection::Descending => SortDirection::Ascending,
@@ -734,7 +766,7 @@ mod tests {
 
     assert_eq!(
       listed(&state),
-      ["Fastest-Rafts", "Owner-FastBoats", "Owner-Described"]
+      ["Owner-FastBoats", "Fastest-Rafts", "Owner-Described"]
     );
 
     update(
@@ -950,6 +982,118 @@ mod tests {
       }
     );
     assert_eq!(listed(&state), ["Owner-Plain"]);
+  }
+
+  #[test]
+  fn typing_into_an_empty_search_sorts_by_best_match() {
+    let mut state = three_to_sort();
+
+    update(&mut state, Msg::SortPressed(SortKey::Downloads));
+    update(&mut state, Msg::PackageSearchChanged("a".to_string()));
+
+    assert_eq!(filters(&state).sort, SortKey::BestMatch);
+    assert_eq!(filters(&state).direction, SortDirection::Descending);
+  }
+
+  #[test]
+  fn a_sort_picked_while_searching_is_honoured() {
+    let mut state = three_to_sort();
+
+    update(&mut state, Msg::PackageSearchChanged("owner".to_string()));
+    update(&mut state, Msg::SortPressed(SortKey::Name));
+
+    assert_eq!(
+      listed(&state),
+      ["Owner-Alpha", "Owner-bravo", "Owner-Charlie"]
+    );
+    assert_eq!(filters(&state).search, "owner");
+  }
+
+  #[test]
+  fn deleting_the_search_restores_the_sort_from_before_it() {
+    let mut state = three_to_sort();
+
+    update(&mut state, Msg::SortPressed(SortKey::Downloads));
+    update(&mut state, Msg::PackageSearchChanged("a".to_string()));
+    update(&mut state, Msg::PackageSearchChanged("al".to_string()));
+    update(&mut state, Msg::PackageSearchChanged(String::new()));
+
+    assert_eq!(filters(&state).sort, SortKey::Downloads);
+    assert_eq!(filters(&state).direction, SortDirection::Descending);
+    assert_eq!(
+      listed(&state),
+      ["Owner-bravo", "Owner-Charlie", "Owner-Alpha"]
+    );
+  }
+
+  #[test]
+  fn clearing_a_best_match_search_restores_the_sort_from_before_it() {
+    let mut state = three_to_sort();
+
+    update(&mut state, Msg::SortPressed(SortKey::Rating));
+    update(&mut state, Msg::SortPressed(SortKey::Rating));
+    update(&mut state, Msg::PackageSearchChanged("al".to_string()));
+    update(&mut state, Msg::FiltersCleared);
+
+    assert_eq!(
+      filters(&state),
+      &Filters {
+        sort: SortKey::Rating,
+        direction: SortDirection::Ascending,
+        ..Filters::default()
+      }
+    );
+  }
+
+  #[test]
+  fn a_sort_picked_while_searching_outlasts_deleting_the_search() {
+    let mut state = three_to_sort();
+
+    update(&mut state, Msg::PackageSearchChanged("al".to_string()));
+    update(&mut state, Msg::SortPressed(SortKey::Downloads));
+    update(&mut state, Msg::PackageSearchChanged(String::new()));
+
+    assert_eq!(
+      filters(&state),
+      &Filters {
+        sort: SortKey::Downloads,
+        ..Filters::default()
+      }
+    );
+    assert_eq!(
+      listed(&state),
+      ["Owner-bravo", "Owner-Charlie", "Owner-Alpha"]
+    );
+  }
+
+  #[test]
+  fn best_match_puts_an_exact_name_ahead_of_description_matches() {
+    let mut newest = package("Owner-Newest", 9);
+    let mut popular = package("Owner-Popular", 5);
+
+    newest["versions"][0]["description"] = "Works with Boats".into();
+    popular["versions"][0]["description"] = "Better boats".into();
+    popular["versions"][0]["downloads"] = 1_000_000.into();
+
+    let mut state = showing(vec![newest, package("Someone-Boats", 1), popular]);
+
+    update(&mut state, Msg::PackageSearchChanged("boats".to_string()));
+
+    assert_eq!(
+      listed(&state),
+      ["Someone-Boats", "Owner-Popular", "Owner-Newest"]
+    );
+  }
+
+  #[test]
+  fn pressing_best_match_again_keeps_it_best_first() {
+    let mut state = three_to_sort();
+
+    update(&mut state, Msg::PackageSearchChanged("al".to_string()));
+    update(&mut state, Msg::SortPressed(SortKey::BestMatch));
+
+    assert_eq!(filters(&state).sort, SortKey::BestMatch);
+    assert_eq!(filters(&state).direction, SortDirection::Descending);
   }
 
   #[test]

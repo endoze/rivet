@@ -30,9 +30,11 @@ pub const SHOW_DEPRECATED: &str = "Show deprecated";
 pub const CLEAR_FILTERS: &str = "Clear";
 
 /// A sort button's label, with an arrow for its direction when it is the
-/// current sort, such as `Downloads ↓`.
+/// current sort, such as `Downloads ↓`. Best match has no arrow, as it only
+/// sorts one way.
 pub fn sort(key: SortKey, current: Option<SortDirection>) -> String {
   let name = match key {
+    SortKey::BestMatch => return "Best match".to_string(),
     SortKey::LastUpdated => "Last updated",
     SortKey::Name => "Name",
     SortKey::Downloads => "Downloads",

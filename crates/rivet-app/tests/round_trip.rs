@@ -126,6 +126,9 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
   cx.run_until_parked();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+
+    assert!(window.try_find("sort-best-match").is_none());
+
     window.click("package-search", cx);
     window.input("modc", cx);
   })
@@ -136,6 +139,7 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
 
     assert!(window.try_find("Owner-ModC").is_some());
     assert!(window.try_find("Owner-ModA").is_none());
+    assert!(window.try_find("sort-best-match").is_some());
 
     window.click("sort-name", cx);
     window.click("show-deprecated", cx);
@@ -144,6 +148,7 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
     window.render_frame(cx);
 
     assert!(window.try_find("Owner-ModA").is_some());
+    assert!(window.try_find("sort-best-match").is_none());
   })
   .unwrap();
 

@@ -159,7 +159,7 @@ pub enum Msg {
   /// The package list's search text changed.
   PackageSearchChanged(String),
   /// A sort of the package list was pressed. Pressing the current one
-  /// reverses it.
+  /// reverses it, except best match.
   SortPressed(SortKey),
   /// A category of the package list was chosen, or unchosen if it was.
   CategoryToggled(String),
@@ -422,7 +422,9 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::CachedIndexRead { community, index } => browse::cache_read(state, community, index),
     Msg::IndexRefreshed { refresh, index } => browse::refreshed(state, refresh, index),
     Msg::RefreshPressed => browse::refresh_pressed(state),
-    Msg::PackageSearchChanged(search) => browse::filter(state, |filters| filters.search = search),
+    Msg::PackageSearchChanged(search) => {
+      browse::filter(state, |filters| filters.set_search(search))
+    }
     Msg::SortPressed(key) => browse::filter(state, |filters| filters.sort_by(key)),
     Msg::CategoryToggled(category) => {
       browse::filter(state, |filters| filters.toggle_category(category))
