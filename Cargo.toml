@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = [".worktrees"]
 
 [workspace.package]
 version = "0.1.0"
@@ -23,3 +24,11 @@ tempfile = "3"
 thunderstore-engine = { path = "../thunderstore-engine", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync"] }
 toml = "1"
+
+# Full debug info for gpui makes each test binary near 1 GB. Line tables
+# keep file:line backtraces for Rivet's own code at a fraction of the size.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
