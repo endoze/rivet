@@ -11,3 +11,10 @@ const APP_FOLDER: &str = "rivet";
 pub fn settings_file() -> Option<PathBuf> {
   dirs::config_dir().map(|config| config.join(APP_FOLDER).join("settings.toml"))
 }
+
+/// The folder for data the app can fetch again, such as package indexes, in
+/// the platform's cache location: `~/.cache/rivet` on Linux. `None` when the
+/// platform reports no cache location.
+pub fn cache_folder() -> Option<PathBuf> {
+  dirs::cache_dir().map(|cache| cache.join(APP_FOLDER))
+}

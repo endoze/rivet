@@ -8,12 +8,15 @@ publish.workspace = true
 rivet-commands.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
+reqwest_client.workspace = true
 rivet-platform.workspace = true
 rivet-core.workspace = true
 thunderstore-engine.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+thunderstore-engine = { workspace = true, features = ["rustls-tls", "test-support"] }
 
 [[bin]]
 name = "rivet"

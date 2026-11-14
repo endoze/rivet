@@ -51,10 +51,10 @@ pub fn games<'a>(ecosystem: &'a Ecosystem, query: &str) -> Vec<&'a GameDef> {
 }
 
 /// Whether the picker offers `game`: its definition has a mod manager install
-/// definition (the engine's `GameProfile`), without which the app cannot
-/// install packages for it.
+/// definition (the engine's `GameProfile`) naming a Thunderstore community,
+/// without which the app can neither list nor install packages for it.
 pub fn offered(game: &GameDef) -> bool {
-  game.profile().is_some()
+  game.community().is_some()
 }
 
 /// Why a chosen folder was refused as a game's install folder.
@@ -111,7 +111,7 @@ mod tests {
   }
 
   #[test]
-  fn offers_every_game_it_can_install_for_sorted_by_name() {
+  fn offers_every_game_it_can_install_and_list_packages_for_sorted_by_name() {
     let ecosystem = test_ecosystem();
 
     assert_eq!(

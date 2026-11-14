@@ -10,6 +10,10 @@ pub const PICKER_TITLE: &str = "Choose your game";
 pub const SEARCH_PLACEHOLDER: &str = "Search games";
 pub const NO_GAME_MATCHES: &str = "No game matches your search.";
 pub const SWITCH_GAME: &str = "Switch game";
+pub const REFRESH: &str = "Refresh";
+pub const REFRESHING: &str = "Checking Thunderstore for new mods";
+pub const LOADING_PACKAGES: &str = "Loading mods";
+pub const NO_PACKAGES: &str = "No mods to show.";
 
 /// A failure as shown to the user: what went wrong, the detail, and what to
 /// do next.
@@ -57,4 +61,27 @@ pub fn settings_error(error: &SettingsError) -> Failure {
       next: "This choice is forgotten when the app closes. Check that the settings folder can be written to.".to_string(),
     },
   }
+}
+
+/// The list could not be refreshed, and an older one is shown.
+pub fn stale(reason: &str) -> Failure {
+  Failure {
+    headline: "The mod list may be out of date".to_string(),
+    detail: reason.to_string(),
+    next: "Check your connection, then press Refresh.".to_string(),
+  }
+}
+
+/// The list could not be fetched, and none is cached.
+pub fn unavailable(reason: &str) -> Failure {
+  Failure {
+    headline: "The mod list could not be fetched".to_string(),
+    detail: reason.to_string(),
+    next: "Check your connection, then press Refresh.".to_string(),
+  }
+}
+
+/// A package's author and latest version, such as `by Owner, 1.2.0`.
+pub fn byline(owner: &str, version: &str) -> String {
+  format!("by {owner}, {version}")
 }

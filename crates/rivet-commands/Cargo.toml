@@ -7,8 +7,10 @@ publish.workspace = true
 [dependencies]
 futures.workspace = true
 rivet-core.workspace = true
+thunderstore-engine = { workspace = true, features = ["rustls-tls"] }
 tokio.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+thunderstore-engine = { workspace = true, features = ["rustls-tls", "test-support"] }

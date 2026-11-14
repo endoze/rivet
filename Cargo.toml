@@ -15,7 +15,10 @@ rivet-app = { path = "crates/rivet-app" }
 dirs = "6"
 futures = "0.3"
 gpui-kit = "=0.9.1"
+# The image client must match the gpui-pre snapshot gpui-kit bundles.
+reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.12" }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tempfile = "3"
 thunderstore-engine = { path = "../thunderstore-engine", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync"] }

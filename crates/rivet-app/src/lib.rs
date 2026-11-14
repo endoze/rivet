@@ -2,6 +2,7 @@
 //! [`Effect`]s that need the window, and hands the rest to the commands
 //! thread.
 
+mod icons;
 pub mod text;
 
 use futures::StreamExt as _;
@@ -13,16 +14,21 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
   AnyElement, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
   ParentElement as _, PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _,
-  Styled as _, Subscription, Task, TestSupportExt as _, Window, div, rgb,
+  Styled as _, Subscription, Task, TestSupportExt as _, Window, div, img, px, rgb, uniform_list,
 };
+use icons::IconCache;
+use rivet_core::browse::{Browse, View};
 use rivet_core::picker::Step;
 use rivet_core::{Command, Effect, Msg, Screen, State};
+use std::ops::Range;
+use thunderstore_engine::query::PackageRow;
 
 /// The root view. It owns the state and is the only place `update` is called.
 pub struct Shell {
   state: State,
   commands: UnboundedSender<Command>,
   search: Entity<InputState>,
+  icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
   _inbox: Task<()>,
 }
@@ -60,6 +66,7 @@ impl Shell {
       state,
       commands,
       search,
+      icons: cx.new(|_| IconCache::new()),
       _subscriptions: vec![searched],
       _inbox,
     };
@@ -185,9 +192,20 @@ impl Shell {
           .justify_between()
           .child(div().text_xl().child(self.game_name(game)))
           .child(
-            Button::new("switch-game")
-              .label(text::SWITCH_GAME)
-              .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::SwitchGamePressed, cx))),
+            h_flex()
+              .gap_2()
+              .child(
+                Button::new("refresh")
+                  .label(text::REFRESH)
+                  .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::RefreshPressed, cx))),
+              )
+              .child(
+                Button::new("switch-game")
+                  .label(text::SWITCH_GAME)
+                  .on_click(
+                    cx.listener(|this, _, _, cx| this.dispatch(Msg::SwitchGamePressed, cx)),
+                  ),
+              ),
           ),
       )
       .children(folder)
@@ -198,8 +216,115 @@ impl Shell {
           .as_ref()
           .map(|error| failure(text::settings_error(error))),
       )
+      .children(
+        self
+          .state
+          .browse
+          .as_ref()
+          .map(|browse| render_browse(browse, &self.icons, cx)),
+      )
       .into_any_element()
   }
+}
+
+/// Fixed so the list can be virtualized: only the rows in view are built.
+const ROW_HEIGHT: f32 = 64.0;
+const ICON_SIZE: f32 = 48.0;
+
+fn render_browse(
+  browse: &Browse,
+  icons: &Entity<IconCache>,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
+  match browse.view() {
+    View::Loading => div().child(text::LOADING_PACKAGES).into_any_element(),
+    View::Unavailable(reason) => failure(text::unavailable(reason)).into_any_element(),
+    View::List { refreshing, stale } => {
+      let count = browse.rows.len();
+      let rows = uniform_list(
+        "packages",
+        count,
+        cx.processor(|this, range: Range<usize>, _, _| {
+          let Some(browse) = this.state.browse.as_ref() else {
+            return Vec::new();
+          };
+          let Some(index) = browse.index.as_ref() else {
+            return Vec::new();
+          };
+
+          browse.rows[range]
+            .iter()
+            .filter_map(|&row| PackageRow::new(&index.0, row))
+            .map(package_row)
+            .collect()
+        }),
+      )
+      .flex_1();
+
+      v_flex()
+        .flex_1()
+        .gap_2()
+        .overflow_hidden()
+        .image_cache(icons.clone())
+        .children(stale.map(|reason| {
+          div()
+            .id("stale")
+            .child(failure(text::stale(reason)))
+            .test_support()
+        }))
+        .when(refreshing, |list| list.child(text::REFRESHING))
+        .when(count == 0, |list| list.child(text::NO_PACKAGES))
+        .child(rows)
+        .into_any_element()
+    }
+  }
+}
+
+fn package_row(row: PackageRow<'_>) -> AnyElement {
+  let muted = rgb(0x999999);
+  let icon = match row.icon() {
+    Some(url) => img(SharedString::from(url.to_string()))
+      .size(px(ICON_SIZE))
+      .flex_none()
+      .into_any_element(),
+    None => div().size(px(ICON_SIZE)).flex_none().into_any_element(),
+  };
+  let text = |field: Option<&str>| SharedString::from(field.unwrap_or_default().to_string());
+
+  h_flex()
+    .id(text(row.full_name()))
+    .h(px(ROW_HEIGHT))
+    .w_full()
+    .px_3()
+    .gap_3()
+    .child(icon)
+    .child(
+      v_flex()
+        .flex_1()
+        .overflow_hidden()
+        .child(
+          h_flex()
+            .gap_2()
+            .child(
+              div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text(row.name())),
+            )
+            .child(div().text_sm().text_color(muted).child(text::byline(
+              row.owner().unwrap_or_default(),
+              row.version_number().unwrap_or_default(),
+            ))),
+        )
+        .child(
+          div()
+            .truncate()
+            .text_sm()
+            .text_color(muted)
+            .child(text(row.description())),
+        ),
+    )
+    .test_support()
+    .into_any_element()
 }
 
 fn failure(failure: text::Failure) -> impl IntoElement {

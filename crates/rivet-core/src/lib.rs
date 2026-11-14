@@ -1,9 +1,11 @@
 //! The pure core of the app: all state, every message that can change it, and
 //! the effects the shell must run. Nothing here does IO.
 
+pub mod browse;
 pub mod picker;
 pub mod settings;
 
+use browse::{Browse, Fetch, Index, Refresh};
 use picker::{FolderRefusal, Picker, Refusal, Step};
 use settings::{GameSettings, Settings};
 use std::path::PathBuf;
@@ -19,6 +21,10 @@ pub struct State {
   pub picker: Picker,
   /// The last failure to read or write the settings file, if unresolved.
   pub settings_error: Option<SettingsError>,
+  /// The open game's package list. `None` outside a game.
+  pub browse: Option<Browse>,
+  /// How many index fetches have been started, so each gets its own id.
+  pub refreshes: u64,
 }
 
 impl State {
@@ -30,6 +36,8 @@ impl State {
       screen: Screen::Starting,
       picker: Picker::default(),
       settings_error: None,
+      browse: None,
+      refreshes: 0,
     }
   }
 }
@@ -72,6 +80,19 @@ pub enum Msg {
     entries: Result<Vec<String>, String>,
   },
   SwitchGamePressed,
+  /// A community's cached package index was read: `None` when nothing is
+  /// cached, or why the cache could not be read.
+  CachedIndexRead {
+    community: String,
+    index: Result<Option<Index>, String>,
+  },
+  /// A [`Refresh`] finished: the fetched package index, `None` when the
+  /// cached one is current, or why it could not be fetched.
+  IndexRefreshed {
+    refresh: Refresh,
+    index: Result<Option<Index>, String>,
+  },
+  RefreshPressed,
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -94,6 +115,12 @@ pub enum Command {
   SaveSettings(Settings),
   /// Answered with [`Msg::FolderListed`].
   ListFolder(PathBuf),
+  /// Read a community's cached package index without touching the network.
+  /// Answered with [`Msg::CachedIndexRead`].
+  ReadCachedIndex(String),
+  /// Fetch a community's package index and cache it. Answered with
+  /// [`Msg::IndexRefreshed`].
+  RefreshIndex { refresh: Refresh, fetch: Fetch },
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -117,14 +144,17 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     }
     Msg::SettingsLoaded(Ok(settings)) => {
       state.settings = settings;
-      state.screen = match state.settings.last_game.clone() {
-        Some(game) if offered(state, &game) && state.settings.folder(&game).is_some() => {
-          Screen::Game(game)
-        }
-        _ => Screen::Picker,
-      };
 
-      Vec::new()
+      match state.settings.last_game.clone() {
+        Some(game) if offered(state, &game) && state.settings.folder(&game).is_some() => {
+          show_game(state, game)
+        }
+        _ => {
+          state.screen = Screen::Picker;
+
+          Vec::new()
+        }
+      }
     }
     Msg::SettingsLoaded(Err(detail)) => {
       state.settings_error = Some(SettingsError::Load(detail));
@@ -144,6 +174,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.screen = Screen::Picker;
       state.picker.step = Step::Idle;
       state.picker.refusal = None;
+      state.browse = None;
 
       Vec::new()
     }
@@ -152,6 +183,9 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
 
       Vec::new()
     }
+    Msg::CachedIndexRead { community, index } => browse::cache_read(state, community, index),
+    Msg::IndexRefreshed { refresh, index } => browse::refreshed(state, refresh, index),
+    Msg::RefreshPressed => browse::refresh_pressed(state),
   }
 }
 
@@ -252,9 +286,29 @@ fn folder_listed(
 /// Shows `game` and saves it as the game to reopen on the next start.
 fn open_game(state: &mut State, game: String) -> Vec<Effect> {
   state.settings.last_game = Some(game.clone());
-  state.screen = Screen::Game(game);
 
-  vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+  let mut effects = vec![Effect::Run(Command::SaveSettings(state.settings.clone()))];
+
+  effects.extend(show_game(state, game));
+
+  effects
+}
+
+/// Shows `game` and starts loading its package list.
+fn show_game(state: &mut State, game: String) -> Vec<Effect> {
+  let community = state
+    .ecosystem
+    .game(&game)
+    .and_then(|definition| definition.community())
+    .map(str::to_string);
+
+  state.screen = Screen::Game(game);
+  state.browse = community.clone().map(Browse::new);
+
+  community
+    .map(|community| Effect::Run(Command::ReadCachedIndex(community)))
+    .into_iter()
+    .collect()
 }
 
 #[cfg(test)]
@@ -266,24 +320,41 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
           "label": "valheim",
           "meta": { "displayName": "Valheim" },
           "r2modman": [
-            { "gameInstanceType": "game", "exeNames": ["valheim.exe", "valheim.x86_64"] },
+            {
+              "gameInstanceType": "game",
+              "exeNames": ["valheim.exe", "valheim.x86_64"],
+              "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+            },
             { "gameInstanceType": "server", "exeNames": ["valheim_server.exe"] }
           ]
         },
         "riskofrain2": {
           "label": "riskofrain2",
           "meta": { "displayName": "Risk of Rain 2" },
-          "r2modman": [{ "gameInstanceType": "game", "exeNames": ["Risk of Rain 2.exe"] }]
+          "r2modman": [{
+            "gameInstanceType": "game",
+            "exeNames": ["Risk of Rain 2.exe"],
+            "packageIndex": "https://thunderstore.io/c/riskofrain2/api/v1/package/"
+          }]
         },
         "lethal-company": {
           "label": "lethal-company",
           "meta": { "displayName": "Lethal Company" },
-          "r2modman": [{ "gameInstanceType": "game", "exeNames": ["Lethal Company.exe"] }]
+          "r2modman": [{
+            "gameInstanceType": "game",
+            "exeNames": ["Lethal Company.exe"],
+            "packageIndex": "https://thunderstore.io/c/lethal-company/api/v1/package/"
+          }]
         },
         "no-install-definition": {
           "label": "no-install-definition",
           "meta": { "displayName": "A Game Without An Install Definition" },
           "r2modman": null
+        },
+        "no-package-index": {
+          "label": "no-package-index",
+          "meta": { "displayName": "A Game Without A Package Index" },
+          "r2modman": [{ "gameInstanceType": "game", "exeNames": ["game.exe"] }]
         }
       }
     }"#,
@@ -316,6 +387,10 @@ mod tests {
     }
   }
 
+  fn read_cache(community: &str) -> Effect {
+    Effect::Run(Command::ReadCachedIndex(community.to_string()))
+  }
+
   #[test]
   fn starting_loads_the_settings() {
     let mut state = State::new(test_ecosystem());
@@ -345,7 +420,7 @@ mod tests {
 
     assert_eq!(state.screen, Screen::Game("valheim".to_string()));
     assert_eq!(state.settings, settings);
-    assert_eq!(effects, vec![]);
+    assert_eq!(effects, vec![read_cache("valheim")]);
   }
 
   #[test]
@@ -440,7 +515,10 @@ mod tests {
     assert_eq!(state.settings.last_game.as_deref(), Some("valheim"));
     assert_eq!(
       effects,
-      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+      vec![
+        Effect::Run(Command::SaveSettings(state.settings.clone())),
+        read_cache("valheim"),
+      ]
     );
   }
 
@@ -510,10 +588,13 @@ mod tests {
     assert_eq!(state.settings, settings_with("valheim", "/games/valheim"));
     assert_eq!(
       effects,
-      vec![Effect::Run(Command::SaveSettings(settings_with(
-        "valheim",
-        "/games/valheim"
-      )))]
+      vec![
+        Effect::Run(Command::SaveSettings(settings_with(
+          "valheim",
+          "/games/valheim"
+        ))),
+        read_cache("valheim"),
+      ]
     );
   }
 
