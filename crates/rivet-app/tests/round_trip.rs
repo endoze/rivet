@@ -238,13 +238,43 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
   }
 
   cx.run_until_parked();
+
+  let tabs = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+
+      let tabs = window.find("tab-browse").bounds();
+
+      window.click("install-Owner-ModC", cx);
+
+      tabs
+    })
+    .unwrap();
+
+  settle(cx, window);
+
+  assert!(dialog_open(cx, window), "install opened no modal");
+
   cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
-    window.click("install-Owner-ModC", cx);
-    window.render_frame(cx);
+    assert_eq!(
+      window.find("tab-browse").bounds(),
+      tabs,
+      "the confirmation moved the tabs"
+    );
+    assert!(
+      window
+        .within("install-dialog")
+        .try_find("confirm-install")
+        .is_some(),
+      "the confirmation is not in the modal"
+    );
+
     window.click("confirm-install", cx);
   })
   .unwrap();
+  settle(cx, window);
+
+  assert!(!dialog_open(cx, window), "confirming left the modal open");
 
   let install = std::iter::from_fn(|| sent.try_recv().ok())
     .find_map(|command| match command {
@@ -289,6 +319,70 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn closing_the_install_modal_any_way_installs_nothing(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, shell) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(Installed::new()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+
+  for how in ["escape", "close", "dismiss-install"] {
+    cx.update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+      window.click("install-Owner-ModC", cx);
+    })
+    .unwrap();
+    settle(cx, window);
+
+    assert!(dialog_open(cx, window), "install opened no modal");
+
+    cx.update_window(window, |_, window, cx| {
+      if how == "escape" {
+        window.press("escape", cx);
+      } else {
+        window.click(how, cx);
+      }
+    })
+    .unwrap();
+    settle(cx, window);
+
+    assert!(!dialog_open(cx, window), "{how} left the modal open");
+    assert_eq!(
+      shell.read_with(cx, |shell, _| shell.state().confirmation.clone()),
+      None,
+      "{how} left the install pending"
+    );
+  }
+
+  let installed = std::iter::from_fn(|| sent.try_recv().ok())
+    .any(|command| matches!(command, Command::Install(_)));
+
+  assert!(!installed, "closing the modal installed something");
+}
+
+#[gpui_kit::test]
 fn closing_while_an_install_runs_asks_then_cancels_it_and_closes(cx: &mut TestAppContext) {
   cx.update(gpui_kit::init);
 
@@ -320,23 +414,42 @@ fn closing_while_an_install_runs_asks_then_cancels_it_and_closes(cx: &mut TestAp
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
     window.click("install-Owner-ModC", cx);
-    window.render_frame(cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
     window.click("confirm-install", cx);
-    window.render_frame(cx);
-
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, _| {
     assert!(window.try_find("operation-1").is_some());
     assert!(window.try_find("cancel-operation-1").is_some());
   })
   .unwrap();
 
+  cx.update_window(window, |_, window, cx| {
+    window.click("install-Owner-ModA", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(dialog_open(cx, window), "the second install asked nothing");
+
   let mut visual = VisualTestContext::from_window(window, cx);
 
   assert!(!visual.simulate_close());
 
+  settle(cx, window);
   cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
-
-    assert!(window.try_find("closing").is_some());
+    assert!(
+      window.within("closing").try_find("close-cancel").is_some(),
+      "the close question is not in the modal"
+    );
+    assert!(
+      window.try_find("install-dialog").is_none(),
+      "the install modal still covers the close question"
+    );
 
     window.click("close-cancel", cx);
   })

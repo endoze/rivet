@@ -3,6 +3,7 @@
 //! thread.
 
 mod icons;
+mod modal;
 pub mod palette;
 pub mod text;
 
@@ -10,7 +11,6 @@ use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
@@ -26,16 +26,14 @@ use gpui_kit::{
   TestSupportExt as _, WeakEntity, Window, div, img, px, uniform_list,
 };
 use icons::IconCache;
+use modal::Modal;
 use palette::Palette;
 use rivet_core::browse::{Browse, SortKey, View};
-use rivet_core::install::{
-  Confirmation, InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus,
-};
+use rivet_core::install::{InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus};
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::manage::{Folders, Pending, Scope, Sort, Tab};
 use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
-use rivet_core::queue::{CloseChoice, Closing};
 use rivet_core::readme::{Package, Readme, Status};
 use rivet_core::switcher::Naming;
 use rivet_core::{Command, Effect, Msg, Screen, State};
@@ -59,9 +57,9 @@ pub struct Shell {
   /// Notices shown as toasts on the next render, since showing one needs the
   /// window.
   notices: Vec<Notice>,
-  /// The profile dialog open over the window, kept in step with the
-  /// switcher's form and deletion on each render.
-  profile_dialog: Option<ProfileDialog>,
+  /// The modal open over the window, kept in step with
+  /// [`modal::wanted_modal`] on each render.
+  modal: Option<Modal>,
   installed_search: Entity<InputState>,
   icons: Entity<IconCache>,
   _subscriptions: Vec<Subscription>,
@@ -155,7 +153,7 @@ impl Shell {
       fill_profile_name: None,
       close_window: false,
       notices: Vec::new(),
-      profile_dialog: None,
+      modal: None,
       installed_search,
       icons: cx.new(|_| IconCache::new()),
       _subscriptions: vec![
@@ -395,60 +393,6 @@ impl Shell {
     )
   }
 
-  /// What closing the window is waiting on: the question asked when work is
-  /// in progress, or that the window closes once it ends.
-  fn render_closing(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-    let palette = Palette::new(cx);
-    let closing = self.state.closing?;
-    let keep_open = Button::new("close-dismiss")
-      .label(text::KEEP_OPEN)
-      .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::CloseDismissed, cx)));
-    let panel = v_flex()
-      .id("closing")
-      .gap_2()
-      .p_3()
-      .border_1()
-      .border_color(palette.danger_border);
-    let panel = match closing {
-      Closing::Asking => panel
-        .child(
-          div()
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(text::CLOSE_HEADLINE),
-        )
-        .child(text::CLOSE_DETAIL)
-        .child(
-          h_flex()
-            .gap_2()
-            .child(
-              Button::new("close-wait")
-                .label(text::CLOSE_WAIT)
-                .primary()
-                .on_click(cx.listener(|this, _, _, cx| {
-                  this.dispatch(Msg::CloseChosen(CloseChoice::Wait), cx);
-                })),
-            )
-            .child(
-              Button::new("close-cancel")
-                .label(text::CLOSE_CANCEL)
-                .on_click(cx.listener(|this, _, _, cx| {
-                  this.dispatch(Msg::CloseChosen(CloseChoice::Cancel), cx);
-                })),
-            )
-            .child(keep_open),
-        ),
-      Closing::Waiting => panel.child(
-        h_flex()
-          .gap_2()
-          .justify_between()
-          .child(text::CLOSING_WHEN_DONE)
-          .child(keep_open),
-      ),
-    };
-
-    Some(panel.test_support().into_any_element())
-  }
-
   /// Applies a press of the window's close button, answering whether the
   /// window may close now.
   fn close_requested(&mut self, cx: &mut Context<Self>) -> bool {
@@ -490,13 +434,6 @@ impl Shell {
           }),
       )
       .children(self.render_queue(cx))
-      .children(
-        self
-          .state
-          .confirmation
-          .as_ref()
-          .map(|confirmation| render_confirmation(confirmation, cx)),
-      )
       .child(render_tabs(self.state.tab, cx))
       .child(
         div()
@@ -830,55 +767,6 @@ impl Shell {
 
     Some(v_flex().gap_2().children(notes).into_any_element())
   }
-
-  /// The profile dialog the state asks for: naming while a name is asked
-  /// for, deleting while a deletion waits to be confirmed.
-  fn wanted_dialog(&self) -> Option<ProfileDialog> {
-    let switcher = self.state.switcher.as_ref()?;
-
-    if switcher.form.is_some() {
-      Some(ProfileDialog::Naming)
-    } else if switcher.deleting.is_some() {
-      Some(ProfileDialog::Deleting)
-    } else {
-      None
-    }
-  }
-
-  /// Opens or closes the profile dialog to match the state. Deferred past
-  /// the render, since dialogs belong to the window's root view.
-  fn sync_profile_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    let wanted = self.wanted_dialog();
-
-    if wanted == self.profile_dialog {
-      return;
-    }
-
-    let shown = std::mem::replace(&mut self.profile_dialog, wanted);
-    let shell = cx.weak_entity();
-    let input = self.profile_name.clone();
-
-    window.defer(cx, move |window, cx| {
-      if shown.is_some() && window.has_active_dialog(cx) {
-        window.close_dialog(cx);
-      }
-
-      match wanted {
-        Some(ProfileDialog::Naming) => window.open_dialog(cx, naming_dialog(shell, input)),
-        Some(ProfileDialog::Deleting) => window.open_dialog(cx, deleting_dialog(shell)),
-        None => {}
-      }
-    });
-  }
-}
-
-/// A modal dialog about the selected profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ProfileDialog {
-  /// Asks for a name for a new, renamed, or copied profile.
-  Naming,
-  /// Asks to confirm deleting the selected profile.
-  Deleting,
 }
 
 /// A click handler that hands `msg` to the shell, while it is open.
@@ -929,120 +817,6 @@ fn profile_item(name: &str, count: Option<usize>, muted: Hsla) -> PopupMenuItem 
       }))
       .test_support()
   })
-}
-
-/// The dialog asking for a profile name, with why the last one given was
-/// refused. It focuses the name field when it opens.
-fn naming_dialog(
-  shell: WeakEntity<Shell>,
-  input: Entity<InputState>,
-) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
-  let focus = std::cell::Cell::new(true);
-
-  move |dialog, window, cx| {
-    if focus.replace(false) {
-      input.update(cx, |input, cx| input.focus(window, cx));
-    }
-
-    let form = shell.upgrade().and_then(|shell| {
-      let switcher = shell.read(cx).state.switcher.as_ref()?;
-
-      switcher.form.clone()
-    });
-    let Some(form) = form else {
-      return dialog;
-    };
-    let palette = Palette::new(cx);
-    let submit = {
-      let shell = shell.clone();
-
-      move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-        shell
-          .update(cx, |this, cx| this.submit_profile_name(cx))
-          .ok();
-      }
-    };
-    let refusal = form.refusal.as_ref().map(|refusal| {
-      div()
-        .id("profile-name-refused")
-        .child(failure(palette, text::name_refused(refusal)))
-        .test_support()
-    });
-
-    dialog
-      .title(SharedString::from(text::name_prompt(
-        form.naming,
-        &form.from,
-      )))
-      .on_ok(|_, _, _| false)
-      .on_close(send(&shell, Msg::ProfileNameDismissed))
-      .child(
-        v_flex()
-          .id("profile-name-dialog")
-          .gap_3()
-          .child(Input::new(&input))
-          .children(refusal)
-          .child(
-            h_flex()
-              .gap_2()
-              .justify_end()
-              .child(
-                Button::new("cancel-profile-name")
-                  .label(text::CANCEL)
-                  .on_click(send(&shell, Msg::ProfileNameDismissed)),
-              )
-              .child(
-                Button::new("save-profile-name")
-                  .label(text::SAVE)
-                  .primary()
-                  .on_click(submit),
-              ),
-          )
-          .test_support(),
-      )
-  }
-}
-
-/// The dialog asking to confirm deleting the selected profile.
-fn deleting_dialog(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
-  move |dialog, _, cx| {
-    let deleting = shell.upgrade().and_then(|shell| {
-      let switcher = shell.read(cx).state.switcher.as_ref()?;
-
-      switcher.deleting.clone()
-    });
-    let Some(name) = deleting else {
-      return dialog;
-    };
-
-    dialog
-      .title(SharedString::from(text::confirm_delete(&name)))
-      .on_ok(|_, _, _| false)
-      .on_close(send(&shell, Msg::DeleteProfileDismissed))
-      .child(
-        v_flex()
-          .id("delete-profile-dialog")
-          .gap_3()
-          .child(text::DELETE_WARNING)
-          .child(
-            h_flex()
-              .gap_2()
-              .justify_end()
-              .child(
-                Button::new("cancel-delete-profile")
-                  .label(text::CANCEL)
-                  .on_click(send(&shell, Msg::DeleteProfileDismissed)),
-              )
-              .child(
-                Button::new("confirm-delete-profile")
-                  .label(text::DELETE)
-                  .danger()
-                  .on_click(send(&shell, Msg::DeleteProfileConfirmed)),
-              ),
-          )
-          .test_support(),
-      )
-  }
 }
 
 /// The line to paste into Steam's launch options, with a copy button, and
@@ -1112,58 +886,6 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> Option<A
       .test_support()
       .into_any_element(),
   )
-}
-
-fn render_confirmation(confirmation: &Confirmation, cx: &mut Context<Shell>) -> AnyElement {
-  let palette = Palette::new(cx);
-  let dependencies: Vec<_> = confirmation
-    .dependencies
-    .iter()
-    .map(|package| div().pl_3().child(text::planned(package)))
-    .collect();
-  let lead = if dependencies.is_empty() {
-    text::NO_DEPENDENCIES
-  } else {
-    text::WITH_DEPENDENCIES
-  };
-  let can_confirm = confirmation.can_confirm();
-
-  v_flex()
-    .gap_2()
-    .p_3()
-    .border_1()
-    .border_color(palette.border)
-    .child(
-      div()
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(text::confirm_install(&confirmation.package)),
-    )
-    .child(lead)
-    .children(dependencies)
-    .when(!can_confirm, |panel| {
-      panel.child(failure(
-        palette,
-        text::missing_dependencies(&confirmation.missing),
-      ))
-    })
-    .child(
-      h_flex()
-        .gap_2()
-        .when(can_confirm, |buttons| {
-          buttons.child(
-            Button::new("confirm-install")
-              .label(text::INSTALL)
-              .primary()
-              .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::InstallConfirmed, cx))),
-          )
-        })
-        .child(
-          Button::new("dismiss-install")
-            .label(text::CANCEL)
-            .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::InstallDismissed, cx))),
-        ),
-    )
-    .into_any_element()
 }
 
 /// One operation of the queue: the game and profile it changes, what it is
@@ -1841,7 +1563,7 @@ impl Render for Shell {
       window.defer(cx, move |window, cx| window.push_notification(toast, cx));
     }
 
-    self.sync_profile_dialog(window, cx);
+    self.sync_modal(window, cx);
 
     let screen = match self.state.screen.clone() {
       Screen::Starting => v_flex()
@@ -1856,7 +1578,6 @@ impl Render for Shell {
 
     v_flex()
       .size_full()
-      .children(self.render_closing(cx))
       .child(div().w_full().flex_1().overflow_hidden().child(screen))
   }
 }
