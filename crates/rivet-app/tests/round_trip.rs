@@ -105,9 +105,23 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
 
-    assert!(window.try_find("Owner-ModA").is_some());
+    let row = window.find("Owner-ModA").bounds();
 
     window.click("refresh", cx);
+    window.render_frame(cx);
+
+    assert!(
+      window
+        .within("status-bar")
+        .try_find("status-note")
+        .is_some(),
+      "refreshing is not in the status bar"
+    );
+    assert_eq!(
+      window.find("Owner-ModA").bounds(),
+      row,
+      "refreshing moved the package list"
+    );
   })
   .unwrap();
 
@@ -479,6 +493,258 @@ fn closing_while_an_install_runs_asks_then_cancels_it_and_closes(cx: &mut TestAp
   assert!(cx.update_window(window, |_, _, _| ()).is_err());
 }
 
+/// Presses install on `package` and confirms it in the modal.
+fn install(cx: &mut TestAppContext, window: AnyWindowHandle, package: &'static str) {
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click(package, cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
+    window.click("confirm-install", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+}
+
+#[gpui_kit::test]
+fn the_status_bar_shows_the_running_change_without_moving_the_tabs(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::IndexRefreshed {
+      refresh: valheim_refresh(1),
+      index: Ok(None),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(Installed::new()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+
+  let (tabs, bar) = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+
+      assert!(
+        window.within("status-bar").elements().is_empty(),
+        "the bar is not empty with nothing running"
+      );
+
+      (
+        window.find("tab-browse").bounds(),
+        window.find("status-bar").bounds(),
+      )
+    })
+    .unwrap();
+  let unmoved = |window: &mut Window, when: &str| {
+    assert_eq!(
+      window.find("tab-browse").bounds(),
+      tabs,
+      "the tabs moved {when}"
+    );
+    assert_eq!(
+      window.find("status-bar").bounds(),
+      bar,
+      "the bar changed size {when}"
+    );
+  };
+
+  assert!(bar.size.height > gpui_kit::px(0.), "the bar takes no space");
+
+  install(cx, window, "install-Owner-ModC");
+  cx.update_window(window, |_, window, _| {
+    unmoved(window, "when a change started");
+
+    let status = window.within("status-bar");
+
+    assert!(status.try_find("operation-1").is_some());
+    assert!(status.try_find("cancel-operation-1").is_some());
+    assert!(status.try_find("waiting-count").is_none());
+  })
+  .unwrap();
+
+  install(cx, window, "install-Owner-ModA");
+  cx.update_window(window, |_, window, cx| {
+    unmoved(window, "when a change was queued");
+
+    assert!(
+      window
+        .within("status-bar")
+        .try_find("waiting-count")
+        .is_some(),
+      "the bar does not say a change is waiting"
+    );
+
+    window.click("cancel-operation-1", cx);
+    window.render_frame(cx);
+
+    unmoved(window, "when a change was cancelled");
+
+    let status = window.within("status-bar");
+
+    assert!(status.try_find("operation-stopping").is_some());
+    assert!(status.try_find("cancel-operation-1").is_none());
+  })
+  .unwrap();
+
+  answers
+    .unbounded_send(Msg::OperationFinished {
+      operation: 1,
+      outcome: Ok(Outcome {
+        changed: vec![],
+        failed: vec![rivet_core::install::FailedPackage {
+          package: "Owner-ModC".to_string(),
+          reason: "corrupt archive".to_string(),
+        }],
+        cancelled: vec![],
+        profile: Ok(Installed::new()),
+      }),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert!(
+    toasted(cx, window, "notice-error"),
+    "the failed change was not told"
+  );
+
+  cx.update_window(window, |_, window, _| {
+    unmoved(window, "when the next change started");
+
+    let status = window.within("status-bar");
+
+    assert!(status.try_find("operation-1").is_none());
+    assert!(status.try_find("operation-2").is_some());
+    assert!(status.try_find("waiting-count").is_none());
+  })
+  .unwrap();
+
+  answers
+    .unbounded_send(Msg::OperationFinished {
+      operation: 2,
+      outcome: Ok(Outcome {
+        changed: vec!["Owner-ModA".to_string()],
+        failed: vec![],
+        cancelled: vec![],
+        profile: Ok([package("Owner-ModA", &[])].into()),
+      }),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    unmoved(window, "when the bar emptied");
+
+    assert!(
+      window.within("status-bar").elements().is_empty(),
+      "a finished change stayed in the bar"
+    );
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn cancel_and_error_toasts_stay_clear_of_the_status_bar(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let profile =
+    "A profile whose name runs on long enough to fill the status bar by itself ".repeat(4);
+  let mut settings = valheim_settings();
+
+  settings.games.get_mut("valheim").unwrap().profile = Some(profile.clone());
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(settings)),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile,
+      installed: Ok(Installed::new()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  install(cx, window, "install-Owner-ModC");
+  cx.update_window(window, |_, window, _| {
+    let bar = window.find("status-bar").bounds();
+    let cancel = window.find("cancel-operation-1").bounds();
+
+    assert!(
+      cancel.right() <= bar.right(),
+      "a long profile name pushed Cancel off the bar"
+    );
+  })
+  .unwrap();
+
+  answers
+    .unbounded_send(Msg::OperationFinished {
+      operation: 1,
+      outcome: Ok(Outcome {
+        changed: vec![],
+        failed: vec![rivet_core::install::FailedPackage {
+          package: "Owner-ModC".to_string(),
+          reason: "corrupt archive".to_string(),
+        }],
+        cancelled: vec![],
+        profile: Ok(Installed::new()),
+      }),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert!(toasted(cx, window, "notice-error"));
+
+  cx.executor()
+    .advance_clock(std::time::Duration::from_secs(1));
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    let bar = window.find("status-bar").bounds();
+    let toast = window.find("notice-error").bounds();
+
+    assert!(
+      toast.bottom() <= bar.top(),
+      "the error toast covers the status bar: {toast:?} {bar:?}"
+    );
+  })
+  .unwrap();
+}
+
 /// An enabled 1.0.0 `Owner-` package needing `dependencies`.
 fn package(full_name: &str, dependencies: &[&str]) -> (String, InstalledPackage) {
   (
@@ -538,13 +804,21 @@ fn the_installed_tab_asks_before_disabling_a_dependency_and_the_disable_can_be_c
     assert!(window.try_find("enabled-Owner-ModC").is_some());
 
     window.click("disable-Owner-ModA", cx);
-    window.render_frame(cx);
-
-    assert!(window.try_find("dependants-question").is_some());
-
-    window.click("with-dependants", cx);
   })
   .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
+    window
+      .within("dependants-question")
+      .click("with-dependants", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(
+    !dialog_open(cx, window),
+    "the modal stayed after the choice"
+  );
 
   let set = std::iter::from_fn(|| sent.try_recv().ok())
     .find_map(|command| match command {
@@ -784,7 +1058,24 @@ fn a_steam_game_steam_does_not_have_asks_for_its_folder_saying_why(cx: &mut Test
   cx.run_until_parked();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+
+    let row = window.find("valheim").bounds();
+
     window.click("valheim", cx);
+    window.render_frame(cx);
+
+    assert!(
+      window
+        .within("status-bar")
+        .try_find("status-note")
+        .is_some(),
+      "looking for the game is not in the status bar"
+    );
+    assert_eq!(
+      window.find("valheim").bounds(),
+      row,
+      "looking for the game moved the list"
+    );
   })
   .unwrap();
   answers
@@ -860,14 +1151,37 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
   }
 
   cx.run_until_parked();
-  cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
 
-    assert!(window.try_find("launch-option-not-set").is_some());
-    assert!(window.try_find("missing-loader").is_some());
+  let tabs = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
 
-    window.click("copy-launch-option", cx);
-    window.click("launch-vanilla", cx);
+      assert!(window.try_find("launch-option-not-set").is_some());
+      assert!(window.try_find("missing-loader").is_some());
+
+      let tabs = window.find("tab-browse").bounds();
+
+      window.click("copy-launch-option", cx);
+      window.click("launch-vanilla", cx);
+      window.render_frame(cx);
+
+      tabs
+    })
+    .unwrap();
+
+  cx.update_window(window, |_, window, _| {
+    assert!(
+      window
+        .within("status-bar")
+        .try_find("status-note")
+        .is_some(),
+      "starting the game is not in the status bar"
+    );
+    assert_eq!(
+      window.find("tab-browse").bounds(),
+      tabs,
+      "starting the game moved the tabs"
+    );
   })
   .unwrap();
 
@@ -889,6 +1203,37 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
 
   assert_eq!(launch.context.mode, LaunchMode::Vanilla);
   assert_eq!(launch.folder, PathBuf::from("/games/Valheim"));
+
+  answers
+    .unbounded_send(Msg::LaunchFinished {
+      launch: launch.id,
+      result: Err(rivet_core::launch::LaunchFailure::Other(
+        "the game exited at once".to_string(),
+      )),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert!(
+    toasted(cx, window, "notice-error"),
+    "the failed launch was not told"
+  );
+
+  cx.update_window(window, |_, window, _| {
+    assert_eq!(
+      window.find("tab-browse").bounds(),
+      tabs,
+      "the failed launch moved the tabs"
+    );
+    assert!(
+      window
+        .within("launch-option")
+        .try_find("launch-option-not-set")
+        .is_some(),
+      "rechecking Steam changed what the banner says"
+    );
+  })
+  .unwrap();
 
   answers
     .unbounded_send(Msg::SteamOptionRead(SteamOptionRead {
@@ -1062,11 +1407,17 @@ fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) 
   })
   .unwrap();
   settle(cx, window);
-  cx.update_window(window, |_, window, cx| {
-    window.input("Fresh", cx);
-    window.press("enter", cx);
-  })
-  .unwrap();
+
+  let tabs = cx
+    .update_window(window, |_, window, cx| {
+      let tabs = window.find("tab-browse").bounds();
+
+      window.input("Fresh", cx);
+      window.press("enter", cx);
+
+      tabs
+    })
+    .unwrap();
 
   let created = ProfileChange::Create("Fresh".to_string());
 
@@ -1077,6 +1428,23 @@ fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) 
     }),
     "the typed name was not submitted"
   );
+
+  settle(cx, window);
+  cx.update_window(window, |_, window, _| {
+    assert!(
+      window
+        .within("status-bar")
+        .try_find("status-note")
+        .is_some(),
+      "creating the profile is not in the status bar"
+    );
+    assert_eq!(
+      window.find("tab-browse").bounds(),
+      tabs,
+      "creating the profile moved the tabs"
+    );
+  })
+  .unwrap();
 
   for msg in [
     Msg::ProfileChanged {
@@ -1247,4 +1615,225 @@ fn selecting_a_package_in_either_tab_shows_its_readme_beside_the_list(cx: &mut T
     assert!(window.try_find("readme-missing").is_some());
   })
   .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_installed_tab_asks_about_an_uninstall_in_the_modal_without_moving_the_list(
+  cx: &mut TestAppContext,
+) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(
+        [
+          package("Owner-ModA", &[]),
+          package("Owner-ModC", &["Owner-ModA"]),
+        ]
+        .into(),
+      ),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+
+  let list = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+      window.click("tab-installed", cx);
+      window.render_frame(cx);
+
+      window.find("installed-packages").bounds()
+    })
+    .unwrap();
+
+  cx.update_window(window, |_, window, cx| {
+    window.click("uninstall-Owner-ModA", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(
+    dialog_open(cx, window),
+    "the dependants question is not in a modal"
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    assert_eq!(
+      window.find("installed-packages").bounds(),
+      list,
+      "the dependants question moved the list"
+    );
+    assert!(
+      window
+        .within("dependants-question")
+        .try_find("package-only")
+        .is_some()
+    );
+
+    window.click("with-dependants", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  let packages = vec!["Owner-ModA".to_string(), "Owner-ModC".to_string()];
+  let checked = std::iter::from_fn(|| sent.try_recv().ok()).any(|command| {
+    command
+      == Command::CheckUninstall {
+        game: "valheim".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        packages: packages.clone(),
+      }
+  });
+
+  assert!(checked, "the uninstall was not checked");
+  assert!(dialog_open(cx, window), "the modal closed while checking");
+
+  cx.update_window(window, |_, window, _| {
+    assert!(window.try_find("checking-uninstall").is_some());
+    assert_eq!(
+      window.find("installed-packages").bounds(),
+      list,
+      "checking the uninstall moved the list"
+    );
+  })
+  .unwrap();
+
+  answers
+    .unbounded_send(Msg::UninstallChecked {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      packages: packages.clone(),
+      untracked: Ok(vec![PathBuf::from("/games/Valheim/BepInEx/plugins/Stray")]),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  settle(cx, window);
+
+  assert!(
+    dialog_open(cx, window),
+    "the folders question is not in a modal"
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    assert_eq!(
+      window.find("installed-packages").bounds(),
+      list,
+      "the folders question moved the list"
+    );
+
+    window
+      .within("untracked-question")
+      .click("keep-folders", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(
+    !dialog_open(cx, window),
+    "the modal stayed after the choice"
+  );
+
+  let uninstall = std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::Uninstall(uninstall) => Some(uninstall),
+      _ => None,
+    })
+    .expect("an uninstall was sent");
+
+  assert_eq!(uninstall.packages, packages);
+  assert!(uninstall.delete.is_empty());
+}
+
+#[gpui_kit::test]
+fn a_refused_uninstall_shows_in_the_modal_and_dismissing_it_clears_it(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[])].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+
+  let list = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+      window.click("tab-installed", cx);
+      window.render_frame(cx);
+
+      window.find("installed-packages").bounds()
+    })
+    .unwrap();
+
+  cx.update_window(window, |_, window, cx| {
+    window.click("uninstall-Owner-ModA", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(
+    !dialog_open(cx, window),
+    "checking an uninstall nothing depends on opened a modal"
+  );
+
+  cx.update_window(window, |_, window, _| {
+    assert_eq!(
+      window.find("installed-packages").bounds(),
+      list,
+      "checking the uninstall moved the list"
+    );
+  })
+  .unwrap();
+  answers
+    .unbounded_send(Msg::UninstallChecked {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      packages: vec!["Owner-ModA".to_string()],
+      untracked: Err("the profile folder is read-only".to_string()),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  settle(cx, window);
+
+  assert!(dialog_open(cx, window), "the refusal is not in a modal");
+
+  cx.update_window(window, |_, window, cx| {
+    window
+      .within("uninstall-refused")
+      .click("dismiss-pending", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(!dialog_open(cx, window), "dismissing kept the refusal open");
 }

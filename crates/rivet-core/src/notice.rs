@@ -2,7 +2,8 @@
 //! moment and takes no space in it. Anything the user must act on stays in
 //! the window instead.
 
-use crate::install::Action;
+use crate::install::{Action, FailedPackage};
+use crate::launch::LaunchFailure;
 use crate::switcher::ProfileChange;
 use thunderstore_engine::profile::launch::LaunchMode;
 
@@ -28,6 +29,27 @@ pub enum Notice {
     action: Action,
     changed: Vec<String>,
   },
+  /// An operation on a game's profile failed. `failed` names each package
+  /// that failed and why, and `changed` lists the packages that changed
+  /// before or despite the failure.
+  OperationFailed {
+    /// The game, by its key in the game definitions.
+    game: String,
+    profile: String,
+    action: Action,
+    failed: Vec<FailedPackage>,
+    changed: Vec<String>,
+  },
+  /// An operation on a game's profile was cancelled. `changed` lists the
+  /// packages that changed before it stopped, and is empty for one
+  /// cancelled before it started.
+  OperationCancelled {
+    /// The game, by its key in the game definitions.
+    game: String,
+    profile: String,
+    action: Action,
+    changed: Vec<String>,
+  },
   /// A change to a game's profiles was made.
   ProfileChanged(ProfileChange),
   /// A change to a game's profiles could not be made, with the reason.
@@ -43,6 +65,13 @@ pub enum Notice {
     /// The game, by its key in the game definitions.
     game: String,
     mode: LaunchMode,
+  },
+  /// A launch did not start the game, with why.
+  LaunchFailed {
+    /// The game, by its key in the game definitions.
+    game: String,
+    mode: LaunchMode,
+    failure: LaunchFailure,
   },
   /// The Steam launch option line was put on the clipboard.
   LaunchLineCopied,
@@ -67,9 +96,11 @@ impl Notice {
       | Notice::ProfileChanged(_)
       | Notice::Launched { .. }
       | Notice::SteamOptionSet(_) => Level::Success,
-      Notice::ProfileChangeFailed { .. } => Level::Error,
+      Notice::OperationFailed { .. }
+      | Notice::ProfileChangeFailed { .. }
+      | Notice::LaunchFailed { .. } => Level::Error,
       Notice::IndexStale(_) => Level::Warning,
-      Notice::LaunchLineCopied => Level::Info,
+      Notice::OperationCancelled { .. } | Notice::LaunchLineCopied => Level::Info,
     }
   }
 }
@@ -93,6 +124,28 @@ mod tests {
     let levels = [
       (finished(&["Owner-Mod"]), Level::Success),
       (finished(&[]), Level::Info),
+      (
+        Notice::OperationFailed {
+          game: "valheim".to_string(),
+          profile: "Default".to_string(),
+          action: Action::Install("Owner-Mod".to_string()),
+          failed: vec![FailedPackage {
+            package: "Owner-Mod".to_string(),
+            reason: "offline".to_string(),
+          }],
+          changed: vec![],
+        },
+        Level::Error,
+      ),
+      (
+        Notice::OperationCancelled {
+          game: "valheim".to_string(),
+          profile: "Default".to_string(),
+          action: Action::Install("Owner-Mod".to_string()),
+          changed: vec![],
+        },
+        Level::Info,
+      ),
       (Notice::ProfileChanged(change.clone()), Level::Success),
       (
         Notice::ProfileChangeFailed {

@@ -11,6 +11,7 @@ use gpui_kit::{
   AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
   ParentElement as _, SharedString, Styled as _, TestSupportExt as _, WeakEntity, Window, div,
 };
+use rivet_core::manage::{Folders, Pending, Scope};
 use rivet_core::queue::{CloseChoice, Closing};
 use rivet_core::{Msg, State};
 
@@ -26,12 +27,26 @@ pub(crate) enum Modal {
   Deleting,
   /// Asks to confirm an install, listing what comes with it.
   Installing,
+  /// Asks about an uninstall or disable in the Installed tab: whether to take
+  /// the packages that need it too, whether to delete folders no package
+  /// records, or why it cannot go ahead.
+  Pending,
 }
 
-/// The modal `state` asks for. When several are pending, closing comes first,
-/// then naming, then deleting, then installing.
-pub(crate) fn wanted_modal(state: &State) -> Option<Modal> {
+/// The modal `state` asks for, given the one `shown` now. When several are
+/// pending, closing comes first, then naming, deleting, installing, and the
+/// Installed tab's question.
+///
+/// Checking an uninstall opens no modal, since the check usually ends before
+/// anyone could read it, but it keeps the Installed tab's question open while
+/// it runs after one.
+pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal> {
   let switcher = state.switcher.as_ref();
+  let pending = match &state.manage.pending {
+    Some(Pending::Checking { .. }) => shown == Some(Modal::Pending),
+    Some(_) => true,
+    None => false,
+  };
 
   if state.closing.is_some() {
     Some(Modal::Closing)
@@ -41,6 +56,8 @@ pub(crate) fn wanted_modal(state: &State) -> Option<Modal> {
     Some(Modal::Deleting)
   } else if state.confirmation.is_some() {
     Some(Modal::Installing)
+  } else if pending {
+    Some(Modal::Pending)
   } else {
     None
   }
@@ -50,7 +67,7 @@ impl Shell {
   /// Opens, swaps, or closes the window's modal to match the state. Deferred
   /// past the render, since dialogs belong to the window's root view.
   pub(crate) fn sync_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-    let wanted = wanted_modal(&self.state);
+    let wanted = wanted_modal(&self.state, self.modal);
 
     if wanted == self.modal {
       return;
@@ -70,6 +87,7 @@ impl Shell {
         Some(Modal::Naming) => window.open_dialog(cx, naming(shell, input)),
         Some(Modal::Deleting) => window.open_dialog(cx, deleting(shell)),
         Some(Modal::Installing) => window.open_dialog(cx, installing(shell)),
+        Some(Modal::Pending) => window.open_dialog(cx, pending(shell)),
         None => {}
       }
     });
@@ -261,6 +279,100 @@ fn installing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App
   }
 }
 
+/// The modal asking about an uninstall or disable in the Installed tab. Its
+/// content follows the question as it changes, so choosing to take the
+/// dependants, checking the uninstall, and asking about folders all happen in
+/// one modal.
+fn pending(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
+  move |dialog, _, cx| {
+    let pending = shell
+      .upgrade()
+      .and_then(|shell| shell.read(cx).state.manage.pending.clone());
+    let Some(pending) = pending else {
+      return dialog;
+    };
+    let list = |items: Vec<String>| {
+      items
+        .into_iter()
+        .map(|item| div().pl_3().child(item).into_any_element())
+    };
+    let (title, id, body, cancel_label, actions): (_, _, Vec<AnyElement>, _, _) = match pending {
+      Pending::Dependants {
+        removal,
+        package,
+        dependants,
+      } => (
+        text::dependants_question(removal, &package),
+        "dependants-question",
+        list(dependants).collect(),
+        text::CANCEL,
+        vec![
+          Button::new("package-only")
+            .label(text::PACKAGE_ONLY)
+            .on_click(send(&shell, Msg::DependantsChosen(Scope::PackageOnly))),
+          Button::new("with-dependants")
+            .label(text::WITH_DEPENDANTS)
+            .on_click(send(&shell, Msg::DependantsChosen(Scope::WithDependants))),
+        ],
+      ),
+      Pending::Checking { .. } => (
+        text::CHECKING_UNINSTALL.to_string(),
+        "checking-uninstall",
+        Vec::new(),
+        text::CANCEL,
+        Vec::new(),
+      ),
+      Pending::Untracked { packages, folders } => (
+        text::untracked_question(&packages),
+        "untracked-question",
+        std::iter::once(text::UNTRACKED_LEAD.into_any_element())
+          .chain(list(
+            folders
+              .iter()
+              .map(|folder| folder.display().to_string())
+              .collect(),
+          ))
+          .collect(),
+        text::CANCEL,
+        vec![
+          Button::new("delete-folders")
+            .label(text::DELETE_FOLDERS)
+            .danger()
+            .on_click(send(&shell, Msg::FoldersChosen(Folders::Delete))),
+          Button::new("keep-folders")
+            .label(text::KEEP_FOLDERS)
+            .on_click(send(&shell, Msg::FoldersChosen(Folders::Keep))),
+        ],
+      ),
+      Pending::Refused { packages, reason } => {
+        let refusal = text::uninstall_refused(&packages, &reason);
+
+        (
+          refusal.headline,
+          "uninstall-refused",
+          vec![
+            refusal.detail.into_any_element(),
+            refusal.next.into_any_element(),
+          ],
+          text::DISMISS,
+          Vec::new(),
+        )
+      }
+    };
+    let frame = Frame {
+      title,
+      id,
+      body,
+      cancel: "dismiss-pending",
+      cancel_label,
+      dismissed: Msg::PendingDismissed,
+      actions,
+    };
+
+    frame.fill(dialog, &shell)
+  }
+}
+
 /// The modal shown when the window is asked to close while changes run:
 /// whether to wait for them or cancel them first, then, once chosen, that the
 /// window closes when they end.
@@ -341,21 +453,21 @@ mod tests {
 
   #[test]
   fn nothing_pending_wants_no_modal() {
-    assert_eq!(wanted_modal(&pending(false, false, false)), None);
+    assert_eq!(wanted_modal(&pending(false, false, false), None), None);
   }
 
   #[test]
   fn each_pending_alone_wants_its_own_modal() {
     assert_eq!(
-      wanted_modal(&pending(true, false, false)),
+      wanted_modal(&pending(true, false, false), None),
       Some(Modal::Naming)
     );
     assert_eq!(
-      wanted_modal(&pending(false, true, false)),
+      wanted_modal(&pending(false, true, false), None),
       Some(Modal::Deleting)
     );
     assert_eq!(
-      wanted_modal(&pending(false, false, true)),
+      wanted_modal(&pending(false, false, true), None),
       Some(Modal::Installing)
     );
   }
@@ -363,11 +475,11 @@ mod tests {
   #[test]
   fn naming_comes_before_deleting_and_installing() {
     assert_eq!(
-      wanted_modal(&pending(true, true, true)),
+      wanted_modal(&pending(true, true, true), None),
       Some(Modal::Naming)
     );
     assert_eq!(
-      wanted_modal(&pending(true, false, true)),
+      wanted_modal(&pending(true, false, true), None),
       Some(Modal::Naming)
     );
   }
@@ -375,7 +487,7 @@ mod tests {
   #[test]
   fn deleting_comes_before_installing() {
     assert_eq!(
-      wanted_modal(&pending(false, true, true)),
+      wanted_modal(&pending(false, true, true), None),
       Some(Modal::Deleting)
     );
   }
@@ -387,7 +499,7 @@ mod tests {
 
       state.closing = Some(closing);
 
-      assert_eq!(wanted_modal(&state), Some(Modal::Closing));
+      assert_eq!(wanted_modal(&state, None), Some(Modal::Closing));
     }
   }
 
@@ -397,6 +509,68 @@ mod tests {
 
     state.switcher = None;
 
-    assert_eq!(wanted_modal(&state), Some(Modal::Installing));
+    assert_eq!(wanted_modal(&state, None), Some(Modal::Installing));
+  }
+
+  fn asking(question: Pending) -> State {
+    let mut state = pending(false, false, false);
+
+    state.manage.pending = Some(question);
+
+    state
+  }
+
+  fn checking() -> Pending {
+    Pending::Checking {
+      packages: vec!["Owner-ModA".to_string()],
+    }
+  }
+
+  #[test]
+  fn each_installed_tab_question_wants_its_modal() {
+    let questions = [
+      Pending::Dependants {
+        removal: rivet_core::manage::Removal::Uninstall,
+        package: "Owner-ModA".to_string(),
+        dependants: vec!["Owner-ModC".to_string()],
+      },
+      Pending::Untracked {
+        packages: vec!["Owner-ModA".to_string()],
+        folders: vec!["Stray".into()],
+      },
+      Pending::Refused {
+        packages: vec!["Owner-ModA".to_string()],
+        reason: "read-only".to_string(),
+      },
+    ];
+
+    for question in questions {
+      assert_eq!(wanted_modal(&asking(question), None), Some(Modal::Pending));
+    }
+  }
+
+  #[test]
+  fn checking_an_uninstall_opens_no_modal_of_its_own() {
+    assert_eq!(wanted_modal(&asking(checking()), None), None);
+  }
+
+  #[test]
+  fn checking_an_uninstall_keeps_the_question_open_after_one() {
+    assert_eq!(
+      wanted_modal(&asking(checking()), Some(Modal::Pending)),
+      Some(Modal::Pending)
+    );
+  }
+
+  #[test]
+  fn an_install_comes_before_the_installed_tab_question() {
+    let mut state = pending(false, false, true);
+
+    state.manage.pending = Some(Pending::Refused {
+      packages: vec!["Owner-ModA".to_string()],
+      reason: "read-only".to_string(),
+    });
+
+    assert_eq!(wanted_modal(&state, None), Some(Modal::Installing));
   }
 }

@@ -195,13 +195,6 @@ pub enum Msg {
   },
   /// Cancel was pressed on an operation, by its id.
   OperationCancelPressed(u64),
-  /// Retry was pressed on an operation that failed or was cancelled, by its
-  /// id.
-  RetryPressed(u64),
-  /// An operation that ended was removed from the queue, by its id.
-  OperationDismissed(u64),
-  /// Every operation that ended was removed from the queue.
-  QueueCleared,
   /// The user asked to close the window.
   CloseRequested,
   /// The user answered how to close the window while work is in progress.
@@ -464,9 +457,6 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     } => queue::progressed(state, operation, progress),
     Msg::OperationFinished { operation, outcome } => queue::finished(state, operation, outcome),
     Msg::OperationCancelPressed(operation) => queue::cancel_pressed(state, operation),
-    Msg::RetryPressed(operation) => queue::retry_pressed(state, operation),
-    Msg::OperationDismissed(operation) => queue::dismissed(state, operation),
-    Msg::QueueCleared => queue::cleared(state),
     Msg::CloseRequested => queue::close_requested(state),
     Msg::CloseChosen(choice) => queue::close_chosen(state, choice),
     Msg::CloseDismissed => queue::close_dismissed(state),

@@ -7,10 +7,10 @@ use crate::install::{
 };
 use crate::manage::{SetEnabled, Uninstall};
 use crate::notice::Notice;
-use crate::switcher::ProfileChange;
 use crate::{Command, Effect, State};
 
-/// Every operation of this run that has not been dismissed.
+/// Every operation running or waiting its turn. One leaves the queue as soon
+/// as it ends, and a notice tells the user how it went.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Queue {
   /// In the order they were asked for, which is the order they run.
@@ -19,9 +19,27 @@ pub struct Queue {
   pub asked: u64,
 }
 
+impl Queue {
+  /// The operation running now, including one stopping after a cancel.
+  pub fn running(&self) -> Option<&Operation> {
+    self
+      .operations
+      .iter()
+      .find(|operation| operation.status.is_running())
+  }
+
+  /// How many operations wait for their turn.
+  pub fn waiting(&self) -> usize {
+    self
+      .operations
+      .iter()
+      .filter(|operation| operation.status == OperationStatus::Queued)
+      .count()
+  }
+}
+
 /// The command that carries out an [`Operation`], kept so it can start when
-/// its turn comes and start again on retry. Its operation id is always the
-/// operation's own.
+/// its turn comes. Its operation id is always the operation's own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Work {
   Install(Install),
@@ -35,31 +53,6 @@ impl Work {
       Work::Install(install) => Command::Install(install),
       Work::Uninstall(uninstall) => Command::Uninstall(uninstall),
       Work::SetEnabled(set) => Command::SetEnabled(set),
-    }
-  }
-
-  fn profile_mut(&mut self) -> &mut String {
-    match self {
-      Work::Install(install) => &mut install.profile,
-      Work::Uninstall(uninstall) => &mut uninstall.profile,
-      Work::SetEnabled(set) => &mut set.profile,
-    }
-  }
-
-  fn renumbered(self, id: u64) -> Self {
-    match self {
-      Work::Install(install) => Work::Install(Install {
-        operation: id,
-        ..install
-      }),
-      Work::Uninstall(uninstall) => Work::Uninstall(Uninstall {
-        operation: id,
-        ..uninstall
-      }),
-      Work::SetEnabled(set) => Work::SetEnabled(SetEnabled {
-        operation: id,
-        ..set
-      }),
     }
   }
 }
@@ -91,11 +84,6 @@ impl OperationStatus {
       OperationStatus::Running(_) | OperationStatus::Cancelling(_)
     )
   }
-
-  /// Whether the operation has not ended: it is waiting or running.
-  pub fn is_active(&self) -> bool {
-    self.is_running() || *self == OperationStatus::Queued
-  }
 }
 
 impl Operation {
@@ -112,11 +100,7 @@ impl Operation {
 impl State {
   /// Whether any operation is running or waiting its turn.
   pub fn is_busy(&self) -> bool {
-    self
-      .queue
-      .operations
-      .iter()
-      .any(|operation| operation.status.is_active())
+    !self.queue.operations.is_empty()
   }
 
   /// Whether the open profile has an operation running or waiting, so it
@@ -126,11 +110,11 @@ impl State {
       return false;
     };
 
-    self.queue.operations.iter().any(|operation| {
-      operation.status.is_active()
-        && operation.game == profile.game
-        && operation.profile == profile.name
-    })
+    self
+      .queue
+      .operations
+      .iter()
+      .any(|operation| operation.game == profile.game && operation.profile == profile.name)
   }
 }
 
@@ -189,21 +173,19 @@ fn advance(state: &mut State) -> Vec<Effect> {
   Vec::new()
 }
 
-fn find(state: &mut State, id: u64) -> Option<&mut Operation> {
+/// Where operation `id` is in the queue, when it is running.
+fn running(state: &State, id: u64) -> Option<usize> {
   state
     .queue
     .operations
-    .iter_mut()
-    .find(|operation| operation.id == id)
-}
-
-/// The running operation with id `id`, if there is one.
-fn running(state: &mut State, id: u64) -> Option<&mut Operation> {
-  find(state, id).filter(|operation| operation.status.is_running())
+    .iter()
+    .position(|operation| operation.id == id && operation.status.is_running())
 }
 
 pub(crate) fn progressed(state: &mut State, id: u64, progress: Progress) -> Vec<Effect> {
-  if let Some(operation) = running(state, id) {
+  if let Some(position) = running(state, id) {
+    let operation = &mut state.queue.operations[position];
+
     operation.status = match operation.status {
       OperationStatus::Cancelling(_) => OperationStatus::Cancelling(Some(progress)),
       _ => OperationStatus::Running(Some(progress)),
@@ -216,17 +198,23 @@ pub(crate) fn progressed(state: &mut State, id: u64, progress: Progress) -> Vec<
 /// Applies the result of operation `id`: what it did, or why it could not run
 /// at all, which leaves the profile as it was. Then starts the next one.
 ///
-/// One that went through leaves the queue at once, telling the user what it
-/// did. One that failed or was cancelled stays, so it can be retried.
+/// It leaves the queue at once, whatever its outcome, with a notice saying
+/// what it changed, what failed and why, or what changed before it was
+/// cancelled.
 pub(crate) fn finished(
   state: &mut State,
   id: u64,
   outcome: Result<Outcome, String>,
 ) -> Vec<Effect> {
-  let Some(operation) = running(state, id) else {
+  let Some(position) = running(state, id) else {
     return Vec::new();
   };
-
+  let Operation {
+    game,
+    profile: name,
+    action,
+    ..
+  } = state.queue.operations.remove(position);
   let Outcome {
     changed,
     failed,
@@ -235,37 +223,23 @@ pub(crate) fn finished(
   } = match outcome {
     Ok(outcome) => outcome,
     Err(reason) => {
-      operation.status = OperationStatus::Failed {
-        failed: vec![FailedPackage {
-          package: operation.action.packages().join(", "),
-          reason,
-        }],
+      let failed = vec![FailedPackage {
+        package: action.packages().join(", "),
+        reason,
+      }];
+      let mut effects = vec![Effect::Notify(Notice::OperationFailed {
+        game,
+        profile: name,
+        action,
+        failed,
         changed: Vec::new(),
-      };
+      })];
 
-      return advance(state);
+      effects.extend(advance(state));
+
+      return effects;
     }
   };
-
-  let (game, name) = (operation.game.clone(), operation.profile.clone());
-  let mut effects = Vec::new();
-
-  if !failed.is_empty() {
-    operation.status = OperationStatus::Failed { failed, changed };
-  } else if !cancelled.is_empty() {
-    operation.status = OperationStatus::Cancelled { changed };
-  } else {
-    effects.push(Effect::Notify(Notice::OperationFinished {
-      game: game.clone(),
-      profile: name.clone(),
-      action: operation.action.clone(),
-      changed,
-    }));
-    state
-      .queue
-      .operations
-      .retain(|operation| operation.id != id);
-  }
 
   if let Ok(installed) = &profile {
     crate::switcher::counted(state, &game, &name, installed.len());
@@ -282,108 +256,68 @@ pub(crate) fn finished(
     };
   }
 
+  let notice = if !failed.is_empty() {
+    Notice::OperationFailed {
+      game,
+      profile: name,
+      action,
+      failed,
+      changed,
+    }
+  } else if !cancelled.is_empty() {
+    Notice::OperationCancelled {
+      game,
+      profile: name,
+      action,
+      changed,
+    }
+  } else {
+    Notice::OperationFinished {
+      game,
+      profile: name,
+      action,
+      changed,
+    }
+  };
+  let mut effects = vec![Effect::Notify(notice)];
+
   effects.extend(advance(state));
 
   effects
 }
 
 /// Cancels operation `id` when [`Operation::can_cancel`] says it can: one
-/// waiting never starts, and a running one stops after the package it is on.
+/// waiting leaves the queue without starting, and a running one stops after
+/// the package it is on.
 pub(crate) fn cancel_pressed(state: &mut State, id: u64) -> Vec<Effect> {
-  let Some(operation) = find(state, id) else {
+  let operations = &mut state.queue.operations;
+  let Some(position) = operations.iter().position(|operation| operation.id == id) else {
     return Vec::new();
   };
 
-  cancel(operation)
-}
-
-fn cancel(operation: &mut Operation) -> Vec<Effect> {
-  if !operation.can_cancel() {
-    return Vec::new();
-  }
-
-  match &operation.status {
+  match operations[position].status.clone() {
     OperationStatus::Queued => {
-      operation.status = OperationStatus::Cancelled {
-        changed: Vec::new(),
-      };
+      let Operation {
+        game,
+        profile,
+        action,
+        ..
+      } = operations.remove(position);
 
-      Vec::new()
+      vec![Effect::Notify(Notice::OperationCancelled {
+        game,
+        profile,
+        action,
+        changed: Vec::new(),
+      })]
     }
     OperationStatus::Running(progress) => {
-      operation.status = OperationStatus::Cancelling(progress.clone());
+      operations[position].status = OperationStatus::Cancelling(progress);
 
-      vec![Effect::Run(Command::Cancel(operation.id))]
+      vec![Effect::Run(Command::Cancel(id))]
     }
-    _ => Vec::new(),
+    OperationStatus::Cancelling(_) => Vec::new(),
   }
-}
-
-/// Asks again for an operation that failed or was cancelled, as a new one at
-/// the end of the queue. Ignored while a launch is being prepared.
-pub(crate) fn retry_pressed(state: &mut State, id: u64) -> Vec<Effect> {
-  if state.is_launching() {
-    return Vec::new();
-  }
-
-  let Some(position) = state.queue.operations.iter().position(|operation| {
-    operation.id == id
-      && matches!(
-        operation.status,
-        OperationStatus::Failed { .. } | OperationStatus::Cancelled { .. }
-      )
-  }) else {
-    return Vec::new();
-  };
-  let ended = state.queue.operations.remove(position);
-
-  enqueue(state, ended.game, ended.profile, ended.action, |id| {
-    ended.work.renumbered(id)
-  })
-}
-
-/// Keeps ended operations on `game`'s profiles aimed at a profile that exists
-/// after `change`, so a retry changes the profile it was asked for: a renamed
-/// profile's follow it to its new name, and a deleted profile's are removed.
-pub(crate) fn profile_changed(state: &mut State, game: &str, change: &ProfileChange) {
-  let ended_on = |operation: &Operation, name: &str| {
-    !operation.status.is_active() && operation.game == game && operation.profile == name
-  };
-  let operations = &mut state.queue.operations;
-
-  match change {
-    ProfileChange::Rename { from, to } => {
-      for operation in operations
-        .iter_mut()
-        .filter(|operation| ended_on(operation, from))
-      {
-        operation.profile = to.clone();
-        *operation.work.profile_mut() = to.clone();
-      }
-    }
-    ProfileChange::Delete(name) => operations.retain(|operation| !ended_on(operation, name)),
-    ProfileChange::Create(_) | ProfileChange::Duplicate { .. } => {}
-  }
-}
-
-/// Removes operation `id` from the queue once it has ended.
-pub(crate) fn dismissed(state: &mut State, id: u64) -> Vec<Effect> {
-  state
-    .queue
-    .operations
-    .retain(|operation| operation.id != id || operation.status.is_active());
-
-  Vec::new()
-}
-
-/// Removes every operation that has ended.
-pub(crate) fn cleared(state: &mut State) -> Vec<Effect> {
-  state
-    .queue
-    .operations
-    .retain(|operation| operation.status.is_active());
-
-  Vec::new()
 }
 
 /// Closes the window at once when no operation is running or waiting, and
@@ -412,8 +346,15 @@ pub(crate) fn close_chosen(state: &mut State, choice: CloseChoice) -> Vec<Effect
   let mut effects = Vec::new();
 
   if choice == CloseChoice::Cancel {
-    for operation in &mut state.queue.operations {
-      effects.extend(cancel(operation));
+    let ids: Vec<u64> = state
+      .queue
+      .operations
+      .iter()
+      .map(|operation| operation.id)
+      .collect();
+
+    for id in ids {
+      effects.extend(cancel_pressed(state, id));
     }
   }
 
@@ -434,7 +375,6 @@ mod tests {
   use super::*;
   use crate::install::{DEFAULT_PROFILE, Installed, Stage};
   use crate::settings::{GameSettings, Settings};
-  use crate::switcher::Naming;
   use crate::{Msg, test_ecosystem, test_installed, update};
   use std::path::PathBuf;
 
@@ -503,6 +443,29 @@ mod tests {
       action,
       changed: names(changed),
     })
+  }
+
+  /// The notice of a cancelled operation on valheim's `profile`.
+  fn cancelled(profile: &str, action: Action, changed: &[&str]) -> Effect {
+    Effect::Notify(Notice::OperationCancelled {
+      game: "valheim".to_string(),
+      profile: profile.to_string(),
+      action,
+      changed: names(changed),
+    })
+  }
+
+  /// The notice of cancelling the disable of `Owner-Other` in `Modded`
+  /// before it started.
+  fn other_cancelled_in_modded() -> Effect {
+    cancelled(
+      "Modded",
+      Action::SetEnabled {
+        packages: names(&["Owner-Other"]),
+        enabled: false,
+      },
+      &[],
+    )
   }
 
   /// The notice of disabling `package` in valheim's `profile`.
@@ -704,20 +667,41 @@ mod tests {
   }
 
   #[test]
-  fn cancelling_a_waiting_operation_marks_it_cancelled_and_it_never_starts() {
+  fn the_queue_tells_the_running_operation_and_how_many_wait_behind_it() {
+    let mut state = ready(DEFAULT_PROFILE);
+
+    assert_eq!(state.queue.running(), None);
+    assert_eq!(state.queue.waiting(), 0);
+
+    update(&mut state, Msg::DisablePressed("Owner-Solo".to_string()));
+    disable_other_in_modded(&mut state);
+
+    assert_eq!(state.queue.running().map(|operation| operation.id), Some(1));
+    assert_eq!(state.queue.waiting(), 1);
+
+    update(&mut state, Msg::OperationCancelPressed(1));
+
+    assert_eq!(state.queue.running().map(|operation| operation.id), Some(1));
+
+    update(&mut state, finished_with(1, Err("offline")));
+
+    assert_eq!(state.queue.running().map(|operation| operation.id), Some(2));
+    assert_eq!(state.queue.waiting(), 0);
+  }
+
+  #[test]
+  fn cancelling_a_waiting_operation_drops_it_saying_nothing_changed() {
     let mut state = two_queued();
 
     let effects = update(&mut state, Msg::OperationCancelPressed(2));
 
-    assert_eq!(effects, vec![]);
+    assert_eq!(effects, vec![other_cancelled_in_modded()]);
+    assert_eq!(statuses(&state), vec![(1, OperationStatus::Running(None))]);
 
     let next = update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"]))));
 
     assert_eq!(next, vec![disabled(DEFAULT_PROFILE, "Owner-Solo")]);
-    assert_eq!(
-      statuses(&state),
-      vec![(2, OperationStatus::Cancelled { changed: vec![] })]
-    );
+    assert_eq!(statuses(&state), vec![]);
   }
 
   #[test]
@@ -742,15 +726,17 @@ mod tests {
     );
 
     assert_eq!(
-      statuses(&state)[0],
-      (
-        1,
-        OperationStatus::Cancelled {
-          changed: names(&["Owner-Lib"]),
-        }
-      )
+      next,
+      vec![
+        cancelled(
+          DEFAULT_PROFILE,
+          Action::Install("Owner-Pack".to_string()),
+          &["Owner-Lib"]
+        ),
+        set_enabled(2, "Modded", "Owner-Other", false)
+      ]
     );
-    assert_eq!(next, vec![set_enabled(2, "Modded", "Owner-Other", false)]);
+    assert_eq!(statuses(&state), vec![(2, OperationStatus::Running(None))]);
   }
 
   #[test]
@@ -784,7 +770,7 @@ mod tests {
       vec![(1, OperationStatus::Cancelling(Some(disabling)))]
     );
 
-    update(
+    let ended = update(
       &mut state,
       finished_with(
         1,
@@ -796,14 +782,17 @@ mod tests {
     );
 
     assert_eq!(
-      statuses(&state),
-      vec![(
-        1,
-        OperationStatus::Cancelled {
-          changed: names(&["Owner-Other"]),
-        }
+      ended,
+      vec![cancelled(
+        DEFAULT_PROFILE,
+        Action::SetEnabled {
+          packages: names(&["Owner-Other", "Owner-Solo"]),
+          enabled: false,
+        },
+        &["Owner-Other"]
       )]
     );
+    assert_eq!(statuses(&state), vec![]);
   }
 
   #[test]
@@ -856,10 +845,10 @@ mod tests {
   }
 
   #[test]
-  fn a_failed_operation_names_what_failed_and_the_next_one_still_starts() {
-    let mut state = two_queued();
+  fn a_failed_operation_leaves_the_queue_naming_what_failed_and_the_next_one_starts() {
+    let mut state = installing_then_queued();
     let failure = FailedPackage {
-      package: "Owner-Solo".to_string(),
+      package: "Owner-Pack".to_string(),
       reason: "permission denied".to_string(),
     };
 
@@ -869,137 +858,53 @@ mod tests {
         1,
         Ok(Outcome {
           failed: vec![failure.clone()],
-          ..outcome(&[])
+          ..outcome(&["Owner-Lib"])
         }),
       ),
     );
 
     assert_eq!(
-      statuses(&state)[0],
-      (
-        1,
-        OperationStatus::Failed {
+      next,
+      vec![
+        Effect::Notify(Notice::OperationFailed {
+          game: "valheim".to_string(),
+          profile: DEFAULT_PROFILE.to_string(),
+          action: Action::Install("Owner-Pack".to_string()),
           failed: vec![failure],
-          changed: vec![],
-        }
-      )
+          changed: names(&["Owner-Lib"]),
+        }),
+        set_enabled(2, "Modded", "Owner-Other", false)
+      ]
     );
-    assert_eq!(next, vec![set_enabled(2, "Modded", "Owner-Other", false)]);
+    assert_eq!(statuses(&state), vec![(2, OperationStatus::Running(None))]);
   }
 
   #[test]
   fn an_operation_that_could_not_run_fails_naming_its_packages() {
     let mut state = two_queued();
 
-    update(&mut state, finished_with(1, Err("disk full")));
+    let next = update(&mut state, finished_with(1, Err("disk full")));
 
     assert_eq!(
-      statuses(&state)[0],
-      (
-        1,
-        OperationStatus::Failed {
+      next,
+      vec![
+        Effect::Notify(Notice::OperationFailed {
+          game: "valheim".to_string(),
+          profile: DEFAULT_PROFILE.to_string(),
+          action: Action::SetEnabled {
+            packages: names(&["Owner-Solo"]),
+            enabled: false,
+          },
           failed: vec![FailedPackage {
             package: "Owner-Solo".to_string(),
             reason: "disk full".to_string(),
           }],
           changed: vec![],
-        }
-      )
-    );
-  }
-
-  #[test]
-  fn retrying_a_failed_operation_asks_for_it_again_at_the_end_of_the_queue() {
-    let mut state = two_queued();
-
-    update(&mut state, finished_with(1, Err("offline")));
-
-    let retried = update(&mut state, Msg::RetryPressed(1));
-
-    assert_eq!(retried, vec![]);
-    assert_eq!(
-      statuses(&state),
-      vec![
-        (2, OperationStatus::Running(None)),
-        (3, OperationStatus::Queued)
+        }),
+        set_enabled(2, "Modded", "Owner-Other", false)
       ]
     );
-
-    let next = update(&mut state, finished_with(2, Ok(outcome(&["Owner-Other"]))));
-
-    assert_eq!(
-      next,
-      vec![
-        disabled("Modded", "Owner-Other"),
-        set_enabled(3, DEFAULT_PROFILE, "Owner-Solo", false)
-      ]
-    );
-  }
-
-  #[test]
-  fn retrying_with_nothing_running_starts_at_once() {
-    let mut state = ready(DEFAULT_PROFILE);
-
-    update(&mut state, Msg::DisablePressed("Owner-Solo".to_string()));
-    update(&mut state, finished_with(1, Err("offline")));
-
-    let retried = update(&mut state, Msg::RetryPressed(1));
-
-    assert_eq!(
-      retried,
-      vec![set_enabled(2, DEFAULT_PROFILE, "Owner-Solo", false)]
-    );
-  }
-
-  #[test]
-  fn a_cancelled_operation_can_be_retried_but_a_running_or_finished_one_cannot() {
-    let mut state = two_queued();
-
-    update(&mut state, Msg::OperationCancelPressed(2));
-
-    assert_eq!(update(&mut state, Msg::RetryPressed(1)), vec![]);
-
-    update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"]))));
-
-    assert_eq!(update(&mut state, Msg::RetryPressed(1)), vec![]);
-    assert_eq!(
-      update(&mut state, Msg::RetryPressed(2)),
-      vec![set_enabled(3, "Modded", "Owner-Other", false)]
-    );
-  }
-
-  #[test]
-  fn an_ended_operation_can_be_dismissed_and_a_running_one_cannot() {
-    let mut state = two_queued();
-
-    update(&mut state, Msg::OperationDismissed(1));
-    update(&mut state, Msg::OperationDismissed(2));
-
-    assert_eq!(statuses(&state).len(), 2);
-
-    update(&mut state, finished_with(1, Err("offline")));
-    update(&mut state, Msg::OperationDismissed(1));
-
     assert_eq!(statuses(&state), vec![(2, OperationStatus::Running(None))]);
-  }
-
-  #[test]
-  fn clearing_removes_every_ended_operation() {
-    let mut state = two_queued();
-
-    update(&mut state, finished_with(1, Err("offline")));
-    update(&mut state, Msg::ProfilePicked(DEFAULT_PROFILE.to_string()));
-    update(&mut state, opened(DEFAULT_PROFILE));
-    update(&mut state, Msg::DisablePressed("Owner-Solo".to_string()));
-    update(&mut state, Msg::QueueCleared);
-
-    assert_eq!(
-      statuses(&state),
-      vec![
-        (2, OperationStatus::Running(None)),
-        (3, OperationStatus::Queued)
-      ]
-    );
   }
 
   #[test]
@@ -1119,60 +1024,6 @@ mod tests {
     );
   }
 
-  /// A state with valheim open on `Modded`, where disabling `Owner-Solo`
-  /// failed as operation 1.
-  fn failed_in_modded() -> State {
-    let mut state = ready("Modded");
-
-    update(&mut state, Msg::DisablePressed("Owner-Solo".to_string()));
-    update(&mut state, finished_with(1, Err("offline")));
-
-    state
-  }
-
-  fn profile_changed(change: ProfileChange) -> Msg {
-    Msg::ProfileChanged {
-      game: "valheim".to_string(),
-      change,
-      result: Ok(()),
-    }
-  }
-
-  #[test]
-  fn retrying_after_the_profile_was_renamed_changes_it_under_its_new_name() {
-    let mut state = failed_in_modded();
-
-    update(&mut state, Msg::ProfileNamePressed(Naming::Rename));
-    update(&mut state, Msg::ProfileNameSubmitted("Renamed".to_string()));
-    update(
-      &mut state,
-      profile_changed(ProfileChange::Rename {
-        from: "Modded".to_string(),
-        to: "Renamed".to_string(),
-      }),
-    );
-
-    assert_eq!(
-      update(&mut state, Msg::RetryPressed(1)),
-      vec![set_enabled(2, "Renamed", "Owner-Solo", false)]
-    );
-  }
-
-  #[test]
-  fn deleting_a_profile_drops_its_ended_operations_so_none_can_recreate_it() {
-    let mut state = failed_in_modded();
-
-    update(&mut state, Msg::DeleteProfilePressed);
-    update(&mut state, Msg::DeleteProfileConfirmed);
-    update(
-      &mut state,
-      profile_changed(ProfileChange::Delete("Modded".to_string())),
-    );
-
-    assert_eq!(statuses(&state), vec![]);
-    assert_eq!(update(&mut state, Msg::RetryPressed(1)), vec![]);
-  }
-
   #[test]
   fn closing_with_nothing_running_closes_at_once() {
     let mut state = ready(DEFAULT_PROFILE);
@@ -1230,13 +1081,13 @@ mod tests {
 
     let effects = update(&mut state, Msg::CloseChosen(CloseChoice::Cancel));
 
-    assert_eq!(effects, vec![Effect::Run(Command::Cancel(1))]);
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::Cancel(1)), other_cancelled_in_modded()]
+    );
     assert_eq!(
       statuses(&state),
-      vec![
-        (1, OperationStatus::Cancelling(None)),
-        (2, OperationStatus::Cancelled { changed: vec![] })
-      ]
+      vec![(1, OperationStatus::Cancelling(None))]
     );
     assert_eq!(
       update(&mut state, finished_with(1, Ok(outcome(&["Owner-Pack"])))),
@@ -1259,13 +1110,13 @@ mod tests {
 
     let effects = update(&mut state, Msg::CloseChosen(CloseChoice::Cancel));
 
-    assert_eq!(effects, vec![Effect::Run(Command::Cancel(1))]);
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::Cancel(1)), other_cancelled_in_modded()]
+    );
     assert_eq!(
       statuses(&state),
-      vec![
-        (1, OperationStatus::Cancelling(None)),
-        (2, OperationStatus::Cancelled { changed: vec![] })
-      ]
+      vec![(1, OperationStatus::Cancelling(None))]
     );
     assert_eq!(
       update(&mut state, finished_with(1, Ok(outcome(&["Owner-Solo"])))),

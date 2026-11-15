@@ -235,11 +235,9 @@ pub fn install_failed(package: &str, failed: &[FailedPackage], installed: &[Stri
     .collect::<Vec<_>>()
     .join("\n");
   let next = match installed {
-    [] => {
-      "Nothing in your profile was changed. Check your connection, then press Retry.".to_string()
-    }
+    [] => "Nothing in your profile was changed.".to_string(),
     installed => format!(
-      "These were installed before it failed: {}. Retry finishes the rest.",
+      "These were installed before it failed: {}.",
       installed.join(", ")
     ),
   };
@@ -320,26 +318,22 @@ fn action_verbs(action: &Action) -> (&'static str, &'static str, &'static str) {
   }
 }
 
-pub const QUEUE_TITLE: &str = "Changes to your profiles";
-pub const CLEAR_ENDED: &str = "Clear finished";
-pub const RETRY: &str = "Retry";
-
 /// The game and profile an operation changes, such as `Valheim, Default
 /// profile`.
 pub fn place(game: &str, profile: &str) -> String {
   format!("{game}, {profile} profile")
 }
 
-/// An operation waiting its turn, such as `Waiting to install Owner-Mod`.
-pub fn queued(action: &Action) -> String {
-  let verb = match action {
-    Action::Install(_) => "install",
-    Action::Uninstall(_) => "uninstall",
-    Action::SetEnabled { enabled: true, .. } => "enable",
-    Action::SetEnabled { enabled: false, .. } => "disable",
-  };
-
-  format!("Waiting to {verb} {}", subject(action.packages()))
+/// How many operations wait behind the running one.
+///
+/// ```
+/// use rivet_app::text::waiting;
+///
+/// assert_eq!(waiting(1), "1 more waiting");
+/// assert_eq!(waiting(3), "3 more waiting");
+/// ```
+pub fn waiting(count: usize) -> String {
+  format!("{count} more waiting")
 }
 
 /// A running operation, with the package and stage it is on when known.
@@ -455,9 +449,9 @@ pub fn change_failed(action: &Action, failed: &[FailedPackage], changed: &[Strin
     .collect::<Vec<_>>()
     .join("\n");
   let next = match changed {
-    [] => "Nothing in your profile was changed. Press Retry to try again.".to_string(),
+    [] => "Nothing in your profile was changed.".to_string(),
     changed => format!(
-      "These were {} before it failed: {}. Retry finishes the rest.",
+      "These were {} before it failed: {}.",
       action_verbs(action).2,
       changed.join(", ")
     ),
@@ -693,6 +687,48 @@ pub struct Told {
 }
 
 /// What `notice` tells the user, naming games through `game_name`.
+///
+/// ```
+/// use rivet_app::text::notice;
+/// use rivet_core::install::{Action, FailedPackage};
+/// use rivet_core::notice::Notice;
+///
+/// let failed = Notice::OperationFailed {
+///   game: "valheim".to_string(),
+///   profile: "Default".to_string(),
+///   action: Action::Install("Owner-Mod".to_string()),
+///   failed: vec![FailedPackage {
+///     package: "Owner-Mod".to_string(),
+///     reason: "corrupt archive".to_string(),
+///   }],
+///   changed: vec!["Owner-Lib".to_string()],
+/// };
+/// let told = notice(&failed, |_| "Valheim".to_string());
+///
+/// assert_eq!(told.title, "Owner-Mod could not be installed");
+/// assert_eq!(
+///   told.detail,
+///   [
+///     "Valheim, Default profile",
+///     "Owner-Mod: corrupt archive",
+///     "These were installed before it failed: Owner-Lib.",
+///   ]
+/// );
+///
+/// let cancelled = Notice::OperationCancelled {
+///   game: "valheim".to_string(),
+///   profile: "Default".to_string(),
+///   action: Action::Install("Owner-Mod".to_string()),
+///   changed: vec!["Owner-Lib".to_string()],
+/// };
+/// let told = notice(&cancelled, |_| "Valheim".to_string());
+///
+/// assert_eq!(
+///   told.title,
+///   "Cancelled installing Owner-Mod after changing Owner-Lib."
+/// );
+/// assert_eq!(told.detail, ["Valheim, Default profile"]);
+/// ```
 pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
   match notice {
     Notice::OperationFinished {
@@ -702,6 +738,33 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       changed,
     } => Told {
       title: finished(action, changed),
+      detail: vec![place(&game_name(game), profile)],
+    },
+    Notice::OperationFailed {
+      game,
+      profile,
+      action,
+      failed,
+      changed,
+    } => {
+      let failure = operation_failed(action, failed, changed);
+      let detail = std::iter::once(place(&game_name(game), profile))
+        .chain(failure.detail.lines().map(str::to_string))
+        .chain([failure.next])
+        .collect();
+
+      Told {
+        title: failure.headline,
+        detail,
+      }
+    }
+    Notice::OperationCancelled {
+      game,
+      profile,
+      action,
+      changed,
+    } => Told {
+      title: cancelled(action, changed),
       detail: vec![place(&game_name(game), profile)],
     },
     Notice::ProfileChanged(change) => Told {
@@ -724,6 +787,18 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       title: launched(&game_name(game), *mode),
       detail: Vec::new(),
     },
+    Notice::LaunchFailed {
+      game,
+      mode,
+      failure,
+    } => {
+      let failure = launch_failed(&game_name(game), *mode, failure);
+
+      Told {
+        title: failure.headline,
+        detail: vec![failure.detail, failure.next],
+      }
+    }
     Notice::LaunchLineCopied => Told {
       title: LAUNCH_LINE_COPIED.to_string(),
       detail: vec![PASTE_IN_STEAM.to_string()],

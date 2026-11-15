@@ -159,15 +159,6 @@ pub enum OperationStatus {
   Running(Option<Progress>),
   /// Running, and asked to stop after the package it is on.
   Cancelling(Option<Progress>),
-  /// Something failed. `changed` lists the packages that changed before or
-  /// despite the failure, and is empty when the profile is as it was.
-  Failed {
-    failed: Vec<FailedPackage>,
-    changed: Vec<String>,
-  },
-  /// Stopped by the user. `changed` lists the packages that changed before
-  /// it stopped, and is empty for one cancelled before it started.
-  Cancelled { changed: Vec<String> },
 }
 
 /// How far an operation has got with one package.
@@ -749,7 +740,7 @@ mod tests {
       reason: "corrupt archive".to_string(),
     };
 
-    update(
+    let effects = update(
       &mut state,
       finished(
         1,
@@ -763,12 +754,16 @@ mod tests {
     );
 
     assert_eq!(
-      status(&state),
-      Some(OperationStatus::Failed {
+      effects,
+      vec![Effect::Notify(Notice::OperationFailed {
+        game: "valheim".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        action: Action::Install("Owner-Pack".to_string()),
         failed: vec![failure],
         changed: names(&["Owner-Core"]),
-      })
+      })]
     );
+    assert_eq!(status(&state), None);
     assert!(state.is_installed("Owner-Core"));
     assert!(!state.is_installed("Owner-Pack"));
   }
@@ -779,18 +774,23 @@ mod tests {
 
     press(&mut state, "Owner-Pack");
     update(&mut state, Msg::InstallConfirmed);
-    update(&mut state, finished(1, Err("disk full")));
+
+    let effects = update(&mut state, finished(1, Err("disk full")));
 
     assert_eq!(
-      status(&state),
-      Some(OperationStatus::Failed {
+      effects,
+      vec![Effect::Notify(Notice::OperationFailed {
+        game: "valheim".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        action: Action::Install("Owner-Pack".to_string()),
         failed: vec![FailedPackage {
           package: "Owner-Pack".to_string(),
           reason: "disk full".to_string(),
         }],
         changed: vec![],
-      })
+      })]
     );
+    assert_eq!(status(&state), None);
     assert!(state.is_installed("Owner-Core"));
   }
 
@@ -855,11 +855,10 @@ mod tests {
   }
 
   #[test]
-  fn a_finished_install_can_be_dismissed_and_another_started() {
+  fn a_failed_install_leaves_the_queue_and_another_can_start() {
     let mut state = installing();
 
     update(&mut state, finished(1, Err("offline")));
-    update(&mut state, Msg::OperationDismissed(1));
 
     assert!(state.queue.operations.is_empty());
 
@@ -870,15 +869,6 @@ mod tests {
       state.queue.operations.last().map(|operation| operation.id),
       Some(2)
     );
-  }
-
-  #[test]
-  fn a_running_install_cannot_be_dismissed() {
-    let mut state = installing();
-
-    update(&mut state, Msg::OperationDismissed(1));
-
-    assert_eq!(status(&state), Some(OperationStatus::Running(None)));
   }
 
   #[test]

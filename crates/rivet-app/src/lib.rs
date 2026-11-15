@@ -16,7 +16,8 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
-  Disableable as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex,
+  Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Theme, WindowExt as _, h_flex,
+  v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -31,7 +32,7 @@ use palette::Palette;
 use rivet_core::browse::{Browse, SortKey, View};
 use rivet_core::install::{InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus};
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
-use rivet_core::manage::{Folders, Pending, Scope, Sort, Tab};
+use rivet_core::manage::{Sort, Tab};
 use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::readme::{Package, Readme, Status};
@@ -144,6 +145,12 @@ impl Shell {
         }
       }
     });
+    Theme::update(cx, |theme| {
+      let margins = &mut theme.notification.margins;
+
+      margins.bottom = px(STATUS_BAR_HEIGHT) + margins.right;
+    });
+
     let mut shell = Self {
       state,
       commands,
@@ -243,7 +250,8 @@ impl Shell {
 
   /// `notice` as a toast: an icon and outline for its level, its headline,
   /// and its detail. Errors stay until closed, and the rest go on their own.
-  /// Toasts rise in the bottom corner, clear of the buttons along the top.
+  /// Toasts rise in the bottom corner above the status bar, clear of the
+  /// buttons along the top.
   fn toast(&self, notice: &Notice, cx: &mut Context<Self>) -> Notification {
     let palette = Palette::new(cx);
     let level = notice.level();
@@ -291,11 +299,6 @@ impl Shell {
         ))
         .test_support()
     });
-    let checking = match &picker.step {
-      Step::Locating(game) => Some(text::locating(&self.game_name(game))),
-      Step::Checking { folder, .. } => Some(text::checking(folder)),
-      _ => None,
-    };
     let rows: Vec<_> = games
       .into_iter()
       .map(|game| {
@@ -334,63 +337,93 @@ impl Shell {
       )
       .children(fallback)
       .children(refusal.map(|refusal| failure(palette, refusal)))
-      .children(checking)
-      .children(self.render_queue(cx))
       .child(Input::new(&self.search))
       .child(list)
       .into_any_element()
   }
 
-  /// Every operation in the queue, on any game or profile, or `None` when it
-  /// is empty.
-  fn render_queue(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+  /// The bar along the bottom of the window, [`STATUS_BAR_HEIGHT`] tall
+  /// whatever it shows, so nothing above it moves. It shows the running
+  /// operation with how many wait behind it, or else what the app is busy
+  /// with, and is empty when neither.
+  fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
-    let operations = &self.state.queue.operations;
+    let queue = &self.state.queue;
+    let shown = match queue.running() {
+      Some(operation) => Some(render_running(
+        operation,
+        &self.game_name(&operation.game),
+        queue.waiting(),
+        cx,
+      )),
+      None => self.status_note().map(|note| {
+        div()
+          .id("status-note")
+          .min_w_0()
+          .truncate()
+          .text_sm()
+          .text_color(palette.muted_text)
+          .child(note)
+          .test_support()
+          .into_any_element()
+      }),
+    };
 
-    if operations.is_empty() {
-      return None;
-    }
+    h_flex()
+      .id("status-bar")
+      .flex_none()
+      .h(px(STATUS_BAR_HEIGHT))
+      .px_4()
+      .overflow_hidden()
+      .border_t_1()
+      .border_color(palette.border)
+      .children(shown)
+      .test_support()
+      .into_any_element()
+  }
 
-    let ended = operations
-      .iter()
-      .any(|operation| !operation.status.is_active());
-    let rows: Vec<AnyElement> = operations
-      .iter()
-      .map(|operation| render_operation(operation, &self.game_name(&operation.game), cx))
-      .collect();
-    let clear = ended.then(|| {
-      Button::new("clear-queue")
-        .label(text::CLEAR_ENDED)
-        .small()
-        .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::QueueCleared, cx)))
-    });
+  /// What the app is busy with outside the queue: starting a game, changing
+  /// a profile, finding a game from the picker, refreshing the package list,
+  /// or checking Steam's launch options, first match in that order. `None`
+  /// when it is busy with none.
+  fn status_note(&self) -> Option<String> {
+    let state = &self.state;
+    let launching = state
+      .launch
+      .as_ref()
+      .filter(|attempt| attempt.status == AttemptStatus::Preparing)
+      .map(|attempt| text::launching(&self.game_name(&attempt.game), attempt.mode));
+    let changing = || {
+      state
+        .switcher
+        .as_ref()
+        .and_then(|switcher| switcher.changing.as_ref())
+        .map(text::changing)
+    };
+    let finding = || match (&state.screen, &state.picker.step) {
+      (Screen::Picker, Step::Locating(game)) => Some(text::locating(&self.game_name(game))),
+      (Screen::Picker, Step::Checking { folder, .. }) => Some(text::checking(folder)),
+      _ => None,
+    };
+    let refreshing = || {
+      let browse = state.browse.as_ref()?;
 
-    Some(
-      v_flex()
-        .gap_2()
-        .p_3()
-        .border_1()
-        .border_color(palette.border)
-        .child(
-          h_flex()
-            .justify_between()
-            .child(
-              div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(text::QUEUE_TITLE),
-            )
-            .children(clear),
-        )
-        .child(
-          v_flex()
-            .id("queue")
-            .gap_2()
-            .max_h(px(240.0))
-            .overflow_y_scroll()
-            .children(rows),
-        )
-        .into_any_element(),
-    )
+      matches!(browse.view(), View::List { refreshing: true }).then(|| text::REFRESHING.to_string())
+    };
+
+    let checking_steam = || {
+      let steam = state.launcher.as_ref()?.steam.as_ref()?;
+
+      steam
+        .checking
+        .then(|| text::STEAM_OPTION_CHECKING.to_string())
+    };
+
+    launching
+      .or_else(changing)
+      .or_else(finding)
+      .or_else(refreshing)
+      .or_else(checking_steam)
   }
 
   /// Applies a press of the window's close button, answering whether the
@@ -433,7 +466,6 @@ impl Shell {
             _ => None,
           }),
       )
-      .children(self.render_queue(cx))
       .child(render_tabs(self.state.tab, cx))
       .child(
         div()
@@ -454,8 +486,7 @@ impl Shell {
       .into_any_element()
   }
 
-  /// The open profile's packages, with search, sort, the bulk toggles, and
-  /// the question a change is waiting on.
+  /// The open profile's packages, with search, sort, and the bulk toggles.
   fn render_installed(&self, cx: &mut Context<Self>) -> AnyElement {
     let state = &self.state;
     let can_change = state.can_manage();
@@ -501,10 +532,6 @@ impl Shell {
           .disabled(!can_change)
           .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::DisableAllPressed, cx))),
       );
-    let pending = manage
-      .pending
-      .as_ref()
-      .map(|pending| render_pending(pending, cx));
     let installed = state.profile.as_ref().and_then(Profile::installed);
     let rows: Vec<AnyElement> = installed
       .map(|installed| rivet_core::manage::rows(installed, &manage.query, manage.sort))
@@ -528,14 +555,14 @@ impl Shell {
       .gap_2()
       .overflow_hidden()
       .child(controls)
-      .children(pending)
       .children(empty)
       .child(
         v_flex()
           .id("installed-packages")
           .flex_1()
           .overflow_y_scroll()
-          .children(rows),
+          .children(rows)
+          .test_support(),
       )
       .into_any_element()
   }
@@ -691,54 +718,19 @@ impl Shell {
     Some([picker.into_any_element(), actions.into_any_element()])
   }
 
-  /// What the profiles are waiting on: a change being made on disk, or why
-  /// they could not be listed. `None` when there is nothing to say.
+  /// Why the profiles could not be listed, or `None` when they were.
   fn render_profile_notes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
     let palette = Palette::new(cx);
-    let switcher = self.state.switcher.as_ref()?;
+    let reason = self.state.switcher.as_ref()?.list_failure.as_ref()?;
 
-    if switcher.changing.is_none() && switcher.list_failure.is_none() {
-      return None;
-    }
-
-    Some(
-      v_flex()
-        .gap_2()
-        .children(switcher.changing.as_ref().map(text::changing))
-        .children(
-          switcher
-            .list_failure
-            .as_ref()
-            .map(|reason| failure(palette, text::profiles_unlisted(reason))),
-        )
-        .into_any_element(),
-    )
+    Some(failure(palette, text::profiles_unlisted(reason)).into_any_element())
   }
 
-  /// What the user should know before or after pressing a launch button, or
-  /// `None` when there is nothing to say.
+  /// What the user must fix before a launch can work, or `None` when there
+  /// is nothing to say.
   fn render_launch_notes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
     let palette = Palette::new(cx);
     let launcher = self.state.launcher.as_ref();
-    let attempt = self.state.launch.as_ref().and_then(|attempt| {
-      let launched = self.game_name(&attempt.game);
-
-      match &attempt.status {
-        AttemptStatus::Preparing => Some(
-          div()
-            .child(text::launching(&launched, attempt.mode))
-            .into_any_element(),
-        ),
-        AttemptStatus::Started => None,
-        AttemptStatus::Failed(launch_failure) => Some(
-          failure(
-            palette,
-            text::launch_failed(&launched, attempt.mode, launch_failure),
-          )
-          .into_any_element(),
-        ),
-      }
-    });
     let missing_loader = self.state.missing_loader().and_then(|loader| {
       let profile = self.state.profile.as_ref()?;
 
@@ -756,10 +748,7 @@ impl Shell {
     let steam = launcher
       .and_then(|launcher| launcher.steam.as_ref())
       .and_then(|steam| render_steam_option(steam, cx));
-    let notes: Vec<AnyElement> = [attempt, missing_loader, steam]
-      .into_iter()
-      .flatten()
-      .collect();
+    let notes: Vec<AnyElement> = [missing_loader, steam].into_iter().flatten().collect();
 
     if notes.is_empty() {
       return None;
@@ -821,7 +810,8 @@ fn profile_item(name: &str, count: Option<usize>, muted: Hsla) -> PopupMenuItem 
 
 /// The line to paste into Steam's launch options, with a copy button, and
 /// what the last check of Steam found, or `None` when
-/// [`SteamOption::needs_attention`] says nothing is wrong.
+/// [`SteamOption::needs_attention`] says nothing is wrong. A check under way
+/// keeps the last finding, so the banner keeps its size.
 fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> Option<AnyElement> {
   if !steam.needs_attention() {
     return None;
@@ -829,10 +819,6 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> Option<A
 
   let palette = Palette::new(cx);
   let (id, status) = match &steam.found {
-    _ if steam.checking => (
-      "launch-option-checking",
-      text::STEAM_OPTION_CHECKING.to_string(),
-    ),
     Some(OptionStatus::Unknown(reason)) => {
       ("launch-option-unknown", text::steam_option_unknown(reason))
     }
@@ -888,56 +874,70 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> Option<A
   )
 }
 
-/// One operation of the queue: the game and profile it changes, what it is
-/// doing or how it ended, and the buttons that act on it.
-fn render_operation(operation: &Operation, game: &str, cx: &mut Context<Shell>) -> AnyElement {
+/// The running operation on one line of the status bar: the game and
+/// profile it changes, what it is doing, how many operations wait behind it,
+/// and Cancel until it has been asked to stop.
+fn render_running(
+  operation: &Operation,
+  game: &str,
+  waiting: usize,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
   let palette = Palette::new(cx);
   let id = operation.id;
   let action = &operation.action;
-  let button = |name: &str, label: &'static str, msg: Msg| {
-    Button::new(SharedString::from(format!("{name}-operation-{id}")))
-      .label(label)
-      .small()
-      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
-  };
-  let cancel = || button("cancel", text::CANCEL, Msg::OperationCancelPressed(id));
-  let retry = || button("retry", text::RETRY, Msg::RetryPressed(id));
-  let dismiss = || button("dismiss", text::DISMISS, Msg::OperationDismissed(id));
-  let line = |line: String| div().child(line).into_any_element();
-  let (body, buttons) = match &operation.status {
-    OperationStatus::Queued => (line(text::queued(action)), vec![cancel()]),
+  let (doing_id, doing) = match &operation.status {
+    OperationStatus::Cancelling(progress) => (
+      "operation-stopping",
+      text::stopping(action, progress.as_ref()),
+    ),
     OperationStatus::Running(progress) => (
-      line(text::running(action, progress.as_ref())),
-      operation.can_cancel().then(cancel).into_iter().collect(),
+      "operation-running",
+      text::running(action, progress.as_ref()),
     ),
-    OperationStatus::Cancelling(progress) => {
-      (line(text::stopping(action, progress.as_ref())), vec![])
-    }
-    OperationStatus::Failed { failed, changed } => (
-      failure(palette, text::operation_failed(action, failed, changed)).into_any_element(),
-      vec![retry(), dismiss()],
-    ),
-    OperationStatus::Cancelled { changed } => (
-      line(text::cancelled(action, changed)),
-      vec![retry(), dismiss()],
-    ),
+    OperationStatus::Queued => ("operation-running", text::running(action, None)),
   };
+  let cancel = operation.can_cancel().then(|| {
+    Button::new(SharedString::from(format!("cancel-operation-{id}")))
+      .label(text::CANCEL)
+      .xsmall()
+      .on_click(cx.listener(move |this, _, _, cx| {
+        this.dispatch(Msg::OperationCancelPressed(id), cx);
+      }))
+  });
+  let waiting = (waiting > 0).then(|| {
+    div()
+      .id("waiting-count")
+      .flex_none()
+      .text_color(palette.muted_text)
+      .child(text::waiting(waiting))
+      .test_support()
+  });
 
-  v_flex()
+  h_flex()
     .id(SharedString::from(format!("operation-{id}")))
-    .gap_1()
+    .size_full()
+    .min_w_0()
+    .gap_3()
+    .text_sm()
     .child(
       div()
-        .text_sm()
+        .min_w_0()
+        .truncate()
         .text_color(palette.muted_text)
         .child(text::place(game, &operation.profile)),
     )
     .child(
-      h_flex()
-        .gap_2()
-        .child(div().flex_1().child(body))
-        .child(h_flex().gap_2().flex_none().children(buttons)),
+      div()
+        .id(doing_id)
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .child(doing)
+        .test_support(),
     )
+    .children(waiting)
+    .children(cancel)
     .test_support()
     .into_any_element()
 }
@@ -968,108 +968,6 @@ fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
         .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::RefreshPressed, cx))),
     )
     .into_any_element()
-}
-
-/// The question or refusal a change in the Installed tab is waiting on.
-fn render_pending(pending: &Pending, cx: &mut Context<Shell>) -> AnyElement {
-  let palette = Palette::new(cx);
-  let cancel = Button::new("dismiss-pending")
-    .label(text::CANCEL)
-    .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::PendingDismissed, cx)));
-  let panel = || {
-    v_flex()
-      .gap_2()
-      .p_3()
-      .border_1()
-      .border_color(palette.border)
-  };
-  let list = |items: Vec<String>| {
-    items
-      .into_iter()
-      .map(|item| div().pl_3().child(item))
-      .collect::<Vec<_>>()
-  };
-
-  match pending {
-    Pending::Dependants {
-      removal,
-      package,
-      dependants,
-    } => panel()
-      .id("dependants-question")
-      .child(
-        div()
-          .font_weight(FontWeight::SEMIBOLD)
-          .child(text::dependants_question(*removal, package)),
-      )
-      .children(list(dependants.clone()))
-      .child(
-        h_flex()
-          .gap_2()
-          .child(
-            Button::new("package-only")
-              .label(text::PACKAGE_ONLY)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::DependantsChosen(Scope::PackageOnly), cx);
-              })),
-          )
-          .child(
-            Button::new("with-dependants")
-              .label(text::WITH_DEPENDANTS)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::DependantsChosen(Scope::WithDependants), cx);
-              })),
-          )
-          .child(cancel),
-      )
-      .test_support()
-      .into_any_element(),
-    Pending::Checking { .. } => div().child(text::CHECKING_UNINSTALL).into_any_element(),
-    Pending::Untracked { packages, folders } => panel()
-      .id("untracked-question")
-      .child(
-        div()
-          .font_weight(FontWeight::SEMIBOLD)
-          .child(text::untracked_question(packages)),
-      )
-      .child(text::UNTRACKED_LEAD)
-      .children(list(
-        folders
-          .iter()
-          .map(|folder| folder.display().to_string())
-          .collect(),
-      ))
-      .child(
-        h_flex()
-          .gap_2()
-          .child(
-            Button::new("delete-folders")
-              .label(text::DELETE_FOLDERS)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::FoldersChosen(Folders::Delete), cx);
-              })),
-          )
-          .child(
-            Button::new("keep-folders")
-              .label(text::KEEP_FOLDERS)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::FoldersChosen(Folders::Keep), cx);
-              })),
-          )
-          .child(cancel),
-      )
-      .test_support()
-      .into_any_element(),
-    Pending::Refused { packages, reason } => v_flex()
-      .gap_2()
-      .child(failure(palette, text::uninstall_refused(packages, reason)))
-      .child(
-        Button::new("dismiss-pending")
-          .label(text::DISMISS)
-          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::PendingDismissed, cx))),
-      )
-      .into_any_element(),
-  }
 }
 
 /// One package of the Installed tab: its name, author, version, whether it
@@ -1226,6 +1124,8 @@ const ROW_HEIGHT: f32 = 96.0;
 const INSTALLED_ROW_HEIGHT: f32 = 56.0;
 /// The space between two rows of a list.
 const ROW_GAP: f32 = 6.0;
+/// Tall enough for one line of small text and an extra-small button.
+const STATUS_BAR_HEIGHT: f32 = 36.0;
 const ICON_SIZE: f32 = 48.0;
 
 /// Whether the readme shown is `full_name`'s.
@@ -1417,7 +1317,7 @@ fn render_browse(
       .child(text::LOADING_PACKAGES)
       .into_any_element(),
     View::Unavailable(reason) => failure(palette, text::unavailable(reason)).into_any_element(),
-    View::List { refreshing } => {
+    View::List { .. } => {
       let count = browse.rows.len();
       let rows = uniform_list(
         "packages",
@@ -1460,7 +1360,6 @@ fn render_browse(
         .gap_2()
         .overflow_hidden()
         .image_cache(icons.clone())
-        .when(refreshing, |list| list.child(text::REFRESHING))
         .child(filters)
         .when(count == 0, |list| list.child(empty))
         .child(rows)
@@ -1575,9 +1474,11 @@ impl Render for Shell {
       Screen::Picker => self.render_picker(cx),
       Screen::Game(game) => self.render_game(&game, cx),
     };
+    let status_bar = (self.state.screen != Screen::Starting).then(|| self.render_status_bar(cx));
 
     v_flex()
       .size_full()
       .child(div().w_full().flex_1().overflow_hidden().child(screen))
+      .children(status_bar)
   }
 }

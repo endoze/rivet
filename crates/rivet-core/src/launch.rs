@@ -265,7 +265,7 @@ pub(crate) fn launch_pressed(state: &mut State, mode: LaunchMode) -> Vec<Effect>
   vec![Effect::Run(Command::Launch(launch))]
 }
 
-/// Applies the result of launch `id`, saying so when it started the game,
+/// Applies the result of launch `id`, saying whether it started the game,
 /// then reads Steam's launch option again, since the user may have set it
 /// since it was last read.
 pub(crate) fn launch_finished(
@@ -281,17 +281,27 @@ pub(crate) fn launch_finished(
     return Vec::new();
   };
 
-  let launched = result.is_ok().then(|| Notice::Launched {
-    game: attempt.game.clone(),
-    mode: attempt.mode,
-  });
-
-  attempt.status = match result {
-    Ok(()) => AttemptStatus::Started,
-    Err(failure) => AttemptStatus::Failed(failure),
+  let (status, told) = match result {
+    Ok(()) => (
+      AttemptStatus::Started,
+      Notice::Launched {
+        game: attempt.game.clone(),
+        mode: attempt.mode,
+      },
+    ),
+    Err(failure) => (
+      AttemptStatus::Failed(failure.clone()),
+      Notice::LaunchFailed {
+        game: attempt.game.clone(),
+        mode: attempt.mode,
+        failure,
+      },
+    ),
   };
 
-  let mut effects: Vec<Effect> = launched.map(Effect::Notify).into_iter().collect();
+  attempt.status = status;
+
+  let mut effects = vec![Effect::Notify(told)];
 
   effects.extend(check_steam_option(state));
 
@@ -1003,7 +1013,7 @@ mod tests {
   }
 
   #[test]
-  fn a_failed_launch_is_not_announced() {
+  fn a_failed_launch_is_told_as_an_error() {
     let mut state = ready("valheim", &[]);
 
     update(&mut state, Msg::LaunchPressed(LaunchMode::Modded));
@@ -1015,13 +1025,14 @@ mod tests {
         result: Err(LaunchFailure::NoModLoader(LoaderKind::BepInEx)),
       },
     );
+    let told = Notice::LaunchFailed {
+      game: "valheim".to_string(),
+      mode: LaunchMode::Modded,
+      failure: LaunchFailure::NoModLoader(LoaderKind::BepInEx),
+    };
 
-    assert!(
-      !effects
-        .iter()
-        .any(|effect| matches!(effect, Effect::Notify(_))),
-      "{effects:?}"
-    );
+    assert_eq!(told.level(), crate::notice::Level::Error);
+    assert_eq!(effects.first(), Some(&Effect::Notify(told)));
   }
 
   #[test]

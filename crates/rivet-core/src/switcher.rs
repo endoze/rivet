@@ -475,8 +475,6 @@ pub(crate) fn changed(
     })];
   }
 
-  crate::queue::profile_changed(state, &game, &change);
-
   let remembered = state
     .settings
     .games
