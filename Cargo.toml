@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-exclude = [".worktrees"]
+exclude = [".worktrees", "vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -32,3 +32,9 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# gpui's Windows crate precompiles its shaders only when built on Windows. This
+# copy also precompiles them when cross-compiling from Linux. It must match the
+# version gpui-kit pins.
+[patch.crates-io]
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

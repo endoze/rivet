@@ -52,29 +52,54 @@ const CANDIDATES: [&str; 6] = [
   ".var/app/com.valvesoftware.Steam/.steam/steam",
 ];
 
-/// The first Steam install found under the user's home folder, or `None`.
-/// Covers the native and Flatpak installs on Linux.
+/// The first Steam install found, or `None`. Covers the native and Flatpak
+/// installs on Linux and the install Steam's installer recorded on Windows.
 pub fn root() -> Option<PathBuf> {
-  let home = dirs::home_dir()?;
-
-  CANDIDATES
-    .iter()
-    .map(|candidate| home.join(candidate))
+  candidates()
+    .into_iter()
     .find(|candidate| candidate.join("config").join("loginusers.vdf").is_file())
 }
 
-/// Every Steam install under the user's home folder, native before Flatpak,
-/// each listed once however many links lead to it. Empty when there is none.
+/// Every Steam install found, native before Flatpak on Linux, each listed
+/// once however many links lead to it. Empty when there is none.
 pub fn installs() -> Vec<PathBuf> {
-  dirs::home_dir()
-    .map(|home| installs_in(&home))
-    .unwrap_or_default()
+  installs_among(candidates())
 }
 
-fn installs_in(home: &Path) -> Vec<PathBuf> {
+/// Every folder a Steam install may be in: under the user's home folder, then
+/// the folder holding the `steam.exe` the engine finds on Windows.
+fn candidates() -> Vec<PathBuf> {
+  let mut candidates = dirs::home_dir()
+    .map(|home| home_candidates(&home))
+    .unwrap_or_default();
+
+  candidates.extend(install_of(&thunderstore_engine::steam::steam_exe()));
+
+  candidates
+}
+
+fn home_candidates(home: &Path) -> Vec<PathBuf> {
+  CANDIDATES
+    .iter()
+    .map(|candidate| home.join(candidate))
+    .collect()
+}
+
+/// The install folder holding the Steam program at `exe`. `None` when `exe`
+/// is a bare program name, which is what the engine returns when it finds no
+/// install, as on Linux.
+fn install_of(exe: &Path) -> Option<PathBuf> {
+  if !exe.is_absolute() {
+    return None;
+  }
+
+  exe.parent().map(Path::to_path_buf)
+}
+
+fn installs_among(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
   let mut found: Vec<PathBuf> = Vec::new();
 
-  for candidate in CANDIDATES.iter().map(|candidate| home.join(candidate)) {
+  for candidate in candidates {
     if candidate.join("steamapps").is_dir() && !found.iter().any(|seen| same(seen, &candidate)) {
       found.push(candidate);
     }
@@ -560,7 +585,7 @@ mod tests {
 		}}
 	}}
 "#,
-          path.display()
+          path.display().to_string().replace('\\', r"\\")
         )
       })
       .collect();
@@ -699,14 +724,42 @@ mod tests {
     std::fs::create_dir_all(home.path().join(".steam")).unwrap();
     std::os::unix::fs::symlink(&native, home.path().join(".steam/steam")).unwrap();
 
-    assert_eq!(installs_in(home.path()), vec![native, flatpak]);
+    assert_eq!(
+      installs_among(home_candidates(home.path())),
+      vec![native, flatpak]
+    );
   }
 
   #[test]
   fn a_home_without_steam_has_no_installs() {
     let home = TempDir::new().unwrap();
 
-    assert_eq!(installs_in(home.path()), Vec::<PathBuf>::new());
+    assert_eq!(
+      installs_among(home_candidates(home.path())),
+      Vec::<PathBuf>::new()
+    );
+  }
+
+  #[test]
+  fn a_windows_install_outside_home_is_found_after_the_home_installs() {
+    let home = TempDir::new().unwrap();
+    let program_files = TempDir::new().unwrap();
+    let native = home.path().join(".local/share/Steam");
+    let windows = program_files.path().join("Steam");
+
+    std::fs::create_dir_all(native.join("steamapps")).unwrap();
+    std::fs::create_dir_all(windows.join("steamapps")).unwrap();
+
+    let mut candidates = home_candidates(home.path());
+
+    candidates.extend(install_of(&windows.join("steam.exe")));
+
+    assert_eq!(installs_among(candidates), vec![native, windows]);
+  }
+
+  #[test]
+  fn a_bare_steam_program_names_no_install() {
+    assert_eq!(install_of(Path::new("steam")), None);
   }
 
   #[test]

@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 dirs.workspace = true
+thunderstore-engine = { workspace = true, features = ["rustls-tls"] }
 
 [dev-dependencies]
 tempfile.workspace = true

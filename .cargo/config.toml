@@ -1,0 +1,5 @@
+# Builds the C runtime into the exe, so it runs on a Windows install without
+# the Visual C++ Redistributable. Microsoft ships that runtime without the
+# debug files its objects reference, which the linker warns about (LNK4099).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/IGNORE:4099"]

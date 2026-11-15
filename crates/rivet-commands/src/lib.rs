@@ -1918,7 +1918,7 @@ mod tests {
   fn reading_the_steam_option_writes_the_wrapper_and_reads_steams_options() {
     let dir = TempDir::new().unwrap();
     let script = dir.path().join("data/valheim/steam-wrapper.sh");
-    let line = format!("\"{}\" %command%", script.display());
+    let line = format!("\"{}\" %command%", forward_slashed(&script));
     let config = Config {
       steam: Some(steam_with(&dir, &format!("gamemoderun {line}"))),
       ..config_in(&dir)
@@ -1970,15 +1970,25 @@ mod tests {
 
   /// The commands started for a launch from `profile`.
   fn spawned_from(profile: &Path) -> Vec<Vec<String>> {
-    let profile = profile.to_string_lossy();
+    let profile = forward_slashed(profile);
 
     SPAWNED
       .lock()
       .unwrap()
       .iter()
-      .filter(|argv| argv.iter().any(|arg| arg.contains(profile.as_ref())))
+      .filter(|argv| {
+        argv
+          .iter()
+          .any(|arg| forward_slashed(Path::new(arg)).contains(&profile))
+      })
       .cloned()
       .collect()
+  }
+
+  /// `path` with forward slashes, the form the engine hands paths to Steam
+  /// and the Linux wrapper in, whichever host the tests run on.
+  fn forward_slashed(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
   }
 
   /// A config in `dir` that records launches, with Valheim installed in a
