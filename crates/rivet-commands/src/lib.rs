@@ -200,10 +200,34 @@ pub async fn run(
       launch: launch.id,
       result: start(config, launch).await,
     },
-    Command::ReadSteamOption { game, app_id } => {
+    Command::ListGameFolder { game, folder } => Msg::GameFolderListed {
+      entries: list_folder(&folder).await,
+      game,
+    },
+    Command::ReadSteamOption {
+      game,
+      app_id,
+      context,
+    } => {
       let script = launch::wrapper_path(&config.data, &game);
-      let line = launch::steam_launch_options(&script);
-      let current = read_steam_option(config, script, app_id).await;
+      let plan = launch::launch_plan_from(
+        Path::new(""),
+        &launch::LaunchFacts::default(),
+        &config.ecosystem,
+        &game,
+        &context,
+      )
+      .ok();
+      let line = plan
+        .as_ref()
+        .and_then(|plan| plan.steam_launch_options(&script));
+      let wrapper = plan
+        .is_some_and(|plan| plan.steam_wrapper.is_some())
+        .then_some(script);
+      let current = match line {
+        Some(_) => read_steam_option(config, wrapper, app_id).await,
+        None => Ok(None),
+      };
 
       Msg::SteamOptionRead(SteamOptionRead {
         game,
@@ -317,17 +341,19 @@ async fn find_in_steam(config: &Config, app_id: u32) -> Result<PathBuf, NotFound
     .ok_or(NotFound::NotInstalled)
 }
 
-/// Writes the game's Steam wrapper at `script`, so the line naming it works
-/// once pasted, then reads Steam's launch options for `app_id`.
+/// Writes the game's Steam wrapper at `wrapper`, when the line names one, so
+/// the line works once pasted, then reads Steam's launch options for `app_id`.
 async fn read_steam_option(
   config: &Config,
-  script: PathBuf,
+  wrapper: Option<PathBuf>,
   app_id: u32,
 ) -> Result<Option<String>, String> {
   let steam = config.steam.clone();
 
   tokio::task::spawn_blocking(move || {
-    launch::write_wrapper_script(&script).map_err(|error| error.to_string())?;
+    if let Some(script) = wrapper {
+      launch::write_wrapper_script(&script).map_err(|error| error.to_string())?;
+    }
 
     let steam = steam.ok_or_else(|| "No Steam install was found".to_string())?;
 
@@ -1908,10 +1934,65 @@ mod tests {
   }
 
   fn read_steam_option() -> Command {
+    read_steam_option_under(Runtime::Native)
+  }
+
+  fn read_steam_option_under(runtime: Runtime) -> Command {
     Command::ReadSteamOption {
       game: "valheim".to_string(),
       app_id: VALHEIM,
+      context: LaunchContext::new(
+        HostOs::Linux,
+        StorePlatform::Steam,
+        runtime,
+        LaunchMode::Vanilla,
+      ),
     }
+  }
+
+  #[test]
+  fn reading_the_steam_option_under_proton_gives_the_dll_override_and_writes_no_wrapper() {
+    let dir = TempDir::new().unwrap();
+    let line = r#"WINEDLLOVERRIDES="winhttp=n,b" %command%"#;
+    let config = Config {
+      steam: Some(steam_with(&dir, line)),
+      ..config_in(&dir)
+    };
+
+    let answer = run_now(read_steam_option_under(Runtime::Proton), &config);
+
+    assert_eq!(
+      answer,
+      Msg::SteamOptionRead(SteamOptionRead {
+        game: "valheim".to_string(),
+        line: Some(line.to_string()),
+        current: Ok(Some(line.to_string())),
+      })
+    );
+    assert!(!config.data.join("valheim/steam-wrapper.sh").exists());
+  }
+
+  #[test]
+  fn listing_the_game_folder_names_its_entries() {
+    let dir = TempDir::new().unwrap();
+
+    std::fs::write(dir.path().join("valheim.exe"), "game").unwrap();
+
+    let answer = run_now(
+      Command::ListGameFolder {
+        game: "valheim".to_string(),
+        folder: dir.path().to_path_buf(),
+      },
+      &config_in(&dir),
+    );
+
+    assert_eq!(
+      answer,
+      Msg::GameFolderListed {
+        game: "valheim".to_string(),
+        entries: Ok(vec!["valheim.exe".to_string()]),
+      }
+    );
   }
 
   #[test]
@@ -1930,7 +2011,7 @@ mod tests {
       answer,
       Msg::SteamOptionRead(SteamOptionRead {
         game: "valheim".to_string(),
-        line: line.clone(),
+        line: Some(line.clone()),
         current: Ok(Some(format!("gamemoderun {line}"))),
       })
     );
@@ -1948,7 +2029,14 @@ mod tests {
       panic!("unexpected answer {answer:?}");
     };
 
-    assert!(read.line.contains("steam-wrapper.sh"), "{}", read.line);
+    assert!(
+      read
+        .line
+        .as_deref()
+        .is_some_and(|line| line.contains("steam-wrapper.sh")),
+      "{:?}",
+      read.line
+    );
     assert!(read.current.is_err(), "{:?}", read.current);
   }
 
@@ -2026,13 +2114,53 @@ mod tests {
   }
 
   fn launch_from(dir: &TempDir, mode: LaunchMode) -> Command {
+    launch_under(dir, mode, Runtime::Native)
+  }
+
+  fn launch_under(dir: &TempDir, mode: LaunchMode, runtime: Runtime) -> Command {
     Command::Launch(Launch {
       id: 4,
       game: "valheim".to_string(),
       profile: DEFAULT_PROFILE.to_string(),
       folder: dir.path().join("game"),
-      context: LaunchContext::new(HostOs::Linux, StorePlatform::Steam, Runtime::Native, mode),
+      context: LaunchContext::new(HostOs::Linux, StorePlatform::Steam, runtime, mode),
     })
+  }
+
+  #[test]
+  fn a_modded_proton_launch_starts_the_game_through_steam_with_wine_paths() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    with_bepinex(&config);
+
+    let answer = run_now(
+      launch_under(&dir, LaunchMode::Modded, Runtime::Proton),
+      &config,
+    );
+    let spawned = spawned_from(&default_profile(&config));
+
+    assert_eq!(
+      answer,
+      Msg::LaunchFinished {
+        launch: 4,
+        result: Ok(()),
+      }
+    );
+    assert_eq!(spawned.len(), 1, "{spawned:?}");
+    assert!(
+      spawned[0]
+        .windows(2)
+        .any(|pair| pair == ["-applaunch", "892970"]),
+      "{spawned:?}"
+    );
+    assert!(
+      spawned[0]
+        .iter()
+        .any(|arg| arg.starts_with("Z:") && arg.ends_with("BepInEx.Preloader.dll")),
+      "{spawned:?}"
+    );
+    assert!(!config.data.join("valheim/steam-wrapper.sh").exists());
   }
 
   #[test]

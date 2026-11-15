@@ -73,6 +73,16 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
   );
   assert_eq!(sent.try_recv().ok(), Some(open_default_profile()));
 
+  if cfg!(target_os = "linux") {
+    assert_eq!(
+      sent.try_recv().ok(),
+      Some(Command::ListGameFolder {
+        game: "valheim".to_string(),
+        folder: PathBuf::from("/games/Valheim"),
+      })
+    );
+  }
+
   answers
     .unbounded_send(Msg::CachedIndexRead {
       community: "valheim".to_string(),
@@ -1114,13 +1124,20 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
     .expect("open test window")
   });
 
-  answers
-    .unbounded_send(Msg::SettingsLoaded(Ok(valheim_settings())))
-    .unwrap();
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::GameFolderListed {
+      game: "valheim".to_string(),
+      entries: Ok(vec!["valheim.x86_64".to_string()]),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
   cx.run_until_parked();
 
   let read = std::iter::from_fn(|| sent.try_recv().ok()).find(|command| {
-    matches!(command, Command::ReadSteamOption { game, app_id: 892970 } if game == "valheim")
+    matches!(command, Command::ReadSteamOption { game, app_id: 892970, .. } if game == "valheim")
   });
 
   assert!(read.is_some(), "Steam's launch options were not read");
@@ -1143,7 +1160,7 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
     },
     Msg::SteamOptionRead(SteamOptionRead {
       game: "valheim".to_string(),
-      line: line.to_string(),
+      line: Some(line.to_string()),
       current: Ok(None),
     }),
   ] {
@@ -1238,7 +1255,7 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
   answers
     .unbounded_send(Msg::SteamOptionRead(SteamOptionRead {
       game: "valheim".to_string(),
-      line: line.to_string(),
+      line: Some(line.to_string()),
       current: Ok(Some(line.to_string())),
     }))
     .unwrap();

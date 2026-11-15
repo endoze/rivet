@@ -6,11 +6,9 @@ use crate::install::Profile;
 use crate::notice::Notice;
 use crate::{Command, Effect, Screen, State};
 use std::path::{Path, PathBuf};
-use thunderstore_engine::Error;
 use thunderstore_engine::ecosystem::{Ecosystem, LoaderKind};
 use thunderstore_engine::profile::launch::{
-  LaunchContext, LaunchFacts, LaunchMode, Runtime, StorePlatform, launch_plan_from,
-  prepare_plan_from,
+  HostOs, LaunchContext, LaunchFacts, LaunchMode, Runtime, StorePlatform, launch_plan_from,
 };
 
 /// Start the open game from a profile.
@@ -31,8 +29,11 @@ pub struct Launch {
 pub struct Launcher {
   /// The game, by its key in the game definitions.
   pub game: String,
-  /// The line Steam's launch options must hold, for a game launched through
-  /// Steam's wrapper. `None` when the game needs no wrapper.
+  /// Whether the game runs natively or under Proton. `None` while its folder
+  /// is read to tell.
+  pub runtime: Option<Runtime>,
+  /// The line Steam's launch options must hold for mods to load. `None` when
+  /// the game needs none there.
   pub steam: Option<SteamOption>,
 }
 
@@ -108,49 +109,132 @@ pub enum LaunchFailure {
 pub struct SteamOptionRead {
   /// The game, by its key in the game definitions.
   pub game: String,
-  /// The line the launch options must hold.
-  pub line: String,
+  /// The line the launch options must hold, or `None` when they need none.
+  pub line: Option<String>,
   /// The launch options Steam holds, `None` when there are none, or why they
   /// could not be read.
   pub current: Result<Option<String>, String>,
 }
 
-/// Sets up launching for `game`, reading its Steam launch option when Steam
-/// runs it through a wrapper.
+/// Sets up launching for `game`. On Linux its folder is listed first, to tell
+/// whether it runs under Proton.
 pub(crate) fn open(state: &mut State, game: &str) -> Vec<Effect> {
-  let app_id = steam_wrapped(state, game);
-
   state.launcher = Some(Launcher {
     game: game.to_string(),
-    steam: app_id.map(|_| SteamOption {
+    runtime: None,
+    steam: None,
+  });
+
+  let folder = state.settings.folder(game).map(Path::to_path_buf);
+
+  match (state.host, folder) {
+    (Some(HostOs::Linux), Some(folder)) => vec![Effect::Run(Command::ListGameFolder {
+      game: game.to_string(),
+      folder,
+    })],
+    _ => runtime_found(state, Runtime::Native),
+  }
+}
+
+/// Applies a listing of the open game's folder: the game runs under Proton
+/// when the folder holds only its Windows build. A folder that cannot be
+/// listed counts as native, and the launch says why it fails.
+pub(crate) fn game_folder_listed(
+  state: &mut State,
+  game: String,
+  entries: Result<Vec<String>, String>,
+) -> Vec<Effect> {
+  let waiting = state
+    .launcher
+    .as_ref()
+    .is_some_and(|launcher| launcher.game == game && launcher.runtime.is_none());
+
+  if !waiting {
+    return Vec::new();
+  }
+
+  let exe_names = state
+    .ecosystem
+    .require_profile(&game)
+    .map(|profile| profile.exe_names.clone())
+    .unwrap_or_default();
+  let runtime = entries
+    .map(|entries| runtime_of(&exe_names, &entries))
+    .unwrap_or(Runtime::Native);
+
+  runtime_found(state, runtime)
+}
+
+/// How a game whose executables are `exe_names` runs from a folder holding
+/// `entries`: under Proton when the folder holds only the Windows ones, which
+/// is the build Steam installs for Proton. Names match ignoring ASCII case.
+///
+/// ```
+/// use rivet_core::launch::runtime_of;
+/// use thunderstore_engine::profile::launch::Runtime;
+///
+/// let exe_names = ["valheim.exe".to_string(), "valheim.x86_64".to_string()];
+///
+/// assert_eq!(runtime_of(&exe_names, &["valheim.exe".into()]), Runtime::Proton);
+/// assert_eq!(runtime_of(&exe_names, &["valheim.x86_64".into()]), Runtime::Native);
+/// ```
+pub fn runtime_of(exe_names: &[String], entries: &[String]) -> Runtime {
+  let present = |windows: bool| {
+    exe_names
+      .iter()
+      .filter(|exe| exe.to_ascii_lowercase().ends_with(".exe") == windows)
+      .any(|exe| entries.iter().any(|entry| entry.eq_ignore_ascii_case(exe)))
+  };
+
+  match (present(true), present(false)) {
+    (true, false) => Runtime::Proton,
+    _ => Runtime::Native,
+  }
+}
+
+/// Records how the open game runs, then reads its Steam launch options when
+/// they must hold a line for mods to load.
+fn runtime_found(state: &mut State, runtime: Runtime) -> Vec<Effect> {
+  let Some(launcher) = state.launcher.as_mut() else {
+    return Vec::new();
+  };
+
+  launcher.runtime = Some(runtime);
+
+  let game = launcher.game.clone();
+
+  if steam_line_app_id(state, &game).is_none() {
+    return Vec::new();
+  }
+
+  if let Some(launcher) = state.launcher.as_mut() {
+    launcher.steam = Some(SteamOption {
       line: None,
       found: None,
       checking: true,
-    }),
-  });
+    });
+  }
 
-  app_id
-    .map(|app_id| {
-      Effect::Run(Command::ReadSteamOption {
-        game: game.to_string(),
-        app_id,
-      })
-    })
-    .into_iter()
-    .collect()
+  check_steam_option(state)
 }
 
-/// How `game` launches in `mode` on this host: as a native game, through
-/// Steam when it has a Steam app id and directly otherwise. `None` where
-/// launching is not supported.
+/// How `game` launches in `mode` on this host: natively or under Proton as
+/// its folder showed, through Steam when it has a Steam app id and directly
+/// otherwise. `None` where launching is not supported, or before the folder
+/// has been read.
 fn context(state: &State, game: &str, mode: LaunchMode) -> Option<LaunchContext> {
   let host = state.host?;
+  let runtime = state
+    .launcher
+    .as_ref()
+    .filter(|launcher| launcher.game == game)?
+    .runtime?;
   let store = match steam_app_id(&state.ecosystem, game) {
     Some(_) => StorePlatform::Steam,
     None => StorePlatform::Other,
   };
 
-  Some(LaunchContext::new(host, store, Runtime::Native, mode))
+  Some(LaunchContext::new(host, store, runtime, mode))
 }
 
 fn steam_app_id(ecosystem: &Ecosystem, game: &str) -> Option<u32> {
@@ -160,9 +244,10 @@ fn steam_app_id(ecosystem: &Ecosystem, game: &str) -> Option<u32> {
     .and_then(|profile| profile.steam_app_id())
 }
 
-/// `game`'s Steam app id when Steam must run it through the wrapper, which is
-/// what makes a modded launch load packages.
-fn steam_wrapped(state: &State, game: &str) -> Option<u32> {
+/// `game`'s Steam app id when Steam's launch options must hold a line for a
+/// modded launch to load packages: the wrapper for a native Linux game, or
+/// the DLL override under Proton.
+fn steam_line_app_id(state: &State, game: &str) -> Option<u32> {
   let context = context(state, game, LaunchMode::Vanilla)?;
   let plan = launch_plan_from(
     Path::new(""),
@@ -173,7 +258,9 @@ fn steam_wrapped(state: &State, game: &str) -> Option<u32> {
   )
   .ok()?;
 
-  plan.steam_wrapper.and(steam_app_id(&state.ecosystem, game))
+  plan
+    .steam_launch_options(Path::new(""))
+    .and(steam_app_id(&state.ecosystem, game))
 }
 
 impl State {
@@ -187,14 +274,20 @@ impl State {
   }
 
   /// Whether a launch button would start a launch: the open profile has been
-  /// read, no operation on it is running or waiting, no other launch is
-  /// being prepared, no uninstall is being checked, and no profile change is
-  /// being made.
+  /// read, the game's folder has shown whether it runs under Proton, no
+  /// operation on the profile is running or waiting, no other launch is being
+  /// prepared, no uninstall is being checked, and no profile change is being
+  /// made.
   pub fn can_launch(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
+    let runtime = self
+      .launcher
+      .as_ref()
+      .is_some_and(|launcher| launcher.runtime.is_some());
 
     self.host.is_some()
       && ready
+      && runtime
       && !self.is_launching()
       && !self.is_profile_busy()
       && !self.is_checking()
@@ -210,20 +303,16 @@ impl State {
     let profile = self.profile.as_ref()?;
     let installed = profile.installed()?;
     let context = context(self, &profile.game, LaunchMode::Modded)?;
-    let mut facts = LaunchFacts::default();
+    let loader = self.ecosystem.require_profile(&profile.game).ok()?.package_loader;
+    let needs_none = matches!(loader, LoaderKind::None | LoaderKind::Other);
+    let held = installed.keys().any(|name| {
+      self
+        .ecosystem
+        .modloader_package(name)
+        .is_some_and(|pack| pack.loader == loader)
+    });
 
-    facts.recorded = installed.keys().cloned().collect();
-
-    match prepare_plan_from(
-      Path::new(""),
-      &facts,
-      &self.ecosystem,
-      &profile.game,
-      &context,
-    ) {
-      Err(Error::NoModLoader { loader }) => Some(loader),
-      _ => None,
-    }
+    (!needs_none && !held && context.os != HostOs::MacOs).then_some(loader)
   }
 }
 
@@ -332,16 +421,23 @@ pub(crate) fn copy_line(state: &State) -> Vec<Effect> {
 /// A line found set after the last read found it missing, or could not tell,
 /// tells the user Steam is now set up.
 pub(crate) fn steam_option_read(state: &mut State, read: SteamOptionRead) -> Vec<Effect> {
-  let Some(steam) = state
+  let Some(launcher) = state
     .launcher
     .as_mut()
     .filter(|launcher| launcher.game == read.game)
-    .and_then(|launcher| launcher.steam.as_mut())
   else {
     return Vec::new();
   };
+  let Some(line) = read.line else {
+    launcher.steam = None;
+
+    return Vec::new();
+  };
+  let Some(steam) = launcher.steam.as_mut() else {
+    return Vec::new();
+  };
   let found = match read.current {
-    Ok(Some(options)) if options.contains(&read.line) => OptionStatus::Set,
+    Ok(Some(options)) if options.contains(&line) => OptionStatus::Set,
     Ok(_) => OptionStatus::NotSet,
     Err(reason) => OptionStatus::Unknown(reason),
   };
@@ -349,7 +445,7 @@ pub(crate) fn steam_option_read(state: &mut State, read: SteamOptionRead) -> Vec
 
   steam.found = Some(found);
   steam.checking = false;
-  steam.line = Some(read.line);
+  steam.line = Some(line);
 
   if !now_set {
     return Vec::new();
@@ -378,21 +474,29 @@ pub(crate) fn window_focused(state: &mut State) -> Vec<Effect> {
 /// Reads Steam's launch options for the open game again, when it has a line
 /// to set, keeping what the last read found until this one ends.
 pub(crate) fn check_steam_option(state: &mut State) -> Vec<Effect> {
-  let Some(launcher) = state.launcher.as_mut() else {
+  let Some(launcher) = state.launcher.as_ref().filter(|launcher| launcher.steam.is_some()) else {
     return Vec::new();
   };
-  let Some(steam) = launcher.steam.as_mut() else {
+  let game = launcher.game.clone();
+  let Some(app_id) = steam_app_id(&state.ecosystem, &game) else {
     return Vec::new();
   };
-  let Some(app_id) = steam_app_id(&state.ecosystem, &launcher.game) else {
+  let Some(context) = context(state, &game, LaunchMode::Vanilla) else {
     return Vec::new();
   };
 
-  steam.checking = true;
+  if let Some(steam) = state
+    .launcher
+    .as_mut()
+    .and_then(|launcher| launcher.steam.as_mut())
+  {
+    steam.checking = true;
+  }
 
   vec![Effect::Run(Command::ReadSteamOption {
-    game: launcher.game.clone(),
+    game,
     app_id,
+    context,
   })]
 }
 
@@ -406,10 +510,12 @@ mod tests {
   use thunderstore_engine::profile::launch::HostOs;
 
   const VALHEIM: u32 = 892970;
+  const LETHAL: u32 = 1966720;
   const LINE: &str = r#""/data/valheim/steam-wrapper.sh" %command%"#;
 
-  /// Valheim as a native BepInEx game on Steam, a BepInEx game with no Steam
-  /// app id, and a game with no mod loader.
+  /// Valheim as a BepInEx game on Steam with Linux and Windows builds, a
+  /// BepInEx game on Steam with only a Windows build, a BepInEx game with no
+  /// Steam app id, and a game with no mod loader.
   fn ecosystem() -> Ecosystem {
     Ecosystem::from_json(
       r#"{
@@ -420,9 +526,20 @@ mod tests {
             "r2modman": [{
               "gameInstanceType": "game",
               "packageLoader": "bepinex",
-              "exeNames": ["valheim.x86_64"],
+              "exeNames": ["valheim.exe", "valheim.x86_64"],
               "distributions": [{ "platform": "steam", "identifier": "892970" }],
               "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+            }]
+          },
+          "lethal": {
+            "label": "lethal",
+            "meta": { "displayName": "Lethal Company" },
+            "r2modman": [{
+              "gameInstanceType": "game",
+              "packageLoader": "bepinex",
+              "exeNames": ["Lethal Company.exe"],
+              "distributions": [{ "platform": "steam", "identifier": "1966720" }],
+              "packageIndex": "https://thunderstore.io/c/lethal-company/api/v1/package/"
             }]
           },
           "elsewhere": {
@@ -456,8 +573,33 @@ mod tests {
   }
 
   /// A Linux state that started with `game` open, its cache and profile not
-  /// yet read, and the effects of opening it.
+  /// yet read and its folder holding its native build, and the effects of
+  /// opening it.
   fn opened(game: &str) -> (State, Vec<Effect>) {
+    opened_holding(game, &[&format!("{game}.x86_64")])
+  }
+
+  /// As [`opened`], with the game's folder holding `entries`.
+  fn opened_holding(game: &str, entries: &[&str]) -> (State, Vec<Effect>) {
+    let (mut state, mut effects) = started(game);
+    let listed = Msg::GameFolderListed {
+      game: game.to_string(),
+      entries: Ok(entries.iter().map(|entry| entry.to_string()).collect()),
+    };
+
+    effects.extend(update(&mut state, listed));
+
+    (state, effects)
+  }
+
+  /// A Linux state that started with `game` open and its folder not yet
+  /// listed, and the effects of opening it.
+  fn started(game: &str) -> (State, Vec<Effect>) {
+    started_on(HostOs::Linux, game)
+  }
+
+  /// As [`started`], on `host`.
+  fn started_on(host: HostOs, game: &str) -> (State, Vec<Effect>) {
     let mut state = State::new(ecosystem());
     let settings = Settings {
       last_game: Some(game.to_string()),
@@ -471,7 +613,7 @@ mod tests {
       .into(),
     };
 
-    state.host = Some(HostOs::Linux);
+    state.host = Some(host);
 
     update(&mut state, Msg::Started);
 
@@ -481,10 +623,177 @@ mod tests {
   }
 
   fn read_steam_option(game: &str, app_id: u32) -> Effect {
+    read_steam_option_under(game, app_id, Runtime::Native)
+  }
+
+  fn read_steam_option_under(game: &str, app_id: u32, runtime: Runtime) -> Effect {
     Effect::Run(Command::ReadSteamOption {
       game: game.to_string(),
       app_id,
+      context: LaunchContext::new(
+        HostOs::Linux,
+        StorePlatform::Steam,
+        runtime,
+        LaunchMode::Vanilla,
+      ),
     })
+  }
+
+  fn runtime(state: &State) -> Option<Runtime> {
+    state.launcher.as_ref().and_then(|launcher| launcher.runtime)
+  }
+
+  #[test]
+  fn opening_a_game_on_linux_lists_its_folder_before_reading_steam() {
+    let (state, effects) = started("valheim");
+
+    assert!(
+      effects.contains(&Effect::Run(Command::ListGameFolder {
+        game: "valheim".to_string(),
+        folder: PathBuf::from("/games/valheim"),
+      })),
+      "{effects:?}"
+    );
+    assert!(
+      !effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::Run(Command::ReadSteamOption { .. }))),
+      "{effects:?}"
+    );
+    assert_eq!(runtime(&state), None);
+  }
+
+  #[test]
+  fn a_folder_holding_only_the_windows_build_runs_under_proton() {
+    let (state, effects) = opened_holding("lethal", &["Lethal Company.exe", "MonoBleedingEdge"]);
+
+    assert_eq!(runtime(&state), Some(Runtime::Proton));
+    assert!(
+      effects.contains(&read_steam_option_under("lethal", LETHAL, Runtime::Proton)),
+      "{effects:?}"
+    );
+    assert_eq!(
+      steam_option(&state),
+      Some(SteamOption {
+        line: None,
+        found: None,
+        checking: true,
+      })
+    );
+  }
+
+  #[test]
+  fn a_folder_holding_the_linux_build_runs_natively() {
+    for entries in [
+      &["valheim.x86_64"][..],
+      &["valheim.x86_64", "valheim.exe"],
+      &["Valheim.X86_64"],
+    ] {
+      let (state, _) = opened_holding("valheim", entries);
+
+      assert_eq!(runtime(&state), Some(Runtime::Native), "{entries:?}");
+    }
+  }
+
+  #[test]
+  fn a_folder_that_cannot_be_listed_runs_natively() {
+    let (mut state, _) = started("lethal");
+
+    update(
+      &mut state,
+      Msg::GameFolderListed {
+        game: "lethal".to_string(),
+        entries: Err("permission denied".to_string()),
+      },
+    );
+
+    assert_eq!(runtime(&state), Some(Runtime::Native));
+  }
+
+  #[test]
+  fn a_listing_for_a_game_no_longer_open_is_ignored() {
+    let (mut state, _) = started("valheim");
+    let effects = update(
+      &mut state,
+      Msg::GameFolderListed {
+        game: "lethal".to_string(),
+        entries: Ok(vec!["Lethal Company.exe".to_string()]),
+      },
+    );
+
+    assert_eq!(effects, vec![]);
+    assert_eq!(runtime(&state), None);
+  }
+
+  #[test]
+  fn a_windows_host_runs_games_natively_without_listing_their_folder() {
+    let (state, effects) = started_on(HostOs::Windows, "lethal");
+
+    assert!(
+      !effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::Run(Command::ListGameFolder { .. }))),
+      "{effects:?}"
+    );
+    assert_eq!(runtime(&state), Some(Runtime::Native));
+    assert_eq!(steam_option(&state), None);
+  }
+
+  #[test]
+  fn a_launch_waits_until_the_folder_shows_how_the_game_runs() {
+    let (mut state, _) = started("lethal");
+
+    update(&mut state, profile_opened("lethal", &[]));
+
+    assert!(!state.can_launch());
+    assert_eq!(update(&mut state, Msg::LaunchPressed(LaunchMode::Modded)), vec![]);
+
+    update(
+      &mut state,
+      Msg::GameFolderListed {
+        game: "lethal".to_string(),
+        entries: Ok(vec!["Lethal Company.exe".to_string()]),
+      },
+    );
+
+    assert!(state.can_launch());
+  }
+
+  #[test]
+  fn a_proton_game_launches_through_steam_under_proton() {
+    let (mut state, _) = opened_holding("lethal", &["Lethal Company.exe"]);
+
+    update(&mut state, profile_opened("lethal", &[]));
+
+    assert_eq!(
+      update(&mut state, Msg::LaunchPressed(LaunchMode::Modded)),
+      vec![launch(
+        1,
+        "lethal",
+        LaunchContext::new(
+          HostOs::Linux,
+          StorePlatform::Steam,
+          Runtime::Proton,
+          LaunchMode::Modded,
+        ),
+      )]
+    );
+  }
+
+  #[test]
+  fn a_read_with_no_line_to_set_drops_the_launch_option() {
+    let (mut state, _) = opened("valheim");
+
+    update(
+      &mut state,
+      Msg::SteamOptionRead(SteamOptionRead {
+        game: "valheim".to_string(),
+        line: None,
+        current: Ok(None),
+      }),
+    );
+
+    assert_eq!(steam_option(&state), None);
   }
 
   #[test]
@@ -523,7 +832,7 @@ mod tests {
   fn read(game: &str, current: Result<Option<&str>, &str>) -> Msg {
     Msg::SteamOptionRead(SteamOptionRead {
       game: game.to_string(),
-      line: LINE.to_string(),
+      line: Some(LINE.to_string()),
       current: current
         .map(|options| options.map(str::to_string))
         .map_err(str::to_string),
@@ -715,19 +1024,22 @@ mod tests {
   /// A Linux state with `game` open and its profile holding `packages`.
   fn ready(game: &str, packages: &[&str]) -> State {
     let (mut state, _) = opened(game);
+
+    update(&mut state, profile_opened(game, packages));
+
+    state
+  }
+
+  /// `game`'s default profile opened, holding `packages`.
+  fn profile_opened(game: &str, packages: &[&str]) -> Msg {
     let packages: Vec<(&str, &str)> = packages.iter().map(|name| (*name, "1.0.0")).collect();
     let installed: Installed = crate::test_installed(&packages);
 
-    update(
-      &mut state,
-      Msg::ProfileOpened {
-        game: game.to_string(),
-        profile: DEFAULT_PROFILE.to_string(),
-        installed: Ok(installed),
-      },
-    );
-
-    state
+    Msg::ProfileOpened {
+      game: game.to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(installed),
+    }
   }
 
   fn context(store: StorePlatform, mode: LaunchMode) -> LaunchContext {

@@ -1005,6 +1005,14 @@ mod tests {
 
     state.host = Some(thunderstore_engine::profile::launch::HostOs::Linux);
 
+    update(
+      &mut state,
+      Msg::GameFolderListed {
+        game: "valheim".to_string(),
+        entries: Ok(vec!["valheim.x86_64".to_string()]),
+      },
+    );
+
     assert!(state.can_install());
     assert!(state.can_launch());
 

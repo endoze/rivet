@@ -24,7 +24,7 @@ use settings::{GameSettings, Settings};
 use std::path::PathBuf;
 use switcher::{Naming, ProfileChange, Switcher};
 use thunderstore_engine::ecosystem::Ecosystem;
-use thunderstore_engine::profile::launch::{HostOs, LaunchMode};
+use thunderstore_engine::profile::launch::{HostOs, LaunchContext, LaunchMode};
 
 /// Everything the app knows.
 #[derive(Debug)]
@@ -245,6 +245,12 @@ pub enum Msg {
     launch: u64,
     result: Result<(), LaunchFailure>,
   },
+  /// The open game's folder was listed: the names of its entries, or why it
+  /// could not be.
+  GameFolderListed {
+    game: String,
+    entries: Result<Vec<String>, String>,
+  },
   SteamOptionRead(SteamOptionRead),
   /// Asked to check Steam's launch options again.
   SteamOptionCheckPressed,
@@ -343,9 +349,18 @@ pub enum Command {
   SetEnabled(SetEnabled),
   /// Prepare and start the game. Answered with [`Msg::LaunchFinished`].
   Launch(Launch),
-  /// Write the game's Steam wrapper and read Steam's launch options for
-  /// `app_id`, never changing them. Answered with [`Msg::SteamOptionRead`].
-  ReadSteamOption { game: String, app_id: u32 },
+  /// List the open game's folder, to tell whether it runs under Proton.
+  /// Answered with [`Msg::GameFolderListed`].
+  ListGameFolder { game: String, folder: PathBuf },
+  /// Work out the line Steam's launch options must hold for a launch in
+  /// `context`, write the game's Steam wrapper when the line names it, and
+  /// read Steam's launch options for `app_id`, never changing them. Answered
+  /// with [`Msg::SteamOptionRead`].
+  ReadSteamOption {
+    game: String,
+    app_id: u32,
+    context: LaunchContext,
+  },
   /// List a game's profiles. Answered with [`Msg::ProfilesListed`].
   ListProfiles(String),
   /// Answered with [`Msg::ProfileChanged`].
@@ -502,6 +517,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::LinkClicked(url) => readme::link_clicked(url),
     Msg::LaunchPressed(mode) => launch::launch_pressed(state, mode),
     Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
+    Msg::GameFolderListed { game, entries } => launch::game_folder_listed(state, game, entries),
     Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),
     Msg::SteamOptionCheckPressed => launch::check_steam_option(state),
     Msg::LaunchLineCopyPressed => launch::copy_line(state),
@@ -790,8 +806,11 @@ mod tests {
   use picker::{Fallback, NotFound};
   use std::path::Path;
 
+  /// A Linux state that has asked for its settings.
   fn started() -> State {
     let mut state = State::new(test_ecosystem());
+
+    state.host = Some(HostOs::Linux);
 
     update(&mut state, Msg::Started);
 
@@ -820,6 +839,13 @@ mod tests {
     Effect::Run(Command::OpenProfile {
       game: game.to_string(),
       profile: install::DEFAULT_PROFILE.to_string(),
+    })
+  }
+
+  fn list_game_folder(game: &str, folder: &str) -> Effect {
+    Effect::Run(Command::ListGameFolder {
+      game: game.to_string(),
+      folder: PathBuf::from(folder),
     })
   }
 
@@ -854,7 +880,11 @@ mod tests {
     assert_eq!(state.settings, settings);
     assert_eq!(
       effects,
-      vec![read_cache("valheim"), open_profile("valheim")]
+      vec![
+        read_cache("valheim"),
+        open_profile("valheim"),
+        list_game_folder("valheim", "/games/valheim"),
+      ]
     );
   }
 
@@ -1086,6 +1116,7 @@ mod tests {
         Effect::Run(Command::SaveSettings(state.settings.clone())),
         read_cache("valheim"),
         open_profile("valheim"),
+        list_game_folder("valheim", "/games/valheim"),
       ]
     );
   }
@@ -1164,6 +1195,7 @@ mod tests {
         ))),
         read_cache("valheim"),
         open_profile("valheim"),
+        list_game_folder("valheim", "/games/valheim"),
       ]
     );
   }

@@ -481,7 +481,7 @@ pub const LAUNCH_MODDED: &str = "Launch modded";
 pub const LAUNCH_VANILLA: &str = "Launch vanilla";
 pub const COPY: &str = "Copy";
 pub const CHECK_AGAIN: &str = "Check again";
-pub const STEAM_OPTION_LEAD: &str = "Steam must start this game through Rivet for mods to load. Paste this line into the game's launch options in Steam, under Properties:";
+pub const STEAM_OPTION_LEAD: &str = "Mods load only when Steam's launch options for this game hold this line. Paste it into the game's launch options in Steam, under Properties:";
 pub const STEAM_OPTION_CHECKING: &str = "Checking Steam's launch options";
 pub const STEAM_OPTION_NOT_SET: &str = "Steam's saved launch options do not have this line. Steam saves them when it closes, so after pasting it, restart Steam. Rivet checks again when you come back to it, or press Check again.";
 
