@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use gpui_kit::component::Theme;
 use gpui_kit::{AppContext as _, WindowOptions};
 use reqwest_client::ReqwestClient;

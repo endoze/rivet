@@ -75,9 +75,10 @@
             scp -P "$port" "''${opts[@]}" target/${windowsTarget}/release/rivet.exe "$host:Desktop/rivet.exe"
 
             # A program started over SSH gets no window, so a scheduled task
-            # starts it in the desktop session instead.
+            # starts it in the desktop session instead. cmd captures Rivet's
+            # output, and a headless conhost keeps cmd's console off screen.
             ssh -p "$port" "''${opts[@]}" "$host" \
-              'schtasks /create /tn rivet /tr "cmd /c set RUST_BACKTRACE=1&& cd /d %USERPROFILE%\Desktop&& rivet.exe > %USERPROFILE%\rivet.log 2>&1" /sc once /st 23:59 /it /f && schtasks /run /tn rivet' >/dev/null
+              'schtasks /create /tn rivet /tr "conhost --headless cmd /c set RUST_BACKTRACE=1&& cd /d %USERPROFILE%\Desktop&& rivet.exe > %USERPROFILE%\rivet.log 2>&1" /sc once /st 23:59 /it /f && schtasks /run /tn rivet' >/dev/null
 
             sleep 5
 
