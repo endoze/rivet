@@ -308,8 +308,8 @@ pub async fn run(
 
       Msg::OperationFinished { operation, outcome }
     }
-    Command::FindR2modmanProfiles { game, folder } => Msg::R2modmanFound {
-      profiles: portability::find_r2modman_profiles(config, &folder).await,
+    Command::FindR2modmanProfiles { game, folders } => Msg::R2modmanFound {
+      profiles: portability::find_r2modman_profiles(config, folders).await,
       game,
     },
   };

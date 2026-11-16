@@ -77,11 +77,11 @@ pub(crate) async fn read_shared(
 }
 
 /// The profiles r2modman holds in each of its data folders for the game it
-/// files under `folder`.
-pub(crate) async fn find_r2modman_profiles(config: &Config, folder: &str) -> Vec<Found> {
-  let (data, folder) = (config.r2modman.clone(), folder.to_string());
+/// files under each of `folders`.
+pub(crate) async fn find_r2modman_profiles(config: &Config, folders: Vec<String>) -> Vec<Found> {
+  let data = config.r2modman.clone();
 
-  tokio::task::spawn_blocking(move || rivet_platform::r2modman::profiles(&data, &folder))
+  tokio::task::spawn_blocking(move || rivet_platform::r2modman::profiles(&data, &folders))
     .await
     .unwrap_or_default()
     .into_iter()
@@ -779,7 +779,7 @@ mods:
     let answer = run_now(
       Command::FindR2modmanProfiles {
         game: "valheim".to_string(),
-        folder: "Valheim".to_string(),
+        folders: vec!["Valheim".to_string()],
       },
       &config,
     );

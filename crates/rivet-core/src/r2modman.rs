@@ -229,14 +229,21 @@ pub(crate) fn listed(state: &mut State, game: &str) -> Vec<Effect> {
     return Vec::new();
   }
 
-  let folder = state
+  let folders: Vec<String> = state
     .ecosystem
     .game(game)
-    .and_then(|definition| definition.profile())
-    .and_then(|profile| profile.settings_identifier.clone());
-  let Some(folder) = folder else {
+    .map(|definition| {
+      definition
+        .r2modman_folders()
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    })
+    .unwrap_or_default();
+
+  if folders.is_empty() {
     return Vec::new();
-  };
+  }
 
   state.r2modman = Some(R2modman {
     game: game.to_string(),
@@ -247,7 +254,7 @@ pub(crate) fn listed(state: &mut State, game: &str) -> Vec<Effect> {
 
   vec![Effect::Run(Command::FindR2modmanProfiles {
     game: game.to_string(),
-    folder,
+    folders,
   })]
 }
 
@@ -283,14 +290,15 @@ mod tests {
   use crate::portability::{Import, SharedPackage};
   use crate::settings::{GameSettings, Settings};
   use crate::{Msg, test_ecosystem, test_installed, update};
+  use thunderstore_engine::ecosystem::Ecosystem;
 
-  /// A state with valheim open on its Default profile and its package list
-  /// loaded, before its profiles are listed.
-  fn opened() -> State {
-    let mut state = State::new(test_ecosystem());
+  /// A state with `game` of `ecosystem` open on its Default profile, before
+  /// its profiles are listed.
+  fn opened_in(ecosystem: Ecosystem, game: &str) -> State {
+    let mut state = State::new(ecosystem);
     let settings = Settings {
-      last_game: Some("valheim".to_string()),
-      games: [("valheim".to_string(), GameSettings::new("/games/valheim"))].into(),
+      last_game: Some(game.to_string()),
+      games: [(game.to_string(), GameSettings::new("/games/game"))].into(),
       ..Settings::default()
     };
 
@@ -299,7 +307,7 @@ mod tests {
     update(
       &mut state,
       Msg::ProfileOpened {
-        game: "valheim".to_string(),
+        game: game.to_string(),
         profile: DEFAULT_PROFILE.to_string(),
         installed: Ok(test_installed(&[])),
       },
@@ -308,21 +316,35 @@ mod tests {
     state
   }
 
-  fn list_profiles(state: &mut State) -> Vec<Effect> {
+  /// A state with valheim open on its Default profile, before its profiles
+  /// are listed.
+  fn opened() -> State {
+    opened_in(test_ecosystem(), "valheim")
+  }
+
+  fn list_profiles_of(state: &mut State, game: &str) -> Vec<Effect> {
     update(
       state,
       Msg::ProfilesListed {
-        game: "valheim".to_string(),
+        game: game.to_string(),
         names: Ok(vec![DEFAULT_PROFILE.to_string()]),
       },
     )
   }
 
-  fn find() -> Effect {
+  fn list_profiles(state: &mut State) -> Vec<Effect> {
+    list_profiles_of(state, "valheim")
+  }
+
+  fn find_in(game: &str, folders: &[&str]) -> Effect {
     Effect::Run(Command::FindR2modmanProfiles {
-      game: "valheim".to_string(),
-      folder: "Valheim".to_string(),
+      game: game.to_string(),
+      folders: folders.iter().map(|folder| folder.to_string()).collect(),
     })
+  }
+
+  fn find() -> Effect {
+    find_in("valheim", &["Valheim"])
   }
 
   #[test]
@@ -331,6 +353,55 @@ mod tests {
 
     assert_eq!(list_profiles(&mut state), vec![find()]);
     assert_eq!(list_profiles(&mut state), vec![]);
+  }
+
+  /// The effects of listing `game`'s profiles once it opens, with the
+  /// bundled game definitions.
+  fn listed_bundled(game: &str) -> Vec<Effect> {
+    let mut state = opened_in(Ecosystem::bundled(), game);
+
+    list_profiles_of(&mut state, game)
+  }
+
+  #[test]
+  fn r2modman_profiles_are_looked_for_in_the_folder_r2modman_files_the_game_under() {
+    let games = [
+      ("disco-elysium", "DiscoElysium"),
+      ("enter-the-gungeon", "ETG"),
+      ("i-am-your-beast", "IAmYourBeast"),
+      ("old-market-simulator", "OldMarketSimulator"),
+      ("peaks-of-yore", "PeaksOfYore"),
+      ("tcg-card-shop-simulator", "TCGCardShopSimulator"),
+      ("totally-accurate-battle-simulator", "TABS"),
+    ];
+
+    for (game, folder) in games {
+      assert_eq!(
+        listed_bundled(game),
+        vec![find_in(game, &[folder])],
+        "{game}"
+      );
+    }
+  }
+
+  #[test]
+  fn r2modman_profiles_are_looked_for_in_each_editions_folder() {
+    assert_eq!(
+      listed_bundled("outward"),
+      vec![find_in("outward", &["Outward", "OutwardDe"])]
+    );
+  }
+
+  #[test]
+  fn a_dedicated_servers_profiles_are_looked_for_with_the_games_own() {
+    assert_eq!(
+      listed_bundled("valheim"),
+      vec![find_in("valheim", &["Valheim"])]
+    );
+    assert_eq!(
+      listed_bundled("riskofrain2"),
+      vec![find_in("riskofrain2", &["RiskOfRain2"])]
+    );
   }
 
   fn found(name: &str) -> Found {

@@ -533,9 +533,9 @@ pub enum Command {
   /// Answered with any number of [`Msg::OperationProgress`], then
   /// [`Msg::OperationFinished`].
   Import(portability::Import),
-  /// Find the profiles r2modman holds for `game`, which it files under
-  /// `folder`, changing nothing. Answered with [`Msg::R2modmanFound`].
-  FindR2modmanProfiles { game: String, folder: String },
+  /// Find the profiles r2modman holds for `game`, which it files under each
+  /// of `folders`, changing nothing. Answered with [`Msg::R2modmanFound`].
+  FindR2modmanProfiles { game: String, folders: Vec<String> },
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -974,9 +974,15 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
               "gameInstanceType": "game",
               "exeNames": ["valheim.exe", "valheim.x86_64"],
               "settingsIdentifier": "Valheim",
+              "internalFolderName": "Valheim",
               "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
             },
-            { "gameInstanceType": "server", "exeNames": ["valheim_server.exe"] }
+            {
+              "gameInstanceType": "server",
+              "exeNames": ["valheim_server.exe"],
+              "settingsIdentifier": "ValheimServer",
+              "internalFolderName": "Valheim"
+            }
           ]
         },
         "riskofrain2": {
