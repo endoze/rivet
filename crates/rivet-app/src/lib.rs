@@ -6,13 +6,14 @@ pub mod assets;
 mod icons;
 mod modal;
 pub mod palette;
+mod segmented;
 pub mod text;
 pub mod theme;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::avatar::Avatar;
-use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -20,7 +21,6 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::tab::{Tab as Segment, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
@@ -52,6 +52,7 @@ use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
+use segmented::{Segment, Segmented};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -737,13 +738,15 @@ impl Shell {
           .child(text::LAUNCH_ARGUMENTS_HINT),
       );
     let chosen = state.settings.runtime(game);
-    let runtime_button = |id: &'static str, title: &'static str, choice: RuntimeChoice| {
-      Button::new(id)
-        .label(title)
-        .selected(chosen == choice)
-        .on_click(cx.listener(move |this, _, _, cx| {
+    let runtime_segment = |id: &'static str, title: &'static str, choice: RuntimeChoice| {
+      Segment::new(
+        id,
+        title,
+        chosen == choice,
+        cx.listener(move |this, _, _, cx| {
           this.dispatch(Msg::RuntimeChosen(choice), cx);
-        }))
+        }),
+      )
     };
     let runtime = (state.host == Some(HostOs::Linux)).then(|| {
       v_flex()
@@ -754,19 +757,18 @@ impl Shell {
             .items_center()
             .child(label(text::RUNS_WITH))
             .child(
-              ButtonGroup::new("runtime")
-                .small()
-                .child(runtime_button(
+              Segmented::new("runtime")
+                .child(runtime_segment(
                   "runtime-detect",
                   text::RUNTIME_DETECT,
                   RuntimeChoice::Detect,
                 ))
-                .child(runtime_button(
+                .child(runtime_segment(
                   "runtime-native",
                   text::RUNTIME_NATIVE,
                   RuntimeChoice::Native,
                 ))
-                .child(runtime_button(
+                .child(runtime_segment(
                   "runtime-proton",
                   text::RUNTIME_PROTON,
                   RuntimeChoice::Proton,
@@ -780,32 +782,33 @@ impl Shell {
             .child(text::RUNTIME_HINT),
         )
     });
-    let appearance_button = |id: &'static str, title: &'static str, choice: Appearance| {
-      Button::new(id)
-        .label(title)
-        .selected(state.settings.appearance == choice)
-        .on_click(cx.listener(move |this, _, _, cx| {
+    let appearance_segment = |id: &'static str, title: &'static str, choice: Appearance| {
+      Segment::new(
+        id,
+        title,
+        state.settings.appearance == choice,
+        cx.listener(move |this, _, _, cx| {
           this.dispatch(Msg::AppearanceChosen(choice), cx);
-        }))
+        }),
+      )
     };
     let appearance = h_flex()
       .gap_2()
       .items_center()
       .child(label(text::APPEARANCE))
       .child(
-        ButtonGroup::new("appearance")
-          .small()
-          .child(appearance_button(
+        Segmented::new("appearance")
+          .child(appearance_segment(
             "appearance-system",
             text::APPEARANCE_SYSTEM,
             Appearance::System,
           ))
-          .child(appearance_button(
+          .child(appearance_segment(
             "appearance-light",
             text::APPEARANCE_LIGHT,
             Appearance::Light,
           ))
-          .child(appearance_button(
+          .child(appearance_segment(
             "appearance-dark",
             text::APPEARANCE_DARK,
             Appearance::Dark,
@@ -925,7 +928,7 @@ impl Shell {
       .flex_none()
       .h(px(TOOLBAR_HEIGHT))
       .gap_3()
-      .child(self.render_views(&shell, cx))
+      .child(self.render_views(&shell))
       .child(
         div()
           .id(search_id)
@@ -958,8 +961,7 @@ impl Shell {
   /// their count once known, and Thunderstore's. The count keeps
   /// [`VIEW_COUNT_WIDTH`] while unknown and whatever its digits, so the
   /// controls after it stay put when profiles switch or mods are added.
-  fn render_views(&self, shell: &WeakEntity<Self>, cx: &mut Context<Self>) -> TabBar {
-    let palette = Palette::new(cx);
+  fn render_views(&self, shell: &WeakEntity<Self>) -> Segmented {
     let state = &self.state;
     let count = state
       .profile
@@ -972,51 +974,21 @@ impl Shell {
           .child(count.to_string())
           .test_support()
       });
-    let count = div()
-      .w(px(VIEW_COUNT_WIDTH))
-      .tabular()
-      .text_color(palette.muted_text)
-      .children(count);
-    let selected = match state.tab {
-      Tab::Installed => 0,
-      Tab::Browse => 1,
-    };
-    let shell = shell.clone();
+    let count = div().w(px(VIEW_COUNT_WIDTH)).tabular().children(count);
 
-    TabBar::new("views")
-      .segmented()
-      .small()
-      .flex_none()
-      .selected_index(selected)
-      .child(
-        Segment::new().child(
-          h_flex()
-            .id("tab-installed")
-            .gap_1p5()
-            .child(text::TAB_INSTALLED)
-            .child(count)
-            .test_support(),
-        ),
-      )
-      .child(
-        Segment::new().child(
-          div()
-            .id("tab-browse")
-            .child(text::TAB_BROWSE)
-            .test_support(),
-        ),
-      )
-      .on_click(move |index, _, cx| {
-        let tab = if *index == 0 {
-          Tab::Installed
-        } else {
-          Tab::Browse
-        };
-
-        shell
-          .update(cx, |this, cx| this.dispatch(Msg::TabChosen(tab), cx))
-          .ok();
-      })
+    Segmented::new("views")
+      .child(Segment::new(
+        "tab-installed",
+        h_flex().gap_1p5().child(text::TAB_INSTALLED).child(count),
+        state.tab == Tab::Installed,
+        send(shell, Msg::TabChosen(Tab::Installed)),
+      ))
+      .child(Segment::new(
+        "tab-browse",
+        text::TAB_BROWSE,
+        state.tab == Tab::Browse,
+        send(shell, Msg::TabChosen(Tab::Browse)),
+      ))
   }
 
   /// The profile view's actions: updating every mod an update would change,

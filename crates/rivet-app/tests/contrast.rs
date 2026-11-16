@@ -28,11 +28,22 @@ fn every_text_is_readable_in_the_dark_theme(cx: &mut TestAppContext) {
   assert_readable(cx, ThemeMode::Dark);
 }
 
+#[gpui_kit::test]
+fn the_selected_segment_stands_out_in_the_light_theme(cx: &mut TestAppContext) {
+  assert_selected_segment_stands_out(cx, ThemeMode::Light);
+}
+
+#[gpui_kit::test]
+fn the_selected_segment_stands_out_in_the_dark_theme(cx: &mut TestAppContext) {
+  assert_selected_segment_stands_out(cx, ThemeMode::Dark);
+}
+
 #[test]
 fn the_shell_paints_only_palette_colors() {
   let sources = [
     ("lib.rs", include_str!("../src/lib.rs")),
     ("icons.rs", include_str!("../src/icons.rs")),
+    ("segmented.rs", include_str!("../src/segmented.rs")),
     ("text.rs", include_str!("../src/text.rs")),
   ];
 
@@ -43,6 +54,52 @@ fn the_shell_paints_only_palette_colors() {
         "{file} builds a color with {literal}), so it can leave the theme; add it to the palette"
       );
     }
+  }
+}
+
+/// Asserts the ticket's rule for a segmented control: the selected
+/// segment's indicator is at least [`NON_TEXT`] on the unselected background
+/// and on the selected fill, its label is the full text color, and every
+/// label is readable on what it sits on.
+fn assert_selected_segment_stands_out(cx: &mut TestAppContext, mode: ThemeMode) {
+  cx.update(gpui_kit::init);
+  cx.update(rivet_app::theme::init);
+  cx.update(|cx| Theme::change(mode, None, cx));
+
+  let palette = cx.update(|cx| Palette::new(cx));
+  let segments = palette.segments;
+
+  for (name, background) in [
+    ("the unselected segments", segments.unselected),
+    ("the selected segment", segments.selected),
+  ] {
+    let ratio = contrast(segments.indicator, background);
+
+    assert!(
+      ratio >= NON_TEXT,
+      "{mode:?}: the selected segment's indicator is {ratio:.2}:1 on {name}, under {NON_TEXT}:1"
+    );
+  }
+
+  assert_eq!(
+    segments.selected_text, palette.text,
+    "{mode:?}: the selected segment's label is not the full text color"
+  );
+  assert_ne!(
+    segments.unselected_text, segments.selected_text,
+    "{mode:?}: the unselected segments' labels look selected"
+  );
+
+  for (name, text, background) in [
+    ("selected", segments.selected_text, segments.selected),
+    ("unselected", segments.unselected_text, segments.unselected),
+  ] {
+    let ratio = contrast(text, background);
+
+    assert!(
+      ratio >= AA,
+      "{mode:?}: a {name} segment's label is {ratio:.2}:1, under {AA}:1"
+    );
   }
 }
 

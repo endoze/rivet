@@ -51,6 +51,23 @@ pub struct Palette {
   pub tag_missing: Hsla,
   /// The text and outline of the mod loader's tag.
   pub tag_loader: Hsla,
+  /// The colors of a segmented control.
+  pub segments: Segments,
+}
+
+/// The colors of a segmented control, so the selected segment stands out.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Segments {
+  /// The background of the control and of every unselected segment.
+  pub unselected: Hsla,
+  /// The label of an unselected segment.
+  pub unselected_text: Hsla,
+  /// The fill of the selected segment.
+  pub selected: Hsla,
+  /// The label of the selected segment: the full text color.
+  pub selected_text: Hsla,
+  /// The bar under the selected segment.
+  pub indicator: Hsla,
 }
 
 impl Palette {
@@ -62,7 +79,11 @@ impl Palette {
   /// `danger_text` is the theme's danger color moved as far as it takes to
   /// reach WCAG AA on a menu. The tag colors are the theme's info, warning,
   /// danger, and primary colors, each moved as far as it takes to reach WCAG
-  /// AA on a row at rest, hovered, or selected, and on the panel.
+  /// AA on a row at rest, hovered, or selected, and on the panel. A
+  /// segmented control sits on the launch option line's color, its selected
+  /// segment tinted like the selected row and underlined in the theme's info
+  /// color, moved as far as it takes to reach the WCAG AA contrast for
+  /// outlines on both.
   pub fn new(cx: &App) -> Self {
     let theme = cx.theme();
     let background = theme.background;
@@ -87,6 +108,14 @@ impl Palette {
         &[background, panel, row_hover, row_selected],
       )
     };
+    let segment = code.blend(theme.list_active);
+    let segments = Segments {
+      unselected: code,
+      unselected_text: muted_text,
+      selected: segment,
+      selected_text: text,
+      indicator: reaching(NON_TEXT, code.blend(theme.info), text, &[code, segment]),
+    };
 
     Self {
       text,
@@ -108,6 +137,7 @@ impl Palette {
       tag_deprecated: tag(theme.warning),
       tag_missing: tag(theme.danger),
       tag_loader: tag(theme.primary),
+      segments,
     }
   }
 }
