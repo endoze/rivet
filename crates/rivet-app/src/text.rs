@@ -315,6 +315,46 @@ pub const DISABLE_ALL: &str = "Disable all";
 pub const UPDATE: &str = "Update";
 pub const UPDATE_ALL: &str = "Update all";
 pub const DEPRECATED: &str = "Deprecated";
+pub const PINNED: &str = "Pinned";
+pub const UNPIN: &str = "Unpin";
+pub const CHOOSE_VERSION: &str = "Version…";
+pub const VERSION: &str = "Version";
+pub const PIN_HINT: &str =
+  "A version you choose is pinned, so updates leave it alone until you unpin it.";
+
+/// The version menu's entry for the latest version, such as `Latest
+/// (2.0.0)`.
+pub fn latest_version(version: &str) -> String {
+  format!("Latest ({version})")
+}
+
+/// What Update all left alone for being pinned.
+///
+/// ```
+/// use rivet_app::text::pinned_skipped;
+///
+/// assert_eq!(pinned_skipped(1), "Left 1 pinned mod as it is");
+/// assert_eq!(pinned_skipped(2), "Left 2 pinned mods as they are");
+/// ```
+pub fn pinned_skipped(count: usize) -> String {
+  match count {
+    1 => "Left 1 pinned mod as it is".to_string(),
+    count => format!("Left {count} pinned mods as they are"),
+  }
+}
+
+pub const UNPIN_TO_UPDATE: &str = "Unpin a mod to update it.";
+
+/// A mod that could not be unpinned, such as `Owner-Mod could not be
+/// unpinned`.
+pub fn unpin_failed(package: &str) -> String {
+  format!("{package} could not be unpinned")
+}
+
+pub const PINS_UNREAD: &str = "This profile's pins could not be read";
+
+pub const PINS_UNREAD_NEXT: &str =
+  "Mods show as unpinned and can be updated until the pin file is fixed or deleted.";
 
 /// The badge of an installed mod with a newer version, such as `1.2.0
 /// available`.
@@ -936,6 +976,18 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       changed,
       failed,
     } => loader_files_removed(&game_name(game), changed, failed),
+    Notice::PinnedSkipped(count) => Told {
+      title: pinned_skipped(*count),
+      detail: vec![UNPIN_TO_UPDATE.to_string()],
+    },
+    Notice::UnpinFailed { package, reason } => Told {
+      title: unpin_failed(package),
+      detail: vec![reason.clone(), CHECK_DATA_FOLDER.to_string()],
+    },
+    Notice::PinsUnread(reason) => Told {
+      title: PINS_UNREAD.to_string(),
+      detail: vec![reason.clone(), PINS_UNREAD_NEXT.to_string()],
+    },
   }
 }
 

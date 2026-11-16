@@ -6,11 +6,13 @@ use crate::{Shell, failure, send, text};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{Disableable as _, WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
   AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-  ParentElement as _, SharedString, Styled as _, TestSupportExt as _, WeakEntity, Window, div,
+  ParentElement as _, SharedString, Styled as _, TestSupportExt as _, WeakEntity, Window, div, px,
 };
+use rivet_core::install::Confirmation;
 use rivet_core::manage::{Folders, Pending, Scope};
 use rivet_core::portability::{Importing, Source};
 use rivet_core::queue::{CloseChoice, Closing};
@@ -352,8 +354,9 @@ fn deleting(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) 
   }
 }
 
-/// The modal asking to confirm an install: the package, what comes with it,
-/// and any dependencies the index lacks, which keep it from going ahead.
+/// The modal asking to confirm an install: the version to install, the
+/// package, what comes with it, and any dependencies the index lacks, which
+/// keep it from going ahead.
 fn installing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
   move |dialog, _, cx| {
     let confirmation = shell
@@ -363,6 +366,22 @@ fn installing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App
       return dialog;
     };
     let palette = Palette::new(cx);
+    let version = v_flex()
+      .gap_1()
+      .child(
+        h_flex()
+          .gap_2()
+          .items_center()
+          .child(text::VERSION)
+          .child(version_menu(&shell, &confirmation)),
+      )
+      .child(
+        div()
+          .text_sm()
+          .text_color(palette.muted_text)
+          .child(text::PIN_HINT),
+      )
+      .into_any_element();
     let dependencies = confirmation.dependencies.iter().map(|package| {
       div()
         .pl_3()
@@ -381,7 +400,8 @@ fn installing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App
     let frame = Frame {
       title: text::confirm_install(&confirmation.package),
       id: "install-dialog",
-      body: std::iter::once(lead.into_any_element())
+      body: [version, lead.into_any_element()]
+        .into_iter()
         .chain(dependencies)
         .chain(missing)
         .collect(),
@@ -402,6 +422,55 @@ fn installing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App
     frame.fill(dialog, &shell)
   }
 }
+
+/// The version the install modal will install, opening a menu of the latest
+/// and every published version, most recent first, with the chosen one
+/// checked.
+fn version_menu(shell: &WeakEntity<Shell>, confirmation: &Confirmation) -> impl IntoElement {
+  let latest = text::latest_version(confirmation.versions.first().map_or("", String::as_str));
+  let label = confirmation
+    .chosen
+    .clone()
+    .unwrap_or_else(|| latest.clone());
+  let choices: Vec<(Option<String>, String)> = std::iter::once((None, latest))
+    .chain(
+      confirmation
+        .versions
+        .iter()
+        .map(|version| (Some(version.clone()), version.clone())),
+    )
+    .collect();
+  let chosen = confirmation.chosen.clone();
+  let shell = shell.clone();
+
+  Button::new("install-version")
+    .label(label)
+    .small()
+    .dropdown_caret(true)
+    .dropdown_menu(move |menu: PopupMenu, _, _| {
+      choices.iter().fold(
+        menu.scrollable(true).max_h(px(VERSION_MENU_HEIGHT)),
+        |menu, (version, label)| {
+          let id = SharedString::from(format!(
+            "version-{}",
+            version.as_deref().unwrap_or("latest")
+          ));
+          let label = label.clone();
+
+          menu.item(
+            PopupMenuItem::element(move |_, _| {
+              div().id(id.clone()).child(label.clone()).test_support()
+            })
+            .checked(*version == chosen)
+            .on_click(send(&shell, Msg::VersionChosen(version.clone()))),
+          )
+        },
+      )
+    })
+}
+
+/// Tall enough for about ten versions; a package with more scrolls.
+const VERSION_MENU_HEIGHT: f32 = 320.0;
 
 /// The modal asking about an uninstall or disable in the Installed tab. Its
 /// content follows the question as it changes, so choosing to take the
@@ -570,6 +639,8 @@ mod tests {
       },
       dependencies: vec![],
       missing: vec![],
+      versions: vec!["1.0.0".to_string()],
+      chosen: None,
     });
 
     state

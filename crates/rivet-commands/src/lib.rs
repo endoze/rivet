@@ -13,6 +13,7 @@ use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
 use rivet_core::loader_files::{Copied, FileRemoval, LoaderFile};
 use rivet_core::manage::{SetEnabled, Uninstall};
 use rivet_core::picker::NotFound;
+use rivet_core::pins::{self, Pins, Unpin};
 use rivet_core::readme;
 use rivet_core::settings::Settings;
 use rivet_core::switcher::ProfileChange;
@@ -160,7 +161,7 @@ pub async fn run(
       }
     }
     Command::OpenProfile { game, profile } => {
-      let installed = open_profile(config, &game, &profile).await;
+      let installed = open_profile(config, &game, &profile, progress).await;
 
       Msg::ProfileOpened {
         game,
@@ -190,6 +191,10 @@ pub async fn run(
         outcome: outcome.map_err(|error| error.to_string()),
       }
     }
+    Command::Unpin(unpin) => Msg::Unpinned {
+      result: unpin_package(config, &unpin).await,
+      unpin,
+    },
     Command::CheckUninstall {
       game,
       profile,
@@ -492,32 +497,49 @@ async fn read_steam_option(
   .map_err(|error| error.to_string())?
 }
 
-/// Reads `game`'s `name` profile, creating it first if it does not exist.
-async fn open_profile(config: &Config, game: &str, name: &str) -> Result<Installed, String> {
+/// Reads `game`'s `name` profile, creating it first if it does not exist. A
+/// pin file that cannot be read leaves every package unpinned, and why goes
+/// to `progress` as [`Msg::PinsUnread`].
+async fn open_profile(
+  config: &Config,
+  game: &str,
+  name: &str,
+  progress: &UnboundedSender<Msg>,
+) -> Result<Installed, String> {
   let (data, game, name) = (config.data.clone(), game.to_string(), name.to_string());
-
-  tokio::task::spawn_blocking(move || {
+  let (installed, unread) = tokio::task::spawn_blocking(move || {
     let folder = layout::profile_dir(&data, &game, &name);
 
     if !folder.is_dir() {
       layout::create(&data, &game, &name)?;
     }
 
-    modlist::read(&folder).map(|recorded| installed(&recorded))
+    Ok(read_profile(&folder))
   })
   .await
   .map_err(|error| error.to_string())?
-  .map_err(|error| error.to_string())
+  .map_err(|error: thunderstore_engine::Error| error.to_string())??;
+
+  if let Some(reason) = unread {
+    progress.unbounded_send(Msg::PinsUnread(reason)).ok();
+  }
+
+  Ok(installed)
 }
 
 /// Installs `install.package` and everything it needs, enabling it if it was
-/// disabled.
+/// disabled. A chosen version is installed exactly and pinned; otherwise the
+/// latest is installed and the package unpinned.
 async fn install_package(
   config: &Config,
   install: Install,
   progress: UnboundedSender<Msg>,
 ) -> thunderstore_engine::Result<Outcome> {
-  let requested = [install.package.clone()];
+  let named = [install.package.clone()];
+  let requested = match &install.version {
+    Some(version) => [format!("{}-{version}", install.package)],
+    None => named.clone(),
+  };
   let batch = Batch {
     operation: install.operation,
     game: &install.game,
@@ -525,7 +547,9 @@ async fn install_package(
     profile: &install.profile,
     index: &install.index,
     desired: &requested,
-    explicit: &requested,
+    explicit: &named,
+    changing: &named,
+    chosen: Some((&install.package, install.version.as_deref())),
   };
 
   install_batch(config, batch, progress).await
@@ -546,6 +570,8 @@ async fn update_packages(
     index: &update.index,
     desired: &update.packages,
     explicit: &[],
+    changing: &update.packages,
+    chosen: None,
   };
 
   install_batch(config, batch, progress).await
@@ -563,20 +589,35 @@ struct Batch<'a> {
   /// The packages the user asked to have active. Any other package keeps its
   /// disabled state.
   explicit: &'a [String],
+  /// The packages the batch is for, by `Owner-Name`. Every other pinned
+  /// package is held where it is.
+  changing: &'a [String],
+  /// The package the user asked to install, with the version they chose, or
+  /// `None` for the latest. `None` for a batch that changes no pin.
+  chosen: Option<(&'a str, Option<&'a str>)>,
 }
 
-/// Installs `batch`, sending its progress to `progress` and stopping when the
-/// operation is cancelled. An error means nothing was installed. When the
-/// profile's record cannot be read back after the install, the outcome names
-/// what the install reported installing, with the read failure as its
-/// profile.
+/// Installs `batch`, holding the profile's other pinned packages where they
+/// are, sending its progress to `progress` and stopping when the operation is
+/// cancelled. An error means nothing was installed. When the profile's record
+/// cannot be read back after the install, the outcome names what the install
+/// reported installing, with the read failure as its profile.
 async fn install_batch(
   config: &Config,
   batch: Batch<'_>,
   progress: UnboundedSender<Msg>,
 ) -> thunderstore_engine::Result<Outcome> {
   let folder = layout::profile_dir(&config.data, batch.game, batch.profile);
-  let before = modlist::read(&folder)?;
+  let recorded = modlist::read(&folder)?;
+  // An unreadable pin file is named in the outcome once settle_pins reads it
+  // again, so it is not told twice.
+  let (before, _) = read_profile(&folder).map_err(thunderstore_engine::Error::Profile)?;
+  let desired: Vec<String> = batch
+    .desired
+    .iter()
+    .cloned()
+    .chain(pins::held(&before, batch.index, batch.changing))
+    .collect();
   let client = client(config, batch.community)?;
   let operation = operation(config, batch.operation, progress);
   let outcome = profile::install_batch_with(
@@ -586,15 +627,23 @@ async fn install_batch(
     &batch.index.0,
     &client,
     batch.game,
-    &profile::plan_install_batch_from(&before, batch.desired, batch.explicit),
+    &profile::plan_install_batch_from(&recorded, &desired, batch.explicit),
     modlist::now_millis(),
     &operation,
   )
   .await?;
-  let before = installed(&before);
+  let went_through = outcome.is_ok();
+  let mut failed: Vec<FailedPackage> = outcome
+    .failed
+    .into_iter()
+    .map(|(package, error)| FailedPackage {
+      package,
+      reason: error.to_string(),
+    })
+    .collect();
   let (changed, after) = match modlist::read(&folder) {
     Ok(after) => {
-      let after = installed(&after);
+      let mut after = installed(&after);
       let changed = after
         .iter()
         .filter(|(name, package)| {
@@ -604,6 +653,9 @@ async fn install_batch(
         })
         .map(|(name, _)| name.clone())
         .collect();
+      let chosen = batch.chosen.filter(|_| went_through);
+
+      failed.extend(settle_pins(&folder, &mut after, chosen));
 
       (changed, Ok(after))
     }
@@ -612,17 +664,126 @@ async fn install_batch(
 
   Ok(Outcome {
     changed,
-    failed: outcome
-      .failed
-      .into_iter()
-      .map(|(package, error)| FailedPackage {
-        package,
-        reason: error.to_string(),
-      })
-      .collect(),
+    failed,
     cancelled: outcome.cancelled,
     profile: after,
   })
+}
+
+/// The pin file of the profile in `folder`. It sits in a folder of its own,
+/// since files at the top of a profile are copied into the game's folder at
+/// launch.
+fn pin_file(folder: &Path) -> PathBuf {
+  app_folder(folder).join("pins.toml")
+}
+
+/// The folder of the app's own files in the profile in `folder`, such as its
+/// pin file.
+fn app_folder(folder: &Path) -> PathBuf {
+  folder.join(".rivet")
+}
+
+/// The pins of the profile in `folder`. A profile without a pin file has
+/// none.
+fn read_pins(folder: &Path) -> Result<Pins, String> {
+  let file = pin_file(folder);
+
+  match std::fs::read_to_string(&file) {
+    Ok(text) => toml::from_str(&text).map_err(|error| failure(&file, error)),
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Pins::default()),
+    Err(error) => Err(failure(&file, error)),
+  }
+}
+
+/// Writes `pins` as the pin file of the profile in `folder`.
+fn write_pins(folder: &Path, pins: &Pins) -> Result<(), String> {
+  let file = pin_file(folder);
+  let text = toml::to_string(pins).map_err(|error| failure(&file, error))?;
+  let partial = file.with_extension("toml.partial");
+
+  if let Some(parent) = file.parent() {
+    std::fs::create_dir_all(parent).map_err(|error| failure(parent, error))?;
+  }
+
+  // Written aside and renamed over the old file, so a crash mid-write leaves
+  // the previous pins intact.
+  std::fs::write(&partial, text).map_err(|error| failure(&partial, error))?;
+
+  std::fs::rename(&partial, &file).map_err(|error| failure(&file, error))
+}
+
+/// The packages recorded in the profile in `folder`, marked pinned as its pin
+/// file says, with why the pin file could not be read when it cannot, which
+/// leaves no package marked.
+fn read_profile(folder: &Path) -> Result<(Installed, Option<String>), String> {
+  let recorded = modlist::read(folder).map_err(|error| error.to_string())?;
+  let mut packages = installed(&recorded);
+  let unread = match read_pins(folder) {
+    Ok(pins) => {
+      pins.mark(&mut packages);
+
+      None
+    }
+    Err(reason) => Some(reason),
+  };
+
+  Ok((packages, unread))
+}
+
+/// Brings the pin file of the profile in `folder` in line with `after`, the
+/// profile once a change went through, and marks `after`'s pinned packages.
+/// `chosen` is an install that went through, which pins or unpins the package
+/// it was for. A pin file that cannot be read or written is named with the
+/// reason, and leaves no package marked.
+fn settle_pins(
+  folder: &Path,
+  after: &mut Installed,
+  chosen: Option<(&str, Option<&str>)>,
+) -> Option<FailedPackage> {
+  let settled = read_pins(folder).and_then(|mut pins| {
+    let earlier = pins.clone();
+
+    match chosen {
+      Some((package, version)) => pins.installed(package, version, after),
+      None => pins.keep_installed(after),
+    }
+
+    if pins != earlier {
+      write_pins(folder, &pins)?;
+    }
+
+    Ok(pins)
+  });
+
+  match settled {
+    Ok(pins) => {
+      pins.mark(after);
+
+      None
+    }
+    Err(reason) => Some(FailedPackage {
+      package: pin_file(folder).display().to_string(),
+      reason,
+    }),
+  }
+}
+
+/// Removes `unpin.package`'s pin from its profile's pin file.
+async fn unpin_package(config: &Config, unpin: &Unpin) -> Result<(), String> {
+  let folder = layout::profile_dir(&config.data, &unpin.game, &unpin.profile);
+  let package = unpin.package.clone();
+
+  tokio::task::spawn_blocking(move || {
+    let mut pins = read_pins(&folder)?;
+
+    if pins.pins.remove(&package).is_some() {
+      write_pins(&folder, &pins)?;
+    }
+
+    Ok(())
+  })
+  .await
+  .map_err(|error| error.to_string())?
 }
 
 /// The folders no package records in `game`'s `name` profile, which
@@ -711,26 +872,33 @@ async fn set_enabled(
   .map_err(|error: thunderstore_engine::Error| error.to_string())
 }
 
-/// What a batch did to the profile in `folder`, with the profile read back.
+/// What a batch did to the profile in `folder`, with the profile read back
+/// and the pins of packages it moved or removed dropped.
 fn batch_outcome(folder: &Path, outcome: profile::BatchOutcome) -> Outcome {
   let mut changed = outcome.succeeded;
+  let mut failed: Vec<FailedPackage> = outcome
+    .failed
+    .into_iter()
+    .map(|(package, error)| FailedPackage {
+      package,
+      reason: error.to_string(),
+    })
+    .collect();
+  let mut profile = modlist::read(folder)
+    .map(|recorded| installed(&recorded))
+    .map_err(|error| error.to_string());
 
   changed.sort();
 
+  if let Ok(after) = &mut profile {
+    failed.extend(settle_pins(folder, after, None));
+  }
+
   Outcome {
     changed,
-    failed: outcome
-      .failed
-      .into_iter()
-      .map(|(package, error)| FailedPackage {
-        package,
-        reason: error.to_string(),
-      })
-      .collect(),
+    failed,
     cancelled: outcome.cancelled,
-    profile: modlist::read(folder)
-      .map(|recorded| installed(&recorded))
-      .map_err(|error| error.to_string()),
+    profile,
   }
 }
 
@@ -796,6 +964,7 @@ fn installed(recorded: &[ProfileMod]) -> Installed {
           })
           .collect(),
         installed_at: entry.installed_at_time,
+        pinned: false,
       };
 
       (entry.name.clone(), package)
@@ -1312,12 +1481,18 @@ mod tests {
   }
 
   fn install(package: &str, index: &Index) -> Command {
+    install_at(package, None, index)
+  }
+
+  /// Installs `package` at `version`, or the latest when `None`.
+  pub(crate) fn install_at(package: &str, version: Option<&str>, index: &Index) -> Command {
     Command::Install(Install {
       operation: 3,
       game: "valheim".to_string(),
       community: "valheim".to_string(),
       profile: DEFAULT_PROFILE.to_string(),
       package: package.to_string(),
+      version: version.map(str::to_string),
       index: index.clone(),
     })
   }
@@ -1841,6 +2016,227 @@ mod tests {
       Ok(vec![("Owner-ModD".to_string(), "2.0.0".to_string(), false)])
     );
     assert!(stages_of(progress).contains(&("Owner-ModD".to_string(), Stage::Downloading)));
+  }
+
+  /// The outcome of operation 3.
+  fn installed_by(answer: Msg) -> Outcome {
+    match answer {
+      Msg::OperationFinished {
+        operation: 3,
+        outcome: Ok(outcome),
+      } => outcome,
+      other => panic!("unexpected answer {other:?}"),
+    }
+  }
+
+  /// Each package of `profile` as its `Owner-Name`, version, and whether it
+  /// is pinned.
+  fn pinned(profile: &Installed) -> Vec<(String, String, bool)> {
+    profile
+      .iter()
+      .map(|(name, package)| (name.clone(), package.version.clone(), package.pinned))
+      .collect()
+  }
+
+  fn pin(name: &str, version: &str, pinned: bool) -> (String, String, bool) {
+    (name.to_string(), version.to_string(), pinned)
+  }
+
+  /// The Default profile as reading it afresh finds it, as after a restart.
+  fn reopened(config: &Config) -> Installed {
+    match run_now(open_profile("valheim"), config) {
+      Msg::ProfileOpened {
+        installed: Ok(profile),
+        ..
+      } => profile,
+      other => panic!("unexpected answer {other:?}"),
+    }
+  }
+
+  /// The mock's package index with `Owner-ModC` needing `Owner-ModD` rather
+  /// than `Owner-ModA`, and without `Owner-ModD` 2.0.0 unless `with_d_2`.
+  fn index_with_c_needing_d(mock: &MockThunderstore, with_d_2: bool) -> Index {
+    let mut packages: Vec<serde_json::Value> =
+      serde_json::from_str(&index_json(&mock.url())).unwrap();
+
+    for package in &mut packages {
+      if package["full_name"] == "Owner-ModC" {
+        package["versions"][0]["dependencies"] = serde_json::json!(["Owner-ModD-1.0.0"]);
+      }
+
+      if package["full_name"] == "Owner-ModD" && !with_d_2 {
+        package["versions"]
+          .as_array_mut()
+          .unwrap()
+          .retain(|version| version["version_number"] == "1.0.0");
+      }
+    }
+
+    let packages: Vec<thunderstore_engine::models::Package> =
+      serde_json::from_value(serde_json::Value::Array(packages)).unwrap();
+
+    PackageIndex::from(packages).into()
+  }
+
+  fn unpin(package: &str) -> rivet_core::pins::Unpin {
+    rivet_core::pins::Unpin {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      package: package.to_string(),
+    }
+  }
+
+  #[test]
+  fn a_chosen_version_is_installed_and_pinned_outside_the_installed_packages_file() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+
+    run_now(open_profile("valheim"), &config);
+
+    let outcome = installed_by(run_now(
+      install_at("Owner-ModD", Some("1.0.0"), &index),
+      &config,
+    ));
+    let mods = std::fs::read_to_string(default_profile(&config).join("mods.yml")).unwrap();
+
+    assert_eq!(outcome.failed, vec![]);
+    assert_eq!(
+      outcome.profile.as_ref().map(pinned),
+      Ok(vec![pin("Owner-ModD", "1.0.0", true)])
+    );
+    assert_eq!(
+      pinned(&reopened(&config)),
+      [pin("Owner-ModD", "1.0.0", true)]
+    );
+    assert!(!mods.to_lowercase().contains("pin"), "{mods}");
+  }
+
+  #[test]
+  fn installing_the_latest_version_unpins_a_package() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install_at("Owner-ModD", Some("1.0.0"), &index), &config);
+
+    let outcome = installed_by(run_now(install("Owner-ModD", &index), &config));
+
+    assert_eq!(
+      outcome.profile.as_ref().map(pinned),
+      Ok(vec![pin("Owner-ModD", "2.0.0", false)])
+    );
+    assert_eq!(
+      pinned(&reopened(&config)),
+      [pin("Owner-ModD", "2.0.0", false)]
+    );
+  }
+
+  #[test]
+  fn an_unpinned_package_stays_unpinned_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install_at("Owner-ModD", Some("1.0.0"), &index), &config);
+
+    let answer = run_now(Command::Unpin(unpin("Owner-ModD")), &config);
+
+    assert_eq!(
+      answer,
+      Msg::Unpinned {
+        unpin: unpin("Owner-ModD"),
+        result: Ok(()),
+      }
+    );
+    assert_eq!(
+      pinned(&reopened(&config)),
+      [pin("Owner-ModD", "1.0.0", false)]
+    );
+  }
+
+  #[test]
+  fn installs_and_updates_hold_a_pinned_dependency_where_it_is() {
+    let dir = TempDir::new().unwrap();
+    let mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = index_with_c_needing_d(&mock, true);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install_at("Owner-ModD", Some("1.0.0"), &index), &config);
+
+    let installed = installed_by(run_now(install("Owner-ModC", &index), &config));
+    let updated = finished(run_now(update(&["Owner-ModC"], &index), &config));
+    let held = vec![
+      pin("Owner-ModC", "1.0.0", false),
+      pin("Owner-ModD", "1.0.0", true),
+    ];
+
+    assert_eq!(installed.failed, vec![]);
+    assert_eq!(installed.profile.as_ref().map(pinned), Ok(held.clone()));
+    assert_eq!(updated.failed, vec![]);
+    assert_eq!(updated.profile.as_ref().map(pinned), Ok(held));
+  }
+
+  #[test]
+  fn an_unreadable_pin_file_leaves_the_profile_unpinned_and_says_so() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+    let file = pin_file(&default_profile(&config));
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install_at("Owner-ModD", Some("1.0.0"), &index), &config);
+    std::fs::write(&file, "pins = [").unwrap();
+
+    let (along_the_way, answer) = run_reporting(open_profile("valheim"), &config);
+    let outcome = installed_by(run_now(install("Owner-ModC", &index), &config));
+    let named = |reason: &str| reason.starts_with(&file.display().to_string());
+
+    assert!(
+      matches!(&along_the_way[..], [Msg::PinsUnread(reason)] if named(reason)),
+      "{along_the_way:?}"
+    );
+    assert!(
+      matches!(&answer, Msg::ProfileOpened { installed: Ok(profile), .. }
+        if pinned(profile) == [pin("Owner-ModD", "1.0.0", false)]),
+      "{answer:?}"
+    );
+    assert_eq!(outcome.changed, names(&["Owner-ModA", "Owner-ModC"]));
+    assert!(
+      matches!(&outcome.failed[..], [failed] if failed.package == file.display().to_string()),
+      "{:?}",
+      outcome.failed
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "pins = [");
+  }
+
+  #[test]
+  fn a_pinned_package_uninstalled_then_brought_back_as_a_dependency_is_not_pinned() {
+    let dir = TempDir::new().unwrap();
+    let mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = index_with_c_needing_d(&mock, false);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install_at("Owner-ModD", Some("1.0.0"), &index), &config);
+    run_now(uninstall(&["Owner-ModD"], vec![]), &config);
+
+    let outcome = installed_by(run_now(install("Owner-ModC", &index), &config));
+
+    assert_eq!(
+      outcome.profile.as_ref().map(pinned),
+      Ok(vec![
+        pin("Owner-ModC", "1.0.0", false),
+        pin("Owner-ModD", "1.0.0", false),
+      ])
+    );
   }
 
   #[test]

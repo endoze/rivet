@@ -239,6 +239,7 @@ fn installed(full_name: &str, author: &str) -> (String, InstalledPackage) {
       enabled: true,
       dependencies: vec![],
       installed_at: 0,
+      pinned: false,
     },
   )
 }

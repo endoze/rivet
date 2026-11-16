@@ -1364,6 +1364,9 @@ fn installed_row(
           .as_deref()
           .map(|version| badge("update", Tag::info(), text::update_available(version))),
         badges
+          .pinned
+          .then(|| badge("pinned", Tag::secondary(), text::PINNED.to_string())),
+        badges
           .deprecated
           .then(|| badge("deprecated", Tag::warning(), text::DEPRECATED.to_string())),
         (!badges.missing.is_empty()).then(|| {
@@ -1376,15 +1379,36 @@ fn installed_row(
       ]
     })
     .flatten();
-  let update = outdated.then(|| {
-    let msg = Msg::UpdatePressed(full_name.to_string());
-
-    Button::new(SharedString::from(format!("update-{full_name}")))
-      .label(text::UPDATE)
+  let pinned = badges.is_some_and(|badges| badges.pinned);
+  let update = match (outdated, pinned) {
+    (_, true) => Some((
+      "unpin",
+      text::UNPIN,
+      Msg::UnpinPressed(full_name.to_string()),
+    )),
+    (true, false) => Some((
+      "update",
+      text::UPDATE,
+      Msg::UpdatePressed(full_name.to_string()),
+    )),
+    (false, false) => None,
+  }
+  .map(|(id, label, msg)| {
+    Button::new(SharedString::from(format!("{id}-{full_name}")))
+      .label(label)
       .small()
       .disabled(!can_change)
       .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
   });
+  let choose_version = {
+    let msg = Msg::InstallPressed(full_name.to_string());
+
+    Button::new(SharedString::from(format!("version-{full_name}")))
+      .label(text::CHOOSE_VERSION)
+      .small()
+      .disabled(!can_change)
+      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
+  };
   let uninstall = full_name.to_string();
   let item = h_flex()
     .id(SharedString::from(format!("profile-{full_name}")))
@@ -1415,6 +1439,7 @@ fn installed_row(
         .test_support(),
     )
     .children(update)
+    .child(choose_version)
     .children(toggle)
     .child(
       Button::new(SharedString::from(format!("uninstall-{full_name}")))

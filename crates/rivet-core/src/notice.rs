@@ -99,6 +99,13 @@ pub enum Notice {
     changed: Vec<PathBuf>,
     failed: Vec<(PathBuf, String)>,
   },
+  /// Update all left this many outdated packages alone for being pinned.
+  PinnedSkipped(usize),
+  /// A package, by `Owner-Name`, could not be unpinned, with the reason.
+  UnpinFailed { package: String, reason: String },
+  /// A profile's pin file could not be read, with the reason naming the
+  /// file, so the profile shows no package pinned.
+  PinsUnread(String),
 }
 
 impl Notice {
@@ -122,12 +129,15 @@ impl Notice {
       | Notice::ProfileChangeFailed { .. }
       | Notice::LaunchFailed { .. }
       | Notice::ExportFailed { .. }
-      | Notice::ImportUnread(_) => Level::Error,
+      | Notice::ImportUnread(_)
+      | Notice::UnpinFailed { .. } => Level::Error,
       Notice::LoaderFilesRemoved { failed, .. } if !failed.is_empty() => Level::Error,
       Notice::LoaderFilesRemoved { changed, .. } if !changed.is_empty() => Level::Warning,
       Notice::LoaderFilesRemoved { .. } => Level::Success,
-      Notice::IndexStale(_) => Level::Warning,
-      Notice::OperationCancelled { .. } | Notice::LaunchLineCopied => Level::Info,
+      Notice::IndexStale(_) | Notice::PinsUnread(_) => Level::Warning,
+      Notice::OperationCancelled { .. } | Notice::LaunchLineCopied | Notice::PinnedSkipped(_) => {
+        Level::Info
+      }
     }
   }
 }
@@ -195,6 +205,10 @@ mod tests {
         Level::Error,
       ),
       (Notice::IndexStale("offline".to_string()), Level::Warning),
+      (
+        Notice::PinsUnread("pins.toml: bad".to_string()),
+        Level::Warning,
+      ),
       (
         Notice::Launched {
           game: "valheim".to_string(),

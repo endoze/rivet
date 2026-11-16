@@ -24,6 +24,26 @@ impl Index {
 
     PackageRow::new(&self.0, idx)
   }
+
+  /// Every version `full_name` (`Owner-Name`) has published, the most
+  /// recent first. Empty when the index lacks it.
+  pub fn versions(&self, full_name: &str) -> Vec<String> {
+    let Some(mut versions) = self
+      .1
+      .get(full_name)
+      .and_then(|&idx| self.0.get_package_at(idx))
+      .map(|package| package.versions)
+    else {
+      return Vec::new();
+    };
+
+    versions.sort_by_key(|version| std::cmp::Reverse(version.date_created));
+
+    versions
+      .into_iter()
+      .filter_map(|version| version.version_number)
+      .collect()
+  }
 }
 
 impl PartialEq for Index {

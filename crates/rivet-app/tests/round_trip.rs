@@ -755,6 +755,7 @@ fn package(full_name: &str, dependencies: &[&str]) -> (String, InstalledPackage)
       enabled: true,
       dependencies: dependencies.iter().map(|name| name.to_string()).collect(),
       installed_at: 0,
+      pinned: false,
     },
   )
 }
@@ -952,6 +953,138 @@ fn the_installed_tab_badges_packages_and_updates_one_or_all(cx: &mut TestAppCont
   .unwrap();
 
   assert_eq!(updated(&mut sent), (2, vec!["Owner-ModD".to_string()]));
+}
+
+#[gpui_kit::test]
+fn a_version_chosen_in_the_install_modal_is_the_one_installed(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(Installed::new()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("install-Owner-ModD", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
+    window.within("install-dialog").click("install-version", cx);
+    window.render_frame(cx);
+    window.click("version-1.0.0", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
+    window.click("confirm-install", cx);
+  })
+  .unwrap();
+
+  let version = std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::Install(install) => Some(install.version),
+      _ => None,
+    })
+    .expect("an install was sent");
+
+  assert_eq!(version.as_deref(), Some("1.0.0"));
+}
+
+#[gpui_kit::test]
+fn a_pinned_package_is_marked_until_it_is_unpinned(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let (name, mut pinned) = package("Owner-ModD", &[]);
+
+  pinned.pinned = true;
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([(name, pinned)].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("pinned-badge-Owner-ModD").is_some());
+    assert!(window.try_find("update-badge-Owner-ModD").is_some());
+    assert!(window.try_find("update-Owner-ModD").is_none());
+
+    window.click("unpin-Owner-ModD", cx);
+  })
+  .unwrap();
+
+  let unpin = std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::Unpin(unpin) => Some(unpin),
+      _ => None,
+    })
+    .expect("an unpin was sent");
+
+  assert_eq!(unpin.package, "Owner-ModD");
+
+  answers
+    .unbounded_send(Msg::Unpinned {
+      unpin,
+      result: Ok(()),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("pinned-badge-Owner-ModD").is_none());
+    assert!(window.try_find("update-badge-Owner-ModD").is_some());
+
+    window.click("version-Owner-ModD", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(dialog_open(cx, window), "choosing a version asked nothing");
 }
 
 fn valheim_refresh(id: u64) -> Refresh {

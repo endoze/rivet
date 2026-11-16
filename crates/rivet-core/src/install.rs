@@ -3,11 +3,12 @@
 //! profile.
 
 use crate::browse::Index;
+use crate::pins;
 use crate::queue::{self, Work};
 use crate::{Command, Effect, State};
 use std::collections::BTreeMap;
 use thunderstore_engine::extract::parse_package_filename;
-use thunderstore_engine::models::{DependencyGraph, PackageIndex};
+use thunderstore_engine::models::DependencyGraph;
 
 /// The profile every game has, created the first time the game is opened.
 pub const DEFAULT_PROFILE: &str = "Default";
@@ -26,6 +27,9 @@ pub struct InstalledPackage {
   pub dependencies: Vec<String>,
   /// When it was installed, in Unix milliseconds.
   pub installed_at: u64,
+  /// The user chose this version, so updates leave it alone. See
+  /// [`crate::pins`].
+  pub pinned: bool,
 }
 
 impl InstalledPackage {
@@ -41,6 +45,7 @@ impl InstalledPackage {
   ///   enabled: true,
   ///   dependencies: vec![],
   ///   installed_at: 0,
+  ///   pinned: false,
   /// };
   ///
   /// assert_eq!(package.name("Owner-Mod"), "Mod");
@@ -103,6 +108,11 @@ pub struct Confirmation {
   /// Dependencies the package index does not have, by `Owner-Name`. The
   /// install cannot go ahead while any are missing.
   pub missing: Vec<String>,
+  /// Every version the package has published, the most recent first.
+  pub versions: Vec<String>,
+  /// The version the user chose, which the install pins, or `None` for the
+  /// latest, which leaves the package unpinned.
+  pub chosen: Option<String>,
 }
 
 impl Confirmation {
@@ -230,6 +240,9 @@ pub struct Install {
   pub profile: String,
   /// The package, as `Owner-Name`.
   pub package: String,
+  /// The version the user chose, installed exactly and pinned, or `None` to
+  /// install the latest and unpin it.
+  pub version: Option<String>,
   /// The index the confirmation was planned from, so the install brings what
   /// the user saw.
   pub index: Index,
@@ -302,34 +315,86 @@ pub(crate) fn profile_opened(
   crate::switcher::profile_opened(state, &game)
 }
 
-/// Asks to confirm installing `full_name` with everything it needs. Ignored
-/// until the list and the profile are loaded, and for a package the list
-/// does not have.
+/// Asks to confirm installing `full_name` with everything it needs, at the
+/// version it is pinned at while the list still publishes it, or else the
+/// latest. Ignored until the list and the profile are loaded, and for a
+/// package the list does not have.
 pub(crate) fn install_pressed(state: &mut State, full_name: String) -> Vec<Effect> {
   if !state.can_install() {
     return Vec::new();
   }
 
-  let Some(installed) = state.profile.as_ref().and_then(Profile::installed) else {
+  let Some((installed, index)) = state.planning() else {
     return Vec::new();
   };
-  let Some(index) = state
-    .browse
-    .as_ref()
-    .and_then(|browse| browse.index.as_ref())
-  else {
-    return Vec::new();
-  };
+  let published = index.versions(&full_name);
+  let pinned = installed
+    .get(&full_name)
+    .filter(|package| package.pinned && published.contains(&package.version))
+    .map(|package| package.version.as_str());
 
-  state.confirmation = plan(&index.0, installed, &full_name);
+  state.confirmation = plan(index, installed, &full_name, pinned);
 
   Vec::new()
 }
 
-/// The packages installing `full_name` brings, or `None` when the index does
-/// not have it.
-fn plan(index: &PackageIndex, installed: &Installed, full_name: &str) -> Option<Confirmation> {
-  let resolution = DependencyGraph::new(vec![full_name.to_string()]).resolve_report(index);
+/// Plans the waiting install again at `version`, or at the latest when
+/// `None`. A version the package has not published is ignored.
+pub(crate) fn version_chosen(state: &mut State, version: Option<String>) -> Vec<Effect> {
+  let Some(confirmation) = state.confirmation.as_ref() else {
+    return Vec::new();
+  };
+
+  if version
+    .as_ref()
+    .is_some_and(|version| !confirmation.versions.contains(version))
+  {
+    return Vec::new();
+  }
+
+  let Some((installed, index)) = state.planning() else {
+    return Vec::new();
+  };
+
+  if let Some(planned) = plan(
+    index,
+    installed,
+    &confirmation.package.full_name,
+    version.as_deref(),
+  ) {
+    state.confirmation = Some(planned);
+  }
+
+  Vec::new()
+}
+
+impl State {
+  /// The open profile's packages and the shown index an install is planned
+  /// from, once both are loaded.
+  fn planning(&self) -> Option<(&Installed, &Index)> {
+    let installed = self.profile.as_ref().and_then(Profile::installed)?;
+    let index = self.browse.as_ref()?.index.as_ref()?;
+
+    Some((installed, index))
+  }
+}
+
+/// The packages installing `full_name` at `chosen`, or at the latest when
+/// `None`, brings, holding pinned packages where they are. `None` when the
+/// index does not have it.
+fn plan(
+  index: &Index,
+  installed: &Installed,
+  full_name: &str,
+  chosen: Option<&str>,
+) -> Option<Confirmation> {
+  let requested = match chosen {
+    Some(version) => format!("{full_name}-{version}"),
+    None => full_name.to_string(),
+  };
+  let resolution = DependencyGraph::new(vec![requested])
+    .pins(pins::held(installed, index, &[full_name.to_string()]))
+    .resolve_report(&index.0);
   let mut planned: Vec<Planned> = resolution
     .urls
     .keys()
@@ -354,6 +419,8 @@ fn plan(index: &PackageIndex, installed: &Installed, full_name: &str) -> Option<
     package,
     dependencies: planned,
     missing: resolution.unresolved,
+    versions: index.versions(full_name),
+    chosen: chosen.map(str::to_string),
   })
 }
 
@@ -393,6 +460,7 @@ pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
       community,
       profile: name,
       package,
+      version: confirmation.chosen,
       index,
     })
   })
@@ -531,6 +599,8 @@ mod tests {
           planned("Owner-Lib", "1.1.0", false),
         ],
         missing: vec![],
+        versions: names(&["2.0.0"]),
+        chosen: None,
       })
     );
   }
@@ -651,6 +721,7 @@ mod tests {
         community: "valheim".to_string(),
         profile: "Default".to_string(),
         package: "Owner-Pack".to_string(),
+        version: None,
         index,
       }))]
     );
@@ -889,6 +960,185 @@ mod tests {
     update(&mut state, Msg::SwitchGamePressed);
 
     assert_eq!(state.confirmation, None);
+  }
+
+  /// A package published at each `(version, dependencies)`, in order, the
+  /// last most recently.
+  fn published(full_name: &str, versions: &[(&str, &[&str])]) -> serde_json::Value {
+    let (owner, name) = full_name.split_once('-').unwrap();
+    let versions: Vec<serde_json::Value> = versions
+      .iter()
+      .enumerate()
+      .map(|(day, (version, dependencies))| {
+        serde_json::json!({
+          "version_number": version,
+          "dependencies": dependencies,
+          "download_url": format!("https://example.com/{full_name}-{version}.zip"),
+          "date_created": format!("2024-01-{:02}T00:00:00Z", day + 1),
+        })
+      })
+      .collect();
+
+    serde_json::json!({
+      "name": name,
+      "full_name": full_name,
+      "owner": owner,
+      "date_created": "2024-01-01T00:00:00Z",
+      "date_updated": "2024-01-01T00:00:00Z",
+      "categories": [],
+      "versions": versions,
+    })
+  }
+
+  /// A state with valheim open, its profile holding `packages`, and its list
+  /// holding `Owner-Pack` at 1.0.0 needing nothing and at 2.0.0 and 2.1.0
+  /// needing `Owner-Lib`, which is at 1.0.0 and 1.1.0.
+  fn versioned(packages: &[(&str, &str)]) -> State {
+    let mut state = ready(packages);
+    let packages: Vec<thunderstore_engine::models::Package> =
+      serde_json::from_value(serde_json::json!([
+        published(
+          "Owner-Pack",
+          &[
+            ("1.0.0", &[]),
+            ("2.0.0", &["Owner-Lib-1.0.0"]),
+            ("2.1.0", &["Owner-Lib-1.0.0"]),
+          ]
+        ),
+        published("Owner-Lib", &[("1.0.0", &[]), ("1.1.0", &[])]),
+      ]))
+      .unwrap();
+    let index: Index = thunderstore_engine::models::PackageIndex::from(packages).into();
+
+    state.browse.as_mut().unwrap().index = Some(index);
+
+    state
+  }
+
+  fn choose(state: &mut State, version: Option<&str>) -> Vec<Effect> {
+    update(state, Msg::VersionChosen(version.map(str::to_string)))
+  }
+
+  #[test]
+  fn the_confirmation_offers_every_published_version_with_the_latest_chosen() {
+    let mut state = versioned(&[]);
+
+    press(&mut state, "Owner-Pack");
+
+    let confirmation = state.confirmation.unwrap();
+
+    assert_eq!(confirmation.versions, names(&["2.1.0", "2.0.0", "1.0.0"]));
+    assert_eq!(confirmation.chosen, None);
+    assert_eq!(confirmation.package, planned("Owner-Pack", "2.1.0", false));
+  }
+
+  #[test]
+  fn choosing_a_version_plans_that_version_with_what_it_needs() {
+    let mut state = versioned(&[]);
+
+    press(&mut state, "Owner-Pack");
+
+    assert_eq!(choose(&mut state, Some("1.0.0")), vec![]);
+
+    let confirmation = state.confirmation.clone().unwrap();
+
+    assert_eq!(confirmation.chosen.as_deref(), Some("1.0.0"));
+    assert_eq!(confirmation.package, planned("Owner-Pack", "1.0.0", false));
+    assert_eq!(confirmation.dependencies, vec![]);
+
+    choose(&mut state, None);
+
+    let confirmation = state.confirmation.unwrap();
+
+    assert_eq!(confirmation.chosen, None);
+    assert_eq!(confirmation.package, planned("Owner-Pack", "2.1.0", false));
+    assert_eq!(
+      confirmation.dependencies,
+      vec![planned("Owner-Lib", "1.1.0", false)]
+    );
+  }
+
+  #[test]
+  fn a_version_the_package_does_not_publish_cannot_be_chosen() {
+    let mut state = versioned(&[]);
+
+    press(&mut state, "Owner-Pack");
+    choose(&mut state, Some("9.9.9"));
+
+    assert_eq!(state.confirmation.unwrap().chosen, None);
+  }
+
+  #[test]
+  fn confirming_a_chosen_version_installs_exactly_that_version() {
+    let mut state = versioned(&[]);
+
+    press(&mut state, "Owner-Pack");
+    choose(&mut state, Some("2.0.0"));
+
+    let effects = update(&mut state, Msg::InstallConfirmed);
+    let index = state.browse.as_ref().unwrap().index.clone().unwrap();
+
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::Install(Install {
+        operation: 1,
+        game: "valheim".to_string(),
+        community: "valheim".to_string(),
+        profile: "Default".to_string(),
+        package: "Owner-Pack".to_string(),
+        version: Some("2.0.0".to_string()),
+        index,
+      }))]
+    );
+  }
+
+  /// Pins `full_name` in the open profile at the version it is at.
+  fn pin(state: &mut State, full_name: &str) {
+    let Some(ProfileStatus::Ready(installed)) = state.profile.as_mut().map(|open| &mut open.status)
+    else {
+      panic!("the profile is not open");
+    };
+
+    installed.get_mut(full_name).unwrap().pinned = true;
+  }
+
+  #[test]
+  fn the_confirmation_for_a_pinned_package_starts_at_its_pinned_version() {
+    let mut state = versioned(&[("Owner-Pack", "2.0.0"), ("Owner-Lib", "1.0.0")]);
+
+    pin(&mut state, "Owner-Pack");
+    press(&mut state, "Owner-Pack");
+
+    let confirmation = state.confirmation.unwrap();
+
+    assert_eq!(confirmation.chosen.as_deref(), Some("2.0.0"));
+    assert_eq!(confirmation.package, planned("Owner-Pack", "2.0.0", true));
+  }
+
+  #[test]
+  fn a_pinned_version_the_list_no_longer_publishes_confirms_the_latest() {
+    let mut state = versioned(&[("Owner-Pack", "1.5.0")]);
+
+    pin(&mut state, "Owner-Pack");
+    press(&mut state, "Owner-Pack");
+
+    let confirmation = state.confirmation.unwrap();
+
+    assert_eq!(confirmation.chosen, None);
+    assert_eq!(confirmation.package, planned("Owner-Pack", "2.1.0", false));
+  }
+
+  #[test]
+  fn the_confirmation_holds_pinned_dependencies_at_their_version() {
+    let mut state = versioned(&[("Owner-Lib", "1.0.0")]);
+
+    pin(&mut state, "Owner-Lib");
+    press(&mut state, "Owner-Pack");
+
+    assert_eq!(
+      state.confirmation.unwrap().dependencies,
+      vec![planned("Owner-Lib", "1.0.0", true)]
+    );
   }
 
   #[test]

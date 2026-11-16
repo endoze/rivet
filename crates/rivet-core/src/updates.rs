@@ -2,7 +2,8 @@
 //! one package or every outdated one.
 
 use crate::browse::Index;
-use crate::install::{Action, Installed, Profile};
+use crate::install::{Action, Installed, InstalledPackage, Profile};
+use crate::notice::Notice;
 use crate::queue::{self, Work};
 use crate::{Effect, State};
 use std::collections::BTreeMap;
@@ -11,8 +12,11 @@ use thunderstore_engine::profile::modlist::SemVer;
 /// What the Installed tab marks on one package.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Badges {
-  /// The newer version the index has, when the package is outdated.
+  /// The newer version the index has, when the package is outdated, pinned
+  /// or not.
   pub update: Option<String>,
+  /// The package is pinned, so updates leave it alone.
+  pub pinned: bool,
   /// The index marks the package deprecated.
   pub deprecated: bool,
   /// The packages it requires that the profile does not hold, by
@@ -29,8 +33,9 @@ impl Badges {
 /// The badges of every package of `installed` that has one, by `Owner-Name`.
 ///
 /// A package is outdated when the version `index` published last is newer
-/// than the installed one, the version an update installs. Without an index,
-/// only missing dependencies are known.
+/// than the installed one, the version an update installs. A pinned package
+/// carries the newer version too, though updates leave it alone. Without an
+/// index, only pins and missing dependencies are known.
 pub fn badges(installed: &Installed, index: Option<&Index>) -> BTreeMap<String, Badges> {
   installed
     .iter()
@@ -42,12 +47,9 @@ pub fn badges(installed: &Installed, index: Option<&Index>) -> BTreeMap<String, 
         .cloned()
         .collect();
       let listed = index.and_then(|index| index.package(full_name));
-      let update = listed
-        .and_then(|row| row.version_number())
-        .filter(|latest| SemVer::parse(latest) > SemVer::parse(&package.version))
-        .map(str::to_string);
       let badge = Badges {
-        update,
+        update: newer(package, index, full_name),
+        pinned: package.pinned,
         deprecated: listed.is_some_and(|row| row.is_deprecated()),
         missing,
       };
@@ -56,6 +58,16 @@ pub fn badges(installed: &Installed, index: Option<&Index>) -> BTreeMap<String, 
     })
     .filter(|(_, badge)| !badge.is_empty())
     .collect()
+}
+
+/// The version `index` published last for `full_name`, when it is newer than
+/// the installed `package`.
+fn newer(package: &InstalledPackage, index: Option<&Index>, full_name: &str) -> Option<String> {
+  index
+    .and_then(|index| index.package(full_name))
+    .and_then(|row| row.version_number())
+    .filter(|latest| SemVer::parse(latest) > SemVer::parse(&package.version))
+    .map(str::to_string)
 }
 
 /// Update packages of a game's profile to the version the index published
@@ -92,30 +104,50 @@ impl State {
   }
 }
 
-/// Updates `full_name` when it is outdated.
+impl Badges {
+  /// The package is outdated and not pinned, so an update would change it.
+  fn updatable(&self) -> bool {
+    self.update.is_some() && !self.pinned
+  }
+}
+
+/// Updates `full_name` when it is outdated and not pinned.
 pub(crate) fn update_pressed(state: &mut State, full_name: String) -> Vec<Effect> {
-  let outdated = state
+  let updatable = state
     .badges()
     .get(&full_name)
-    .is_some_and(|badge| badge.update.is_some());
+    .is_some_and(Badges::updatable);
 
-  if !outdated {
+  if !updatable {
     return Vec::new();
   }
 
   start(state, vec![full_name])
 }
 
-/// Updates every outdated package of the open profile as one operation.
+/// Updates every outdated package of the open profile as one operation,
+/// saying how many outdated packages it left alone for being pinned.
 pub(crate) fn update_all(state: &mut State) -> Vec<Effect> {
-  let outdated = state
+  if !state.can_manage() {
+    return Vec::new();
+  }
+
+  let (updatable, skipped): (Vec<_>, Vec<_>) = state
     .badges()
     .into_iter()
     .filter(|(_, badge)| badge.update.is_some())
+    .partition(|(_, badge)| badge.updatable());
+  let outdated = updatable
+    .into_iter()
     .map(|(full_name, _)| full_name)
     .collect();
+  let mut effects = start(state, outdated);
 
-  start(state, outdated)
+  if !skipped.is_empty() {
+    effects.push(Effect::Notify(Notice::PinnedSkipped(skipped.len())));
+  }
+
+  effects
 }
 
 /// Updates `packages` of the open profile as one operation, when a change can
@@ -153,46 +185,11 @@ fn start(state: &mut State, packages: Vec<String>) -> Vec<Effect> {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::install::{DEFAULT_PROFILE, Outcome};
+  use crate::install::{DEFAULT_PROFILE, Outcome, ProfileStatus};
+  use crate::notice::Notice;
   use crate::settings::{GameSettings, Settings};
   use crate::{Command, Msg, test_ecosystem, update};
-  use thunderstore_engine::models::PackageIndex;
-
-  /// A package published at each of `versions`, in order, the last most
-  /// recently.
-  fn listed(full_name: &str, versions: &[&str], deprecated: bool) -> serde_json::Value {
-    let (owner, name) = full_name.split_once('-').unwrap();
-    let versions: Vec<serde_json::Value> = versions
-      .iter()
-      .enumerate()
-      .map(|(day, version)| {
-        serde_json::json!({
-          "version_number": version,
-          "dependencies": [],
-          "download_url": format!("https://example.com/{full_name}-{version}.zip"),
-          "date_created": format!("2024-01-{:02}T00:00:00Z", day + 1),
-        })
-      })
-      .collect();
-
-    serde_json::json!({
-      "name": name,
-      "full_name": full_name,
-      "owner": owner,
-      "date_created": "2024-01-01T00:00:00Z",
-      "date_updated": "2024-01-01T00:00:00Z",
-      "is_deprecated": deprecated,
-      "categories": [],
-      "versions": versions,
-    })
-  }
-
-  fn index(packages: Vec<serde_json::Value>) -> Index {
-    let packages: Vec<thunderstore_engine::models::Package> =
-      serde_json::from_value(serde_json::Value::Array(packages)).unwrap();
-
-    PackageIndex::from(packages).into()
-  }
+  use crate::{test_index as index, test_listed as listed};
 
   fn update_to(version: &str) -> Badges {
     Badges {
@@ -442,6 +439,93 @@ mod tests {
     );
     assert_eq!(update(&mut state, Msg::UpdateAllPressed), vec![]);
     assert_eq!(state.queue.operations.len(), 1);
+  }
+
+  /// Pins `full_name` in the open profile at the version it is at.
+  fn pin(state: &mut State, full_name: &str) {
+    let Some(ProfileStatus::Ready(installed)) = state.profile.as_mut().map(|open| &mut open.status)
+    else {
+      panic!("the profile is not open");
+    };
+
+    installed.get_mut(full_name).unwrap().pinned = true;
+  }
+
+  #[test]
+  fn a_pinned_package_is_marked_and_still_carries_the_newer_version() {
+    let mut installed =
+      crate::test_installed(&[("Owner-Held", "1.0.0"), ("Owner-Current", "2.0.0")]);
+    let index = index(vec![
+      listed("Owner-Held", &["1.0.0", "1.2.0"], false),
+      listed("Owner-Current", &["2.0.0"], false),
+    ]);
+
+    installed.get_mut("Owner-Held").unwrap().pinned = true;
+    installed.get_mut("Owner-Current").unwrap().pinned = true;
+
+    let pinned = Badges {
+      pinned: true,
+      ..Badges::default()
+    };
+
+    assert_eq!(
+      badges(&installed, Some(&index)),
+      [
+        ("Owner-Current".to_string(), pinned.clone()),
+        (
+          "Owner-Held".to_string(),
+          Badges {
+            update: Some("1.2.0".to_string()),
+            ..pinned
+          }
+        ),
+      ]
+      .into()
+    );
+  }
+
+  #[test]
+  fn updating_a_pinned_package_does_nothing() {
+    let mut state = ready();
+
+    pin(&mut state, "Owner-Old");
+
+    assert_eq!(
+      update(&mut state, Msg::UpdatePressed("Owner-Old".to_string())),
+      vec![]
+    );
+    assert!(state.queue.operations.is_empty());
+  }
+
+  #[test]
+  fn update_all_leaves_pinned_packages_and_says_how_many_it_skipped() {
+    let mut state = ready();
+
+    pin(&mut state, "Owner-Old");
+    pin(&mut state, "Owner-Current");
+
+    let effects = update(&mut state, Msg::UpdateAllPressed);
+
+    assert_eq!(
+      effects,
+      vec![
+        updating(&state, 1, &["Owner-Stale"]),
+        Effect::Notify(Notice::PinnedSkipped(1)),
+      ]
+    );
+  }
+
+  #[test]
+  fn update_all_with_only_pinned_packages_outdated_says_so() {
+    let mut state = ready();
+
+    pin(&mut state, "Owner-Old");
+    pin(&mut state, "Owner-Stale");
+
+    let effects = update(&mut state, Msg::UpdateAllPressed);
+
+    assert_eq!(effects, vec![Effect::Notify(Notice::PinnedSkipped(2))]);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]

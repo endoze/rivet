@@ -126,6 +126,7 @@ pub struct SetEnabled {
 ///   enabled: true,
 ///   dependencies: vec![],
 ///   installed_at: 0,
+///   pinned: false,
 /// };
 /// let installed: Installed = [
 ///   ("Bob-Zip".to_string(), package("Bob")),

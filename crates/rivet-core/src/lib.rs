@@ -8,6 +8,7 @@ pub mod loader_files;
 pub mod manage;
 pub mod notice;
 pub mod picker;
+pub mod pins;
 pub mod portability;
 pub mod queue;
 pub mod readme;
@@ -208,6 +209,9 @@ pub enum Msg {
   },
   /// Install was pressed on a package, by `Owner-Name`.
   InstallPressed(String),
+  /// A version was chosen for the install waiting to be confirmed, or `None`
+  /// for the latest.
+  VersionChosen(Option<String>),
   InstallConfirmed,
   InstallDismissed,
   /// A running operation moved on to a package or stage, by operation id.
@@ -244,6 +248,17 @@ pub enum Msg {
   /// Update was pressed on an installed package, by `Owner-Name`.
   UpdatePressed(String),
   UpdateAllPressed,
+  /// Unpin was pressed on an installed package, by `Owner-Name`.
+  UnpinPressed(String),
+  /// A [`pins::Unpin`] ended: made, or why it was not.
+  Unpinned {
+    unpin: pins::Unpin,
+    result: Result<(), String>,
+  },
+  /// A profile's pin file could not be read, with the reason naming the
+  /// file. The profile opened with no package pinned. Sent before its
+  /// [`Msg::ProfileOpened`].
+  PinsUnread(String),
   /// The user answered whether a change takes the package's dependants too.
   DependantsChosen(Scope),
   /// The user answered whether an uninstall deletes the folders no package
@@ -428,6 +443,9 @@ pub enum Command {
   /// Answered with any number of [`Msg::OperationProgress`], then
   /// [`Msg::OperationFinished`].
   Update(Update),
+  /// Remove a pin from a profile's pin file. Answered with
+  /// [`Msg::Unpinned`].
+  Unpin(pins::Unpin),
   /// Stop the operation with this id after the package it is on. Not
   /// answered: the operation's own answer says what it did.
   Cancel(u64),
@@ -597,6 +615,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       installed,
     } => install::profile_opened(state, game, profile, installed),
     Msg::InstallPressed(package) => install::install_pressed(state, package),
+    Msg::VersionChosen(version) => install::version_chosen(state, version),
     Msg::InstallConfirmed => install::install_confirmed(state),
     Msg::InstallDismissed => {
       state.confirmation = None;
@@ -638,6 +657,9 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::DisableAllPressed => manage::set_all(state, false),
     Msg::UpdatePressed(package) => updates::update_pressed(state, package),
     Msg::UpdateAllPressed => updates::update_all(state),
+    Msg::UnpinPressed(package) => pins::unpin_pressed(state, package),
+    Msg::Unpinned { unpin, result } => pins::unpinned(state, unpin, result),
+    Msg::PinsUnread(reason) => vec![Effect::Notify(Notice::PinsUnread(reason))],
     Msg::DependantsChosen(scope) => manage::dependants_chosen(state, scope),
     Msg::FoldersChosen(folders) => manage::folders_chosen(state, folders),
     Msg::PendingDismissed => {
@@ -957,10 +979,54 @@ pub(crate) fn test_installed(packages: &[(&str, &str)]) -> Installed {
           enabled: true,
           dependencies: Vec::new(),
           installed_at: 0,
+          pinned: false,
         },
       )
     })
     .collect()
+}
+
+/// A package published at each of `versions`, in order, the last most
+/// recently, needing nothing.
+#[cfg(test)]
+pub(crate) fn test_listed(
+  full_name: &str,
+  versions: &[&str],
+  deprecated: bool,
+) -> serde_json::Value {
+  let (owner, name) = full_name.split_once('-').unwrap();
+  let versions: Vec<serde_json::Value> = versions
+    .iter()
+    .enumerate()
+    .map(|(day, version)| {
+      serde_json::json!({
+        "version_number": version,
+        "dependencies": [],
+        "download_url": format!("https://example.com/{full_name}-{version}.zip"),
+        "date_created": format!("2024-01-{:02}T00:00:00Z", day + 1),
+      })
+    })
+    .collect();
+
+  serde_json::json!({
+    "name": name,
+    "full_name": full_name,
+    "owner": owner,
+    "date_created": "2024-01-01T00:00:00Z",
+    "date_updated": "2024-01-01T00:00:00Z",
+    "is_deprecated": deprecated,
+    "categories": [],
+    "versions": versions,
+  })
+}
+
+/// An index of `packages`, each as [`test_listed`] makes them.
+#[cfg(test)]
+pub(crate) fn test_index(packages: Vec<serde_json::Value>) -> Index {
+  let packages: Vec<thunderstore_engine::models::Package> =
+    serde_json::from_value(serde_json::Value::Array(packages)).unwrap();
+
+  thunderstore_engine::models::PackageIndex::from(packages).into()
 }
 
 #[cfg(test)]

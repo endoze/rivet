@@ -10,6 +10,7 @@ use rivet_core::install::{FailedPackage, Outcome};
 use rivet_core::portability::{
   Destination, Export, Exported, Import, ReadFailure, Shared, SharedPackage, Source,
 };
+use std::path::Path;
 use thunderstore_engine::profile::modlist;
 use thunderstore_engine::profile::{self, layout, portability};
 
@@ -175,11 +176,10 @@ pub(crate) async fn import(
   let mut outcome = crate::batch_outcome(&folder, installed);
 
   if complete {
-    let restored =
-      tokio::task::spawn_blocking(move || portability::extract_configs_in(&folder, &archive))
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|restored| restored.map_err(|error| error.to_string()));
+    let restored = tokio::task::spawn_blocking(move || restore_configs(&folder, &archive))
+      .await
+      .map_err(|error| error.to_string())
+      .and_then(|restored| restored);
 
     if let Err(reason) = restored {
       outcome.failed.push(FailedPackage {
@@ -192,15 +192,30 @@ pub(crate) async fn import(
   Ok(outcome)
 }
 
+/// Restores the config files `archive` carries into the profile an import
+/// just created in `folder`, which starts with none of the app's own files,
+/// such as pins.
+fn restore_configs(folder: &Path, archive: &[u8]) -> Result<(), String> {
+  portability::extract_configs_in(folder, archive).map_err(|error| error.to_string())?;
+
+  let own = crate::app_folder(folder);
+
+  match std::fs::remove_dir_all(&own) {
+    Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(crate::failure(&own, error)),
+    _ => Ok(()),
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::STANDARD;
+  use crate::Config;
   use crate::tests::{
-    config_for, mock_index, mock_thunderstore, names, packages, profile_folder, run_any, run_now,
-    run_reporting, set_enabled, with_mod_c,
+    config_for, install_at, mock_index, mock_thunderstore, names, packages, profile_folder,
+    run_any, run_now, run_reporting, set_enabled, with_mod_c,
   };
   use base64::Engine as _;
-  use rivet_core::install::{DEFAULT_PROFILE, Stage};
+  use rivet_core::install::{DEFAULT_PROFILE, Outcome, Stage};
   use rivet_core::portability::{
     Destination, Export, Exported, Import, ReadFailure, Shared, SharedPackage, Source,
   };
@@ -314,6 +329,23 @@ mods:
       ]
     );
     assert!(archive.by_name("config/Owner.ModC.cfg").is_ok());
+  }
+
+  #[test]
+  fn pins_do_not_travel_in_an_export() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = with_mod_c(&dir, &mut mock);
+    let index = mock_index(&mut mock);
+    let path = dir.path().join("Default.r2z");
+
+    run_now(install_at("Owner-ModD", Some("1.0.0"), &index), &config);
+    exported(run_now(export(Destination::File(path.clone())), &config)).unwrap();
+
+    let archive = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
+    let names: Vec<&str> = archive.file_names().collect();
+
+    assert!(names.iter().all(|name| !name.contains("pins")), "{names:?}");
   }
 
   #[test]
@@ -570,6 +602,54 @@ mods:
       !profile_folder(&config, "Shared")
         .join("BepInEx/config/Owner.ModA.cfg")
         .exists()
+    );
+  }
+
+  /// Runs `import` as operation 3 and returns its outcome.
+  fn imported_outcome(import: Import, config: &Config) -> Outcome {
+    let answer = run_now(Command::Import(import), config);
+
+    let Msg::OperationFinished {
+      operation: 3,
+      outcome: Ok(outcome),
+    } = answer
+    else {
+      panic!("unexpected answer {answer:?}");
+    };
+
+    outcome
+  }
+
+  /// A pin file holding `Owner-ModA` at 1.0.0.
+  const PINS: &str = "[pins]\n\"Owner-ModA\" = \"1.0.0\"\n";
+
+  #[test]
+  fn an_import_restores_no_pins_whatever_its_archive_holds() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let archive = zip(&[("export.r2x", R2MODMAN_LIST), (".rivet/pins.toml", PINS)]);
+
+    let outcome = imported_outcome(
+      Import {
+        operation: 3,
+        game: "valheim".to_string(),
+        community: "valheim".to_string(),
+        profile: "Shared".to_string(),
+        packages: listed(),
+        archive,
+        index: mock_index(&mut mock),
+      },
+      &config,
+    );
+
+    assert!(!profile_folder(&config, "Shared").join(".rivet").exists());
+    assert!(
+      outcome
+        .profile
+        .unwrap()
+        .values()
+        .all(|package| !package.pinned)
     );
   }
 }
