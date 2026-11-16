@@ -2,6 +2,7 @@
 //! creating, renaming, duplicating, and deleting them.
 
 use crate::install::{self, DEFAULT_PROFILE, ProfileStatus};
+use crate::manage::Tab;
 use crate::notice::Notice;
 use crate::{Command, Effect, State};
 use std::collections::BTreeMap;
@@ -283,15 +284,26 @@ pub(crate) fn listed(
   crate::r2modman::listed(state, &game)
 }
 
-/// Selects `name`, a listed profile of the open game, and remembers it.
+/// Selects `name`, a listed profile of the open game, remembers it, and
+/// shows its packages.
 pub(crate) fn picked(state: &mut State, name: String) -> Vec<Effect> {
   let listed = state
     .switcher
     .as_ref()
     .is_some_and(|switcher| switcher.names.contains(&name));
 
-  if !state.can_switch_profile() || !listed || state.selected() == Some(name.as_str()) {
+  if !state.can_switch_profile() || !listed {
     return Vec::new();
+  }
+
+  let tab_changed = crate::show_tab(state, Tab::Installed);
+
+  if state.selected() == Some(name.as_str()) {
+    if !tab_changed {
+      return Vec::new();
+    }
+
+    return crate::readme::follow_list(state, crate::readme::Fetch::Now);
   }
 
   select(state, name)
@@ -796,6 +808,16 @@ mod tests {
     assert_eq!(remembered(&state), Some("Modded"));
     assert_eq!(effects, vec![save(&state), open_profile("Modded")]);
     assert_eq!(selected(&state), Some(("Modded", &ProfileStatus::Opening)));
+  }
+
+  #[test]
+  fn picking_a_profile_from_find_mods_shows_its_mods() {
+    let mut state = ready("Default", &["Default", "Modded"]);
+
+    update(&mut state, Msg::TabChosen(crate::manage::Tab::Browse));
+    update(&mut state, Msg::ProfilePicked("Modded".to_string()));
+
+    assert_eq!(state.tab, crate::manage::Tab::Installed);
   }
 
   #[test]

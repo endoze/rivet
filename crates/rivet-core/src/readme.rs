@@ -485,6 +485,38 @@ mod tests {
     assert_eq!(fetches(&effects), ["Owner-Abe"]);
   }
 
+  #[test]
+  fn picking_the_open_profile_from_find_mods_shows_the_first_of_its_mods() {
+    let (mut state, _) = listing();
+
+    for msg in [
+      Msg::ProfileOpened {
+        game: "valheim".to_string(),
+        profile: crate::install::DEFAULT_PROFILE.to_string(),
+        installed: Ok(crate::test_installed(&[
+          ("Owner-Zed", "1.0.0"),
+          ("Owner-Abe", "1.0.0"),
+        ])),
+      },
+      Msg::ProfilesListed {
+        game: "valheim".to_string(),
+        names: Ok(vec![crate::install::DEFAULT_PROFILE.to_string()]),
+      },
+      Msg::TabChosen(Tab::Browse),
+    ] {
+      update(&mut state, msg);
+    }
+
+    let effects = update(
+      &mut state,
+      Msg::ProfilePicked(crate::install::DEFAULT_PROFILE.to_string()),
+    );
+
+    assert_eq!(state.tab, Tab::Installed);
+    assert_eq!(shown(&state), Some("Owner-Abe".to_string()));
+    assert_eq!(fetches(&effects), ["Owner-Abe"]);
+  }
+
   /// A one-version package last updated on `updated_day` of January 2024.
   fn listed(full_name: &str, updated_day: u32) -> serde_json::Value {
     let mut listed = crate::test_listed(full_name, &["1.0.0"], false);

@@ -371,6 +371,75 @@ fn the_toolbar_switches_views_without_moving_the_list(cx: &mut TestAppContext) {
   .unwrap();
 }
 
+#[gpui_kit::test]
+fn clicking_a_profile_from_find_mods_shows_its_mods(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[])].into()),
+    },
+    Msg::ProfilesListed {
+      game: "valheim".to_string(),
+      names: Ok(vec![DEFAULT_PROFILE.to_string(), "Modded".to_string()]),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+
+  let shows_profile = |window: &mut Window| {
+    window.try_find("installed-search").is_some()
+      && window.try_find("package-search").is_none()
+      && window.try_find("profile-Owner-ModA").is_some()
+  };
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(
+      window.try_find("package-search").is_some(),
+      "the game did not open on Find mods"
+    );
+
+    window.click("pick-profile-Default", cx);
+    window.render_frame(cx);
+
+    assert!(
+      shows_profile(window),
+      "clicking the current profile did not show its mods"
+    );
+
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
+    window.click("pick-profile-Modded", cx);
+    window.render_frame(cx);
+
+    assert!(
+      window.try_find("installed-search").is_some() && window.try_find("package-search").is_none(),
+      "clicking another profile did not show the profile search"
+    );
+  })
+  .unwrap();
+}
+
 /// The mock's package index with `Owner-ModA` in Tools and `Owner-ModC` in
 /// Maps.
 fn index_with_categories() -> Index {

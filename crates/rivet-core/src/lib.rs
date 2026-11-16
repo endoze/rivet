@@ -675,11 +675,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::CloseChosen(choice) => queue::close_chosen(state, choice),
     Msg::CloseDismissed => queue::close_dismissed(state),
     Msg::TabChosen(tab) => {
-      if state.tab != tab {
-        state.readme = None;
-      }
-
-      state.tab = tab;
+      show_tab(state, tab);
 
       Vec::new()
     }
@@ -774,6 +770,20 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::R2modmanToggled(folder) => r2modman::toggled(state, folder),
     Msg::R2modmanAccepted => r2modman::accepted(state),
   }
+}
+
+/// Shows `tab`, dropping the readme of the tab left so the next one follows
+/// the new list. Returns whether the tab changed.
+pub(crate) fn show_tab(state: &mut State, tab: Tab) -> bool {
+  let changed = state.tab != tab;
+
+  if changed {
+    state.readme = None;
+  }
+
+  state.tab = tab;
+
+  changed
 }
 
 /// Whether the picker offers `game`, a community slug.
