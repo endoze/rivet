@@ -1,12 +1,15 @@
 # Rivet
 
+[![Build Status](https://github.com/endoze/rivet/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/endoze/rivet/actions?query=branch%3Amaster)
+[![Coverage Status](https://coveralls.io/repos/github/endoze/rivet/badge.svg?branch=master)](https://coveralls.io/github/endoze/rivet?branch=master)
+
 Rivet is a free mod manager for games with mods on [Thunderstore](https://thunderstore.io), such as Valheim, Lethal Company and Risk of Rain 2. It finds mods, installs them with everything they need, keeps them up to date, and starts your game with them loaded.
 
 ![Rivet open on Valheim's Default profile: seven installed mods with their on and off switches, an Update all button above the list, and the details panel for one mod on the right](docs/screenshots/in-this-profile.png)
 
 If you've used r2modman, Rivet works the same way and can bring your r2modman profiles across.
 
-Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases): `rivet-windows-x86_64.exe` for Windows or `rivet-linux-x86_64` for Linux. Each comes with a `.sha256` file to check the download against.
+Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases): `rivet-windows-x86_64.exe` for Windows or `rivet-linux-x86_64` for Linux. Each comes with a `.sha256` file to check the download against. The Linux build runs on Debian 12, Ubuntu 24.04, SteamOS, Arch, Fedora, and other systems with glibc 2.36 or newer.
 
 ## Your first mods
 

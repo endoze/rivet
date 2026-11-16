@@ -1,0 +1,48 @@
+[workspace]
+changelog_config = "cliff.toml"
+changelog_update = true
+dependencies_update = true
+pr_labels = ["release"]
+allow_dirty = false
+publish_allow_dirty = false
+semver_check = false
+
+# Nothing goes to crates.io, so the last release is found from git tags.
+git_only = true
+publish = false
+
+# Release only when a release PR is merged, never on an ordinary push.
+release_always = false
+
+# dist makes the GitHub release from the tag.
+git_release_enable = false
+
+# The crates share the workspace version, and a change to any of them can
+# raise it past a patch. Only the app is tagged and keeps a changelog.
+[[package]]
+name = "rivet-app"
+version_group = "rivet"
+git_tag_name = "v{{ version }}"
+changelog_path = "CHANGELOG.md"
+changelog_include = ["rivet-core", "rivet-commands", "rivet-platform"]
+
+[[package]]
+name = "rivet-core"
+version_group = "rivet"
+git_tag_name = "v{{ version }}"
+git_tag_enable = false
+changelog_update = false
+
+[[package]]
+name = "rivet-commands"
+version_group = "rivet"
+git_tag_name = "v{{ version }}"
+git_tag_enable = false
+changelog_update = false
+
+[[package]]
+name = "rivet-platform"
+version_group = "rivet"
+git_tag_name = "v{{ version }}"
+git_tag_enable = false
+changelog_update = false

@@ -1,0 +1,5 @@
+# Read by rustup, so CI and dist's release builds use the same Rust. The Nix
+# dev shell brings its own toolchain.
+[toolchain]
+channel = "1.100.0"
+components = ["clippy", "rustfmt"]

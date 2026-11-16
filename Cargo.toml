@@ -8,13 +8,13 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license = "MIT"
+repository = "https://github.com/endoze/rivet"
 
 [workspace.dependencies]
 base64 = "0.22"
 rivet-core = { path = "crates/rivet-core" }
 rivet-commands = { path = "crates/rivet-commands" }
 rivet-platform = { path = "crates/rivet-platform" }
-rivet-app = { path = "crates/rivet-app" }
 dirs = "6"
 futures = "0.3"
 gpui-kit = "=0.9.1"
@@ -39,6 +39,11 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = true
 
 # gpui's Windows crate precompiles its shaders only when built on Windows. This
 # copy also precompiles them when cross-compiling from Linux. It must match the

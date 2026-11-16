@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 rivet-commands.workspace = true
@@ -28,3 +29,7 @@ gpui_wgpu.workspace = true
 [[bin]]
 name = "rivet"
 path = "src/main.rs"
+
+# dist skips packages with publish = false unless told to release them.
+[package.metadata.dist]
+dist = true
