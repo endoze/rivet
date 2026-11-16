@@ -205,7 +205,7 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
   })
   .unwrap();
   settle(cx, window);
-  choose(cx, window, "show-menu", "show-deprecated");
+  choose(cx, window, "filter-menu", "show-deprecated");
 
   let filters = |cx: &mut TestAppContext| {
     shell.read_with(cx, |shell, _| {
@@ -218,7 +218,7 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
     "Show deprecated was not turned on"
   );
 
-  choose(cx, window, "show-menu", "clear-filters");
+  choose(cx, window, "filter-menu", "clear-filters");
   cx.update_window(window, |_, window, _| {
     assert!(window.try_find("Owner-ModA").is_some());
   })
@@ -462,7 +462,7 @@ fn index_with_categories() -> Index {
 }
 
 #[gpui_kit::test]
-fn category_chips_filter_both_views(cx: &mut TestAppContext) {
+fn the_filter_menu_filters_both_views_by_category(cx: &mut TestAppContext) {
   cx.update(gpui_kit::init);
 
   let (commands, _sent) = unbounded::<Command>();
@@ -496,32 +496,70 @@ fn category_chips_filter_both_views(cx: &mut TestAppContext) {
   }
 
   cx.run_until_parked();
-  cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
-    window.click("category-Maps", cx);
-    window.render_frame(cx);
 
-    assert_eq!(window.find("category-Maps").checked(), Some(true));
-    assert_ne!(window.find("category-Tools").checked(), Some(true));
+  let button = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+
+      assert_eq!(window.find("filter-menu").label(), Some("Filter"));
+
+      window.find("filter-menu").bounds()
+    })
+    .unwrap();
+
+  choose(cx, window, "filter-menu", "category-Maps");
+  cx.update_window(window, |_, window, cx| {
     assert!(window.try_find("Owner-ModC").is_some());
     assert!(
       window.try_find("Owner-ModA").is_none(),
-      "a chip left Thunderstore unfiltered"
+      "a category left Thunderstore unfiltered"
+    );
+    assert_eq!(window.find("filter-menu").label(), Some("Filter (1)"));
+    assert_eq!(
+      window.find("filter-menu").bounds(),
+      button,
+      "the Filter button changed size with its count"
     );
 
+    window.click("filter-menu", cx);
+    window.render_frame(cx);
+
+    assert_eq!(window.find("category-Maps").checked(), Some(true));
+    assert_eq!(window.find("category-Tools").checked(), Some(false));
+    assert!(window.try_find("show-deprecated").is_some());
+    assert!(window.try_find("show-nsfw").is_some());
+
+    window.press("escape", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
     window.click("tab-installed", cx);
     window.render_frame(cx);
 
     assert!(window.try_find("profile-Owner-ModC").is_some());
     assert!(
       window.try_find("profile-Owner-ModA").is_none(),
-      "a chip left the profile unfiltered"
+      "a category left the profile unfiltered"
     );
+    assert_eq!(window.find("filter-menu").label(), Some("Filter (1)"));
 
-    window.click("category-Maps", cx);
+    window.click("filter-menu", cx);
     window.render_frame(cx);
 
+    assert_eq!(window.find("category-Maps").checked(), Some(true));
+    assert!(
+      window.try_find("show-deprecated").is_none(),
+      "the profile offers a filter only Thunderstore applies"
+    );
+
+    window.click("clear-filters", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, _| {
     assert!(window.try_find("profile-Owner-ModA").is_some());
+    assert_eq!(window.find("filter-menu").label(), Some("Filter"));
   })
   .unwrap();
 }

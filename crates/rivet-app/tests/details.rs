@@ -13,6 +13,8 @@ use thunderstore_engine::models::{Package, PackageIndex};
 
 /// The spec's narrowest detail pane.
 const PANE_MIN_WIDTH: f32 = 320.;
+/// The main column's gap between the toolbar and the list.
+const LIST_GAP: f32 = 12.;
 
 #[gpui_kit::test]
 fn the_pane_shows_the_first_mod_until_another_is_selected_without_moving_the_list(
@@ -108,6 +110,57 @@ fn the_pane_closes_and_reopens_at_the_width_it_was_given_without_moving_the_tool
     assert_eq!(window.find("details").bounds().size.width, widened);
     assert!(window.try_find("open-details").is_none());
     assert_eq!(toolbar(window), tools, "reopening moved the toolbar");
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_list_starts_under_the_toolbar_and_stays_there_as_the_pane_comes_and_goes(
+  cx: &mut TestAppContext,
+) {
+  let (window, _) = open_valheim(cx, vec![]);
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    let top = window.find("mod-list").bounds().top();
+    let toolbar = window.find("toolbar").bounds().bottom();
+
+    assert!(
+      window.try_find("category-Tools").is_none(),
+      "a category chip is drawn"
+    );
+    assert!(
+      top - toolbar <= px(LIST_GAP),
+      "something sits between the toolbar and the list: {toolbar:?} then {top:?}"
+    );
+
+    window.click("close-details", cx);
+    window.render_frame(cx);
+
+    assert_eq!(
+      window.find("mod-list").bounds().top(),
+      top,
+      "closing the pane moved the list"
+    );
+
+    window.click("open-details", cx);
+    window.render_frame(cx);
+
+    assert_eq!(
+      window.find("mod-list").bounds().top(),
+      top,
+      "reopening the pane moved the list"
+    );
+
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert_eq!(
+      window.find("mod-list").bounds().top(),
+      top,
+      "the profile's list starts lower than Thunderstore's"
+    );
   })
   .unwrap();
 }

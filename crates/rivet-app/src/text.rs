@@ -31,11 +31,24 @@ pub const NO_PACKAGES: &str = "No mods to show.";
 pub const PACKAGE_SEARCH_PLACEHOLDER: &str = "Search Thunderstore";
 pub const NO_PACKAGE_MATCHES: &str = "No mods match your search and filters.";
 pub const SORT_BY: &str = "Sort by";
-/// The menu of what Thunderstore's list leaves out.
-pub const SHOW: &str = "Show";
-pub const SHOW_NSFW: &str = "NSFW mods";
-pub const SHOW_DEPRECATED: &str = "Deprecated mods";
+pub const SHOW_NSFW: &str = "Show NSFW";
+pub const SHOW_DEPRECATED: &str = "Show deprecated";
 pub const CLEAR_FILTERS: &str = "Clear filters";
+
+/// The button opening the menu of the list's filters, with how many are on.
+///
+/// ```
+/// use rivet_app::text::filter_menu;
+///
+/// assert_eq!(filter_menu(0), "Filter");
+/// assert_eq!(filter_menu(2), "Filter (2)");
+/// ```
+pub fn filter_menu(active: usize) -> String {
+  match active {
+    0 => "Filter".to_string(),
+    active => format!("Filter ({active})"),
+  }
+}
 
 /// The label of the menu choosing Thunderstore's sort, naming the current
 /// one, such as `Sort: Downloads ↓`.

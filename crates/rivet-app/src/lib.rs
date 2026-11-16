@@ -12,7 +12,8 @@ pub mod theme;
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::avatar::Avatar;
-use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -587,8 +588,7 @@ impl Shell {
   }
 
   /// A game: the sidebar, and beside it the banners that need action, the
-  /// toolbar, the category chips over the list, and the detail pane while it
-  /// is shown. The pane starts [`DETAILS_SHARE`] of the width beside the
+  /// toolbar over the list, and the detail pane while it is shown. The pane starts [`DETAILS_SHARE`] of the width beside the
   /// sidebar, and keeps whatever width it is dragged to.
   fn render_game(&self, game: &str, window: &Window, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
@@ -603,22 +603,15 @@ impl Shell {
         .map(|browse| render_browse(browse, &self.icons, cx)),
       Tab::Installed => Some(self.render_installed(cx)),
     };
-    let list = v_flex()
-      .flex_1()
-      .min_w_0()
-      .gap_2()
-      .pr_3()
-      .overflow_hidden()
-      .children(self.render_chips(cx))
-      .child(
-        v_flex()
-          .id("mod-list")
-          .flex_1()
-          .min_h_0()
-          .overflow_hidden()
-          .children(content)
-          .test_support(),
-      );
+    let list = v_flex().flex_1().min_w_0().pr_3().overflow_hidden().child(
+      v_flex()
+        .id("mod-list")
+        .flex_1()
+        .min_h_0()
+        .overflow_hidden()
+        .children(content)
+        .test_support(),
+    );
     let details = resizable_panel()
       .visible(shown)
       .size(pane_width)
@@ -903,8 +896,9 @@ impl Shell {
 
   /// The bar over the list, [`TOOLBAR_HEIGHT`] tall whichever view it shows,
   /// so switching views leaves the list where it was: the segmented control
-  /// choosing the view, the search box of the view shown, that view's
-  /// actions, and at the far end Details while the detail pane is closed.
+  /// choosing the view, the search box of the view shown, the Filter menu,
+  /// that view's actions, and at the far end Details while the detail pane is
+  /// closed.
   /// Details keeps its slot [`DETAILS_BUTTON_WIDTH`] wide while the pane is
   /// open, so nothing moves when it comes and goes.
   fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -946,6 +940,7 @@ impl Shell {
           )
           .test_support(),
       )
+      .child(self.render_filter_menu(&shell))
       .child(div().flex_1())
       .children(tools)
       .child(
@@ -1086,9 +1081,38 @@ impl Shell {
     vec![update.into_any_element(), menu.into_any_element()]
   }
 
-  /// Thunderstore's actions: its sort, a menu of what the list leaves out
-  /// with clearing every filter, and refreshing it. None until the game's
-  /// list exists.
+  /// The menu filtering the view shown: a checkbox per category, which both
+  /// views share, Show deprecated and Show NSFW on Thunderstore, and Clear
+  /// filters. Its label counts the filters on, and it stays
+  /// [`FILTER_BUTTON_WIDTH`] wide whatever the count, so the toolbar does not
+  /// move. Disabled until the game's list exists.
+  fn render_filter_menu(&self, shell: &WeakEntity<Self>) -> impl IntoElement {
+    let tab = self.state.tab;
+    let (categories, filters) = self
+      .state
+      .browse
+      .as_ref()
+      .map(|browse| (browse.categories.clone(), browse.filters.clone()))
+      .unwrap_or_default();
+    let shown = match tab {
+      Tab::Browse => usize::from(filters.show_deprecated) + usize::from(filters.show_nsfw),
+      Tab::Installed => 0,
+    };
+    let shell = shell.clone();
+
+    Button::new("filter-menu")
+      .label(text::filter_menu(filters.categories.len() + shown))
+      .ghost()
+      .small()
+      .flex_none()
+      .w(px(FILTER_BUTTON_WIDTH))
+      .disabled(self.state.browse.is_none())
+      .dropdown_caret(true)
+      .dropdown_menu(move |menu, _, _| filter_menu(menu, tab, &categories, &filters, &shell))
+  }
+
+  /// Thunderstore's actions: its sort and refreshing it. None until the
+  /// game's list exists.
   fn render_browse_tools(&self, shell: &WeakEntity<Self>) -> Vec<AnyElement> {
     let Some(browse) = self.state.browse.as_ref() else {
       return Vec::new();
@@ -1105,17 +1129,6 @@ impl Shell {
 
         move |menu, _, _| sort_menu(menu, &filters, &shell)
       });
-    let show = Button::new("show-menu")
-      .label(text::SHOW)
-      .ghost()
-      .small()
-      .dropdown_caret(true)
-      .dropdown_menu({
-        let shell = shell.clone();
-        let filters = filters.clone();
-
-        move |menu, _, _| show_menu(menu, &filters, &shell)
-      });
     let refresh = Button::new("refresh")
       .icon(IconName::RefreshCw)
       .ghost()
@@ -1124,37 +1137,7 @@ impl Shell {
       .accessibility_label(text::REFRESH)
       .on_click(send(shell, Msg::RefreshPressed));
 
-    vec![
-      sort.into_any_element(),
-      show.into_any_element(),
-      refresh.into_any_element(),
-    ]
-  }
-
-  /// The game's categories as one wrapping row of chips, shared by both
-  /// views, or `None` until the package list names any.
-  fn render_chips(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-    let browse = self
-      .state
-      .browse
-      .as_ref()
-      .filter(|browse| !browse.categories.is_empty())?;
-    let chips: Vec<Button> = browse
-      .categories
-      .iter()
-      .map(|category| chip(category, browse.filters.categories.contains(category), cx))
-      .collect();
-
-    Some(
-      h_flex()
-        .id("categories")
-        .flex_none()
-        .flex_wrap()
-        .gap(px(CHIP_GAP))
-        .children(chips)
-        .test_support()
-        .into_any_element(),
-    )
+    vec![sort.into_any_element(), refresh.into_any_element()]
   }
 
   /// The open profile's packages the search and chosen categories keep, with
@@ -1706,73 +1689,84 @@ fn sort_menu(menu: PopupMenu, filters: &Filters, shell: &WeakEntity<Shell>) -> P
   })
 }
 
-/// `menu` with what Thunderstore's list leaves out, each checked while
-/// shown, and clearing the search and every filter.
-fn show_menu(menu: PopupMenu, filters: &Filters, shell: &WeakEntity<Shell>) -> PopupMenu {
+/// `menu` with a checkbox per one of `categories`, and on Thunderstore one
+/// each for showing deprecated and NSFW packages, then Clear filters. On
+/// Thunderstore that clears its search and every filter; on the profile's
+/// view it clears only the categories, the one filter that view applies.
+fn filter_menu(
+  menu: PopupMenu,
+  tab: Tab,
+  categories: &[String],
+  filters: &Filters,
+  shell: &WeakEntity<Shell>,
+) -> PopupMenu {
+  let menu = categories.iter().fold(
+    menu.scrollable(true).label(text::CATEGORIES),
+    |menu, category| {
+      menu.item(
+        checkbox_item(
+          format!("category-{category}"),
+          category.clone(),
+          filters.categories.contains(category),
+        )
+        .on_click(send(shell, Msg::CategoryToggled(category.clone()))),
+      )
+    },
+  );
   let clear = shell.clone();
 
-  menu
-    .item(
-      menu_item("show-deprecated", text::SHOW_DEPRECATED, None)
-        .checked(filters.show_deprecated)
+  match tab {
+    Tab::Browse => menu
+      .separator()
+      .item(
+        checkbox_item(
+          "show-deprecated",
+          text::SHOW_DEPRECATED,
+          filters.show_deprecated,
+        )
         .on_click(send(shell, Msg::ShowDeprecated(!filters.show_deprecated))),
-    )
-    .item(
-      menu_item("show-nsfw", text::SHOW_NSFW, None)
-        .checked(filters.show_nsfw)
-        .on_click(send(shell, Msg::ShowNsfw(!filters.show_nsfw))),
-    )
-    .separator()
-    .item(
+      )
+      .item(
+        checkbox_item("show-nsfw", text::SHOW_NSFW, filters.show_nsfw)
+          .on_click(send(shell, Msg::ShowNsfw(!filters.show_nsfw))),
+      )
+      .separator()
+      .item(
+        menu_item("clear-filters", text::CLEAR_FILTERS, None)
+          .disabled(!filters.is_filtering())
+          .on_click(move |_, window, cx| {
+            clear
+              .update(cx, |this, cx| {
+                this.dispatch(Msg::FiltersCleared, cx);
+                this.empty_package_search(window, cx);
+              })
+              .ok();
+          }),
+      ),
+    Tab::Installed => menu.separator().item(
       menu_item("clear-filters", text::CLEAR_FILTERS, None)
-        .disabled(!filters.is_filtering())
-        .on_click(move |_, window, cx| {
-          clear
-            .update(cx, |this, cx| {
-              this.dispatch(Msg::FiltersCleared, cx);
-              this.empty_package_search(window, cx);
-            })
-            .ok();
-        }),
-    )
+        .disabled(filters.categories.is_empty())
+        .on_click(send(shell, Msg::CategoriesCleared)),
+    ),
+  }
 }
 
-/// The chip of `category`, an outline at rest and tinted with the primary
-/// color while `chosen`. Pressing it adds the category to the filter both
-/// views share, or takes it out.
-fn chip(category: &str, chosen: bool, cx: &mut Context<Shell>) -> Button {
-  let palette = Palette::new(cx);
-  let theme = cx.theme();
-  let (fill, outline, ink, hover) = if chosen {
-    let tint = theme.primary.opacity(CHIP_TINT);
+/// A menu item holding a checkbox reading `label`, found in tests by `id`.
+/// The item's click toggles it, so the checkbox takes no clicks of its own.
+fn checkbox_item(
+  id: impl Into<ElementId>,
+  label: impl Into<SharedString>,
+  checked: bool,
+) -> PopupMenuItem {
+  let id = id.into();
+  let label = label.into();
 
-    (tint, theme.primary, palette.text, tint)
-  } else {
-    (
-      theme.transparent,
-      palette.border,
-      palette.muted_text,
-      palette.row_hover,
-    )
-  };
-  let variant = ButtonCustomVariant::new(cx)
-    .color(fill)
-    .foreground(ink)
-    .hover(hover)
-    .active(fill);
-  let toggled = category.to_string();
-
-  Button::new(SharedString::from(format!("category-{category}")))
-    .label(SharedString::from(category.to_string()))
-    .xsmall()
-    .custom(variant)
-    .rounded(px(CHIP_RADIUS))
-    .border_1()
-    .border_color(outline)
-    .toggled(chosen)
-    .on_click(cx.listener(move |this, _, _, cx| {
-      this.dispatch(Msg::CategoryToggled(toggled.clone()), cx);
-    }))
+  PopupMenuItem::element(move |_, _| {
+    Checkbox::new(id.clone())
+      .label(label.clone())
+      .checked(checked)
+      .tab_stop(false)
+  })
 }
 
 /// A full-width row of the sidebar reading `label` from its left edge.
@@ -2273,11 +2267,8 @@ const TOOLBAR_HEIGHT: f32 = 36.0;
 const VIEW_COUNT_WIDTH: f32 = 28.0;
 const SEARCH_WIDTH: f32 = 340.0;
 const SEARCH_MIN_WIDTH: f32 = 160.0;
-const CHIP_GAP: f32 = 6.0;
-/// Rounds a chip's ends fully at any height.
-const CHIP_RADIUS: f32 = 999.0;
-/// How much of the primary color fills a chosen chip.
-const CHIP_TINT: f32 = 0.14;
+/// Wide enough for a small ghost button reading `Filter (99)` with its caret.
+const FILTER_BUTTON_WIDTH: f32 = 104.0;
 /// The padding around a game's main column, beside the sidebar.
 const MAIN_PADDING: f32 = 16.0;
 /// How much of the width beside the sidebar the detail pane starts with.

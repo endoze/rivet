@@ -207,6 +207,8 @@ pub enum Msg {
   SortPressed(SortKey),
   /// A category of the package list was chosen, or unchosen if it was.
   CategoryToggled(String),
+  /// Every chosen category of the package list was unchosen.
+  CategoriesCleared,
   /// NSFW packages were turned on or off in the package list.
   ShowNsfw(bool),
   /// Deprecated packages were turned on or off in the package list.
@@ -652,6 +654,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::CategoryToggled(category) => {
       browse::filter(state, |filters| filters.toggle_category(category))
     }
+    Msg::CategoriesCleared => browse::filter(state, |filters| filters.categories.clear()),
     Msg::ShowNsfw(show) => browse::filter(state, |filters| filters.show_nsfw = show),
     Msg::ShowDeprecated(show) => browse::filter(state, |filters| filters.show_deprecated = show),
     Msg::FiltersCleared => browse::filter(state, Filters::clear),

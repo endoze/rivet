@@ -954,6 +954,35 @@ mod tests {
   }
 
   #[test]
+  fn clearing_categories_unchooses_every_one_and_keeps_the_rest() {
+    let mut state = showing(vec![
+      categorized("Owner-Map", 1, &["Maps"]),
+      categorized("Owner-Boat", 2, &["Mods", "Tools"]),
+      categorized("Owner-Skin", 3, &["Cosmetics"]),
+    ]);
+
+    update(&mut state, Msg::CategoryToggled("Tools".to_string()));
+    update(&mut state, Msg::CategoryToggled("Maps".to_string()));
+    update(&mut state, Msg::ShowNsfw(true));
+    update(&mut state, Msg::SortPressed(SortKey::Name));
+
+    assert_eq!(listed(&state), ["Owner-Boat", "Owner-Map"]);
+
+    update(&mut state, Msg::CategoriesCleared);
+
+    assert_eq!(
+      filters(&state),
+      &Filters {
+        sort: SortKey::Name,
+        direction: SortDirection::Ascending,
+        show_nsfw: true,
+        ..Filters::default()
+      }
+    );
+    assert_eq!(listed(&state), ["Owner-Boat", "Owner-Map", "Owner-Skin"]);
+  }
+
+  #[test]
   fn nsfw_and_deprecated_packages_are_hidden_until_each_is_turned_on() {
     let mut deprecated = package("Owner-Deprecated", 2);
     let mut nsfw = package("Owner-Nsfw", 3);
