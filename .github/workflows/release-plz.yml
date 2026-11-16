@@ -25,7 +25,22 @@ jobs:
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
 
-      - name: Run release-plz
+      # Tag before opening release PRs. Run the other way round, merging a
+      # release PR opens another one for the same version, since its tag
+      # doesn't exist yet.
+      - name: Tag a merged release PR
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+      - name: Fetch the new tag
+        run: git fetch --tags origin
+
+      - name: Open or update the release PR
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}

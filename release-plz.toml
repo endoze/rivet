@@ -6,6 +6,7 @@ pr_labels = ["release"]
 allow_dirty = false
 publish_allow_dirty = false
 semver_check = false
+features_always_increment_minor = true
 
 # Nothing goes to crates.io, so the last release is found from git tags.
 git_only = true
