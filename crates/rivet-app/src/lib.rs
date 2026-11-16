@@ -437,7 +437,8 @@ impl Shell {
   /// The bar along the bottom of the window, [`STATUS_BAR_HEIGHT`] tall
   /// whatever it shows, so nothing above it moves. It shows the running
   /// operation with how many wait behind it, or else what the app is busy
-  /// with, and is empty when neither.
+  /// with, and is empty when neither. On Windows it ends in a label saying
+  /// the build is experimental.
   fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
     let queue = &self.state.queue;
@@ -460,17 +461,34 @@ impl Shell {
           .into_any_element()
       }),
     };
+    let experimental = (self.state.host == Some(HostOs::Windows)).then(|| {
+      div()
+        .id("experimental")
+        .flex_none()
+        .text_sm()
+        .text_color(palette.warning)
+        .child(text::EXPERIMENTAL)
+        .test_support()
+    });
 
     h_flex()
-      .id("status-bar")
       .flex_none()
       .h(px(STATUS_BAR_HEIGHT))
       .px_4()
+      .gap_3()
       .overflow_hidden()
       .border_t_1()
       .border_color(palette.border)
-      .children(shown)
-      .test_support()
+      .child(
+        h_flex()
+          .id("status-bar")
+          .flex_1()
+          .min_w_0()
+          .h_full()
+          .children(shown)
+          .test_support(),
+      )
+      .children(experimental)
       .into_any_element()
   }
 

@@ -16,6 +16,9 @@ use thunderstore_engine::profile::launch::LaunchMode;
 use thunderstore_engine::profile::layout::BadName;
 
 pub const LOADING: &str = "Loading";
+/// Shown on Windows until the manual pass in `docs/windows-manual-check.md`
+/// is done.
+pub const EXPERIMENTAL: &str = "Experimental Windows build";
 pub const PICKER_TITLE: &str = "Choose your game";
 pub const SEARCH_PLACEHOLDER: &str = "Search games";
 pub const NO_GAME_MATCHES: &str = "No game matches your search.";

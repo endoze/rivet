@@ -2035,6 +2035,69 @@ fn settings_change_the_game_folder_and_save_typed_launch_arguments(cx: &mut Test
   assert_eq!(last_saved(&drain()).launch_arguments, "-console -windowed");
 }
 
+/// A window on the game screen for Valheim, with `host` as the system the app
+/// runs on.
+fn game_screen_on(cx: &mut TestAppContext, host: HostOs) -> AnyWindowHandle {
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let mut state = State::new(one_game());
+
+  state.host = Some(host);
+
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(valheim_settings())))
+    .unwrap();
+  cx.run_until_parked();
+
+  window
+}
+
+#[gpui_kit::test]
+fn the_windows_build_says_it_is_experimental_without_moving_the_tabs(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let linux = game_screen_on(cx, HostOs::Linux);
+  let windows = game_screen_on(cx, HostOs::Windows);
+  let (linux_tabs, labelled) = cx
+    .update_window(linux, |_, window, cx| {
+      window.render_frame(cx);
+
+      (
+        window.find("tab-browse").bounds(),
+        window.try_find("experimental").is_some(),
+      )
+    })
+    .unwrap();
+
+  assert!(!labelled, "the Linux build is labelled experimental");
+
+  cx.update_window(windows, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(
+      window.try_find("experimental").is_some(),
+      "the Windows build is not labelled experimental"
+    );
+    assert!(
+      window.within("status-bar").elements().is_empty(),
+      "the label sits in the status bar's space for changes"
+    );
+    assert_eq!(
+      window.find("tab-browse").bounds(),
+      linux_tabs,
+      "the label moved the tabs"
+    );
+  })
+  .unwrap();
+}
+
 #[gpui_kit::test]
 fn settings_force_a_linux_game_to_run_under_proton(cx: &mut TestAppContext) {
   cx.update(gpui_kit::init);
