@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 base64.workspace = true
 futures.workspace = true
+reqwest.workspace = true
 rivet-core.workspace = true
 rivet-platform.workspace = true
 sha2.workspace = true

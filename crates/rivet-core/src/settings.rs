@@ -34,6 +34,9 @@ pub struct Settings {
   /// window is on.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub interface_size: Option<u16>,
+  /// Whether the game picker shows its games as a list or a grid of covers.
+  #[serde(skip_serializing_if = "PickerLayout::is_list")]
+  pub picker_layout: PickerLayout,
   /// Per-game settings, keyed by community slug.
   pub games: BTreeMap<String, GameSettings>,
 }
@@ -158,6 +161,23 @@ pub enum ThemeFamily {
 impl ThemeFamily {
   fn is_default(&self) -> bool {
     *self == Self::Default
+  }
+}
+
+/// How the game picker lays out its games.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PickerLayout {
+  /// One row per game: its cover, then its name.
+  #[default]
+  List,
+  /// Cover tiles with the game's name under each, wrapping to the width.
+  Grid,
+}
+
+impl PickerLayout {
+  fn is_list(&self) -> bool {
+    *self == Self::List
   }
 }
 
@@ -341,6 +361,32 @@ mod tests {
       serde_json::to_value(Settings::default()).unwrap()["interface_size"].is_null(),
       "an unchosen size is written to the file"
     );
+  }
+
+  #[test]
+  fn the_picker_lists_games_until_a_grid_is_chosen() {
+    let older: Settings = serde_json::from_value(serde_json::json!({ "games": {} })).unwrap();
+
+    assert_eq!(Settings::default().picker_layout, PickerLayout::List);
+    assert_eq!(older.picker_layout, PickerLayout::List);
+    assert_eq!(
+      serde_json::to_value(Settings::default())
+        .unwrap()
+        .get("picker_layout"),
+      None
+    );
+  }
+
+  #[test]
+  fn a_chosen_picker_layout_is_saved_by_name_and_read_back() {
+    let settings = Settings {
+      picker_layout: PickerLayout::Grid,
+      ..Settings::default()
+    };
+    let saved = serde_json::to_value(&settings).unwrap();
+
+    assert_eq!(saved["picker_layout"], "grid");
+    assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
   }
 
   #[test]

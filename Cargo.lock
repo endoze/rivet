@@ -6308,6 +6308,7 @@ dependencies = [
  "rivet-core",
  "rivet-platform",
  "serde_json",
+ "tempfile",
  "thunderstore-engine",
 ]
 
@@ -6317,6 +6318,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "futures",
+ "reqwest",
  "rivet-core",
  "rivet-platform",
  "serde_json",

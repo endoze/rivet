@@ -25,12 +25,12 @@ use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use loader_files::{Copied, FileRemoval, LoaderFile};
 use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
 use notice::Notice;
-use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
+use picker::{Cover, Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use portability::{Export, Exported, Exporting, Importing, ReadFailure, Shared, Source};
 use queue::{CloseChoice, Closing, Queue};
 use r2modman::R2modman;
 use readme::Readme;
-use settings::{Appearance, GameSettings, RuntimeChoice, Settings, ThemeFamily};
+use settings::{Appearance, GameSettings, PickerLayout, RuntimeChoice, Settings, ThemeFamily};
 use settings_screen::{SettingsScreen, Target};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -172,6 +172,13 @@ pub enum Msg {
   SettingsSaved(Result<(), String>),
   /// The picker's search text changed.
   SearchChanged(String),
+  /// The picker's list or grid was chosen.
+  PickerLayoutChosen(PickerLayout),
+  /// Game covers now on disk, each by community slug. A
+  /// [`Command::CacheCovers`] sends these as covers are found or downloaded.
+  CoversCached(BTreeMap<String, PathBuf>),
+  /// A [`Command::CacheCovers`] ended, every cover it could get reported.
+  CoverCachingEnded,
   /// A game in the picker was clicked, by community slug.
   GamePicked(String),
   /// Steam's libraries were searched for a game: the folder it is installed
@@ -479,6 +486,11 @@ pub enum Command {
   },
   /// Answered with [`Msg::FolderListed`].
   ListFolder(PathBuf),
+  /// Download each cover not yet in the cache. Sends [`Msg::CoversCached`]
+  /// with those already there, then again as each download lands; a cover
+  /// that can't be fetched is left out. Answered with
+  /// [`Msg::CoverCachingEnded`].
+  CacheCovers(Vec<Cover>),
   /// Read a community's cached package index without touching the network.
   /// Answered with [`Msg::CachedIndexRead`].
   ReadCachedIndex(String),
@@ -600,24 +612,20 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
         Some(game) if offered(state, &game) && state.settings.folder(&game).is_some() => {
           show_game(state, game)
         }
-        _ => {
-          state.screen = Screen::Picker;
-
-          Vec::new()
-        }
+        _ => picker::show(state),
       }
     }
     Msg::SettingsLoaded(Err(detail)) => {
       state.settings_error = Some(SettingsError::Load(detail));
-      state.screen = Screen::Picker;
 
-      Vec::new()
+      picker::show(state)
     }
     Msg::SearchChanged(query) => {
       state.picker.query = query;
 
       Vec::new()
     }
+    Msg::PickerLayoutChosen(layout) => picker::layout_chosen(state, layout),
     Msg::GamePicked(game) => pick_game(state, game),
     Msg::SteamSearched { game, folder } => steam_searched(state, game, folder),
     Msg::FolderChosen(folder) => match state.screen {
@@ -629,7 +637,6 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       _ => folder_listed(state, folder, entries),
     },
     Msg::SwitchGamePressed => {
-      state.screen = Screen::Picker;
       state.picker.step = Step::Idle;
       state.picker.refusal = None;
       state.picker.fallback = None;
@@ -650,6 +657,12 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       if !state.is_launching() {
         state.launch = None;
       }
+
+      picker::show(state)
+    }
+    Msg::CoversCached(covers) => picker::covers_cached(state, covers),
+    Msg::CoverCachingEnded => {
+      state.picker.caching_covers = false;
 
       Vec::new()
     }
@@ -1250,6 +1263,169 @@ mod tests {
     update(&mut state, Msg::SettingsLoaded(Ok(Settings::default())));
 
     state
+  }
+
+  /// Valheim with a cover and Risk of Rain 2 without one.
+  fn covered_ecosystem() -> Ecosystem {
+    Ecosystem::from_json(
+      r#"{
+        "games": {
+          "valheim": {
+            "label": "valheim",
+            "meta": { "displayName": "Valheim", "iconUrl": "valheim/valheim-cover.webp" },
+            "r2modman": [{
+              "gameInstanceType": "game",
+              "exeNames": ["valheim.x86_64"],
+              "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+            }]
+          },
+          "riskofrain2": {
+            "label": "riskofrain2",
+            "meta": { "displayName": "Risk of Rain 2" },
+            "r2modman": [{
+              "gameInstanceType": "game",
+              "exeNames": ["Risk of Rain 2.exe"],
+              "packageIndex": "https://thunderstore.io/c/riskofrain2/api/v1/package/"
+            }]
+          }
+        }
+      }"#,
+    )
+    .unwrap()
+  }
+
+  fn cache_valheim_cover() -> Effect {
+    Effect::Run(Command::CacheCovers(vec![Cover {
+      game: "valheim".to_string(),
+      path: "valheim/valheim-cover.webp".to_string(),
+    }]))
+  }
+
+  #[test]
+  fn showing_the_picker_caches_the_covers_of_games_that_have_one() {
+    let mut state = State::new(covered_ecosystem());
+
+    update(&mut state, Msg::Started);
+
+    let effects = update(&mut state, Msg::SettingsLoaded(Ok(Settings::default())));
+
+    assert_eq!(effects, vec![cache_valheim_cover()]);
+  }
+
+  #[test]
+  fn unreadable_settings_still_cache_the_covers() {
+    let mut state = State::new(covered_ecosystem());
+
+    update(&mut state, Msg::Started);
+
+    let effects = update(&mut state, Msg::SettingsLoaded(Err("bad toml".to_string())));
+
+    assert_eq!(effects, vec![cache_valheim_cover()]);
+  }
+
+  /// A Linux state on Valheim, with a cover for it, after its settings.
+  fn in_covered_valheim() -> State {
+    let mut state = State::new(covered_ecosystem());
+
+    state.host = Some(HostOs::Linux);
+
+    update(&mut state, Msg::Started);
+    update(
+      &mut state,
+      Msg::SettingsLoaded(Ok(settings_with("valheim", "/games/valheim"))),
+    );
+
+    state
+  }
+
+  #[test]
+  fn covers_are_not_asked_for_again_while_they_are_being_cached() {
+    let mut state = in_covered_valheim();
+
+    let first = update(&mut state, Msg::SwitchGamePressed);
+
+    update(&mut state, Msg::GamePicked("valheim".to_string()));
+
+    let again = update(&mut state, Msg::SwitchGamePressed);
+
+    assert_eq!(state.screen, Screen::Picker);
+    assert_eq!(first, vec![cache_valheim_cover()]);
+    assert_eq!(again, vec![]);
+  }
+
+  #[test]
+  fn covers_still_missing_once_caching_ends_are_asked_for_on_the_next_show() {
+    let mut state = in_covered_valheim();
+
+    update(&mut state, Msg::SwitchGamePressed);
+    update(&mut state, Msg::CoverCachingEnded);
+
+    let again = update(&mut state, Msg::SwitchGamePressed);
+
+    assert_eq!(again, vec![cache_valheim_cover()]);
+  }
+
+  #[test]
+  fn cached_covers_are_not_asked_for_again() {
+    let mut state = in_covered_valheim();
+
+    update(&mut state, Msg::SwitchGamePressed);
+    update(
+      &mut state,
+      Msg::CoversCached([("valheim".to_string(), PathBuf::from("/cache/v.webp"))].into()),
+    );
+    update(&mut state, Msg::CoverCachingEnded);
+
+    let again = update(&mut state, Msg::SwitchGamePressed);
+
+    assert_eq!(again, vec![]);
+  }
+
+  #[test]
+  fn cached_covers_are_kept_for_their_games() {
+    let mut state = State::new(covered_ecosystem());
+    let valheim = PathBuf::from("/cache/covers/valheim/valheim-cover.webp");
+
+    update(
+      &mut state,
+      Msg::CoversCached([("valheim".to_string(), valheim.clone())].into()),
+    );
+
+    assert_eq!(state.picker.covers.get("valheim"), Some(&valheim));
+  }
+
+  #[test]
+  fn choosing_a_picker_layout_saves_it() {
+    let mut state = on_picker();
+
+    let effects = update(&mut state, Msg::PickerLayoutChosen(PickerLayout::Grid));
+
+    assert_eq!(state.settings.picker_layout, PickerLayout::Grid);
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+    );
+  }
+
+  #[test]
+  fn choosing_a_picker_layout_over_unreadable_settings_keeps_the_file() {
+    let mut state = started();
+
+    update(&mut state, Msg::SettingsLoaded(Err("bad toml".to_string())));
+
+    let effects = update(&mut state, Msg::PickerLayoutChosen(PickerLayout::Grid));
+
+    assert_eq!(state.settings.picker_layout, PickerLayout::Grid);
+    assert_eq!(effects, vec![]);
+  }
+
+  #[test]
+  fn choosing_the_picker_layout_already_shown_saves_nothing() {
+    let mut state = on_picker();
+
+    let effects = update(&mut state, Msg::PickerLayoutChosen(PickerLayout::List));
+
+    assert_eq!(effects, vec![]);
   }
 
   fn checking(game: &str, folder: &str) -> State {

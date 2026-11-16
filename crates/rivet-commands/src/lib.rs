@@ -12,7 +12,7 @@ use rivet_core::install::{
 use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
 use rivet_core::loader_files::{Copied, FileRemoval, LoaderFile};
 use rivet_core::manage::{SetEnabled, Uninstall};
-use rivet_core::picker::NotFound;
+use rivet_core::picker::{Cover, NotFound};
 use rivet_core::pins::{self, Pins, Unpin};
 use rivet_core::readme;
 use rivet_core::settings::Settings;
@@ -22,6 +22,7 @@ use rivet_core::{Command, Msg};
 use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use thunderstore_engine::client::{Refreshed, ThunderstoreClient};
 use thunderstore_engine::ecosystem::Ecosystem;
@@ -46,6 +47,8 @@ pub struct Config {
   pub data: PathBuf,
   /// The Thunderstore host, such as [`THUNDERSTORE`].
   pub thunderstore: String,
+  /// The host game covers are fetched from, such as [`COVERS`].
+  pub covers: String,
   /// The game definitions installs are routed by.
   pub ecosystem: Ecosystem,
   /// The Steam install whose launch options are read when the user chose
@@ -104,6 +107,15 @@ pub fn spawn_detached(mut command: std::process::Command) -> std::io::Result<()>
 /// The public Thunderstore host.
 pub const THUNDERSTORE: &str = "https://thunderstore.io";
 
+/// Thunderstore's asset host, which game covers are fetched from.
+pub const COVERS: &str = "https://gcdn.thunderstore.io/assets";
+
+/// How many covers download at once.
+const COVER_DOWNLOADS: usize = 8;
+
+/// How long one cover download may take before it is given up.
+const COVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The `User-Agent` sent with every request the app makes.
 pub const USER_AGENT: &str = concat!("rivet/", env!("CARGO_PKG_VERSION"));
 
@@ -141,6 +153,11 @@ pub async fn run(
       let entries = list_folder(&folder).await;
 
       Msg::FolderListed { folder, entries }
+    }
+    Command::CacheCovers(covers) => {
+      cache_covers(config, covers, progress).await;
+
+      Msg::CoverCachingEnded
     }
     Command::ReadCachedIndex(community) => {
       let index = match client(config, &community) {
@@ -1075,6 +1092,115 @@ async fn save_settings(file: &Path, settings: &Settings) -> Result<(), String> {
     .map_err(|error| failure(file, error))
 }
 
+/// Reports the `covers` already in the cache, then downloads the rest a few
+/// at a time, reporting each as it lands. A cover the host refuses, or that
+/// fails or times out on its own, is left out; once the host can't be
+/// connected to, the downloads still waiting are dropped rather than each
+/// waiting out its own timeout.
+async fn cache_covers(config: &Config, covers: Vec<Cover>, progress: &UnboundedSender<Msg>) {
+  let folder = config.cache.join("covers");
+  let mut found = BTreeMap::new();
+  let mut missing = Vec::new();
+
+  for cover in covers {
+    let Some(file) = cover_file(&folder, &cover.path) else {
+      continue;
+    };
+
+    if tokio::fs::try_exists(&file).await.unwrap_or(false) {
+      found.insert(cover.game, file);
+    } else {
+      missing.push((cover, file));
+    }
+  }
+
+  if !found.is_empty() {
+    progress.unbounded_send(Msg::CoversCached(found)).ok();
+  }
+
+  let Ok(client) = reqwest::Client::builder()
+    .user_agent(USER_AGENT)
+    .timeout(COVER_TIMEOUT)
+    .build()
+  else {
+    return;
+  };
+  let unreachable = AtomicBool::new(false);
+
+  futures::stream::iter(missing)
+    .for_each_concurrent(COVER_DOWNLOADS, |(cover, file)| {
+      let (client, unreachable) = (&client, &unreachable);
+
+      async move {
+        if unreachable.load(Ordering::Relaxed) {
+          return;
+        }
+
+        let url = format!("{}/{}", config.covers.trim_end_matches('/'), cover.path);
+
+        match download_cover(client, &url, &file).await {
+          Ok(true) => {
+            let cached = [(cover.game, file)].into();
+
+            progress.unbounded_send(Msg::CoversCached(cached)).ok();
+          }
+          Err(error) if error.is_connect() => unreachable.store(true, Ordering::Relaxed),
+          Ok(false) | Err(_) => {}
+        }
+      }
+    })
+    .await;
+}
+
+/// Where the cover at `path`, relative to the asset host, is cached under
+/// `folder`, or `None` for a path that is empty or would leave `folder`.
+fn cover_file(folder: &Path, path: &str) -> Option<PathBuf> {
+  let safe = !path.is_empty()
+    && !path.contains('\\')
+    && path
+      .split('/')
+      .all(|part| !part.is_empty() && part != "." && part != "..");
+
+  safe.then(|| folder.join(path))
+}
+
+/// Downloads `url` to `file`, written aside and renamed into place so a
+/// cover is never half there. `Ok(false)` when the host refused it, answered
+/// with something other than an image, or it could not be stored; `Err`
+/// when the request failed.
+async fn download_cover(
+  client: &reqwest::Client,
+  url: &str,
+  file: &Path,
+) -> Result<bool, reqwest::Error> {
+  let response = client.get(url).send().await?;
+  let image = response
+    .headers()
+    .get(reqwest::header::CONTENT_TYPE)
+    .and_then(|kind| kind.to_str().ok())
+    .is_some_and(|kind| kind.starts_with("image/"));
+
+  if !response.status().is_success() || !image {
+    return Ok(false);
+  }
+
+  let Ok(bytes) = response.bytes().await else {
+    return Ok(false);
+  };
+  let partial = file.with_extension("partial");
+  let stored = async {
+    if let Some(parent) = file.parent() {
+      tokio::fs::create_dir_all(parent).await?;
+    }
+
+    tokio::fs::write(&partial, &bytes).await?;
+
+    tokio::fs::rename(&partial, file).await
+  };
+
+  Ok(stored.await.is_ok())
+}
+
 async fn list_folder(folder: &Path) -> Result<Vec<String>, String> {
   let mut reader = tokio::fs::read_dir(folder)
     .await
@@ -1184,6 +1310,7 @@ mod tests {
       cache: dir.path().join("cache"),
       data: dir.path().join("data"),
       thunderstore: THUNDERSTORE.to_string(),
+      covers: COVERS.to_string(),
       ecosystem: Ecosystem::bundled(),
       steam: None,
       steam_installs: Vec::new(),
@@ -1224,6 +1351,7 @@ mod tests {
   pub(crate) fn config_for(dir: &TempDir, mock: &MockThunderstore) -> Config {
     Config {
       thunderstore: mock.url(),
+      covers: mock.url(),
       ..config_in(dir)
     }
   }
@@ -3563,5 +3691,148 @@ mod tests {
     let answer = futures::executor::block_on(inbox.next());
 
     assert_eq!(answer, None);
+  }
+
+  fn valheim_cover(path: &str) -> rivet_core::picker::Cover {
+    rivet_core::picker::Cover {
+      game: "valheim".to_string(),
+      path: path.to_string(),
+    }
+  }
+
+  /// Every cover the messages report as cached, by game.
+  fn reported(messages: Vec<Msg>) -> BTreeMap<String, PathBuf> {
+    messages
+      .into_iter()
+      .flat_map(|msg| match msg {
+        Msg::CoversCached(covers) => covers,
+        other => panic!("unexpected message {other:?}"),
+      })
+      .collect()
+  }
+
+  #[test]
+  fn a_missing_cover_is_downloaded_into_the_cache() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+
+    mock
+      .server_mut()
+      .mock("GET", "/valheim/valheim-cover.webp")
+      .with_status(200)
+      .with_header("Content-Type", "image/webp")
+      .with_body("cover bytes")
+      .create();
+
+    let config = config_for(&dir, &mock);
+    let file = config.cache.join("covers/valheim/valheim-cover.webp");
+
+    let (messages, answer) = run_any(
+      Command::CacheCovers(vec![valheim_cover("valheim/valheim-cover.webp")]),
+      &config,
+    );
+
+    assert_eq!(answer, Some(Msg::CoverCachingEnded));
+    assert_eq!(
+      reported(messages),
+      [("valheim".to_string(), file.clone())].into()
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "cover bytes");
+  }
+
+  #[test]
+  fn a_cover_already_cached_is_reported_without_downloading_it() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let fetch = mock
+      .server_mut()
+      .mock("GET", "/valheim/valheim-cover.webp")
+      .expect(0)
+      .create();
+    let config = config_for(&dir, &mock);
+    let file = config.cache.join("covers/valheim/valheim-cover.webp");
+
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "kept").unwrap();
+
+    let (messages, _) = run_any(
+      Command::CacheCovers(vec![valheim_cover("valheim/valheim-cover.webp")]),
+      &config,
+    );
+
+    assert_eq!(reported(messages), [("valheim".to_string(), file)].into());
+    fetch.assert();
+  }
+
+  #[test]
+  fn a_refused_cover_is_left_out() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+
+    mock
+      .server_mut()
+      .mock("GET", "/valheim/valheim-cover.webp")
+      .with_status(403)
+      .create();
+
+    let config = config_for(&dir, &mock);
+
+    let (messages, _) = run_any(
+      Command::CacheCovers(vec![valheim_cover("valheim/valheim-cover.webp")]),
+      &config,
+    );
+
+    assert_eq!(reported(messages), BTreeMap::new());
+    assert!(!config.cache.join("covers/valheim").exists());
+  }
+
+  #[test]
+  fn a_page_answered_in_place_of_a_cover_is_not_kept() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+
+    mock
+      .server_mut()
+      .mock("GET", "/valheim/valheim-cover.webp")
+      .with_status(200)
+      .with_header("Content-Type", "text/html")
+      .with_body("<html>Sign in to the Wi-Fi</html>")
+      .create();
+
+    let config = config_for(&dir, &mock);
+
+    let (messages, _) = run_any(
+      Command::CacheCovers(vec![valheim_cover("valheim/valheim-cover.webp")]),
+      &config,
+    );
+
+    assert_eq!(reported(messages), BTreeMap::new());
+    assert!(!config.cache.join("covers/valheim").exists());
+  }
+
+  #[test]
+  fn a_cover_path_leaving_the_covers_folder_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let fetch = mock
+      .server_mut()
+      .mock("GET", "/escape.webp")
+      .expect(0)
+      .create();
+    let config = config_for(&dir, &mock);
+
+    for path in [
+      "../escape.webp",
+      "/escape.webp",
+      "valheim\\..\\escape.webp",
+      "",
+    ] {
+      let (messages, _) = run_any(Command::CacheCovers(vec![valheim_cover(path)]), &config);
+
+      assert_eq!(reported(messages), BTreeMap::new(), "{path}");
+    }
+
+    assert!(!config.cache.join("escape.webp").exists());
+    fetch.assert();
   }
 }

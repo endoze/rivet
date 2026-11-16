@@ -1,6 +1,9 @@
 //! The game picker: which games it offers and whether a chosen folder holds
 //! the game.
 
+use crate::settings::{PickerLayout, Settings};
+use crate::{Command, Effect, Screen, SettingsError, State};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use thunderstore_engine::ecosystem::{Ecosystem, GameDef};
 
@@ -15,6 +18,56 @@ pub struct Picker {
   /// Why the user was last asked to choose a folder by hand, shown until
   /// another game is picked.
   pub fallback: Option<Fallback>,
+  /// The cover image on disk of each game that has one cached, by
+  /// community slug.
+  pub covers: BTreeMap<String, PathBuf>,
+  /// Whether a [`Command::CacheCovers`] is running, so no other is sent.
+  pub caching_covers: bool,
+}
+
+/// A game's cover to cache: `path` is relative to Thunderstore's asset host
+/// and to the covers folder in the cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cover {
+  /// The game's community slug.
+  pub game: String,
+  pub path: String,
+}
+
+/// Shows the picker, asking for the covers of the games it offers that are
+/// not cached yet, unless they are already being cached. A cover that could
+/// not be fetched is asked for again the next time the picker shows.
+pub(crate) fn show(state: &mut State) -> Vec<Effect> {
+  state.screen = Screen::Picker;
+
+  if state.picker.caching_covers {
+    return Vec::new();
+  }
+
+  let covers: Vec<Cover> = games(&state.ecosystem, "")
+    .into_iter()
+    .filter(|game| !game.meta.icon_url.is_empty())
+    .filter(|game| !state.picker.covers.contains_key(&game.slug))
+    .map(|game| Cover {
+      game: game.slug.clone(),
+      path: game.meta.icon_url.clone(),
+    })
+    .collect();
+
+  if covers.is_empty() {
+    return Vec::new();
+  }
+
+  state.picker.caching_covers = true;
+
+  vec![Effect::Run(Command::CacheCovers(covers))]
+}
+
+/// Records the `covers` now on disk, by community slug.
+pub(crate) fn covers_cached(state: &mut State, covers: BTreeMap<String, PathBuf>) -> Vec<Effect> {
+  state.picker.covers.extend(covers);
+
+  Vec::new()
 }
 
 /// How far choosing a game's folder has got.
@@ -60,6 +113,23 @@ pub(crate) fn steam_app_id(game: &GameDef) -> Option<u32> {
   game.profile().and_then(|profile| profile.steam_app_id())
 }
 
+/// Records the picker's list or grid and saves it, when it changed. While the
+/// settings file could not be read, nothing is saved, so the defaults shown
+/// in its place never overwrite it.
+pub(crate) fn layout_chosen(state: &mut State, layout: PickerLayout) -> Vec<Effect> {
+  if state.settings.picker_layout == layout {
+    return Vec::new();
+  }
+
+  state.settings.picker_layout = layout;
+
+  if matches!(state.settings_error, Some(SettingsError::Load(_))) {
+    return Vec::new();
+  }
+
+  vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+}
+
 /// A folder refused as a game's install folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
@@ -83,6 +153,55 @@ pub fn games<'a>(ecosystem: &'a Ecosystem, query: &str) -> Vec<&'a GameDef> {
   games.sort_by_cached_key(|game| game.display_name().to_lowercase());
 
   games
+}
+
+/// `games` split into those with a folder in `settings`, then the rest, each
+/// in the order given.
+pub fn set_up_first<'a>(
+  games: Vec<&'a GameDef>,
+  settings: &Settings,
+) -> (Vec<&'a GameDef>, Vec<&'a GameDef>) {
+  games
+    .into_iter()
+    .partition(|game| settings.folder(&game.slug).is_some())
+}
+
+/// A store a game is sold on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Store {
+  Steam,
+  EpicGamesStore,
+  XboxGamePass,
+  OculusStore,
+  /// EA's store, named `origin` in the game definitions.
+  EaApp,
+}
+
+/// The stores `game` is sold on, from its own definition and its primary
+/// install definition, each once in the order first listed. A platform the
+/// definitions name `other`, or one Rivet doesn't know, is left out.
+pub fn stores(game: &GameDef) -> Vec<Store> {
+  let profile = game
+    .profile()
+    .map_or(&[][..], |profile| &profile.distributions);
+  let mut stores = Vec::new();
+
+  for distribution in game.distributions.iter().chain(profile) {
+    let store = match distribution.platform.as_str() {
+      "steam" | "steam-direct" => Store::Steam,
+      "epic-games-store" => Store::EpicGamesStore,
+      "xbox-game-pass" => Store::XboxGamePass,
+      "oculus-store" => Store::OculusStore,
+      "origin" => Store::EaApp,
+      _ => continue,
+    };
+
+    if !stores.contains(&store) {
+      stores.push(store);
+    }
+  }
+
+  stores
 }
 
 /// Whether the picker offers `game`: its definition has a mod manager install
@@ -179,6 +298,61 @@ mod tests {
       names(games(&ecosystem, "")),
       vec!["Lethal Company", "Risk of Rain 2", "Valheim"]
     );
+  }
+
+  #[test]
+  fn a_game_names_each_store_it_is_sold_on_once() {
+    let ecosystem = Ecosystem::from_json(
+      r#"{
+        "games": {
+          "nine-kings": {
+            "label": "nine-kings",
+            "meta": { "displayName": "9 Kings" },
+            "distributions": [
+              { "platform": "steam", "identifier": "1" },
+              { "platform": "other", "identifier": "" },
+              { "platform": "epic-games-store", "identifier": "2" }
+            ],
+            "r2modman": [{
+              "gameInstanceType": "game",
+              "distributions": [
+                { "platform": "steam-direct", "identifier": "1" },
+                { "platform": "xbox-game-pass", "identifier": "3" }
+              ]
+            }]
+          }
+        }
+      }"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+      stores(ecosystem.game("nine-kings").unwrap()),
+      vec![Store::Steam, Store::EpicGamesStore, Store::XboxGamePass]
+    );
+  }
+
+  #[test]
+  fn a_game_listing_no_store_names_none() {
+    let ecosystem = test_ecosystem();
+
+    assert_eq!(stores(ecosystem.game("valheim").unwrap()), vec![]);
+  }
+
+  #[test]
+  fn games_with_a_folder_are_set_apart_from_the_rest_in_order() {
+    let ecosystem = test_ecosystem();
+    let mut settings = Settings::default();
+
+    settings.games.insert(
+      "valheim".to_string(),
+      crate::settings::GameSettings::new("/games/valheim"),
+    );
+
+    let (set_up, rest) = set_up_first(games(&ecosystem, ""), &settings);
+
+    assert_eq!(names(set_up), vec!["Valheim"]);
+    assert_eq!(names(rest), vec!["Lethal Company", "Risk of Rain 2"]);
   }
 
   #[test]

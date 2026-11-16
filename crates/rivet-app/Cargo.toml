@@ -17,6 +17,7 @@ thunderstore-engine.workspace = true
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
+tempfile.workspace = true
 thunderstore-engine = { workspace = true, features = ["rustls-tls", "test-support"] }
 
 # A text system that can start with no fonts at all, which gpui builds only on

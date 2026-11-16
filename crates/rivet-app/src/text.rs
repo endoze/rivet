@@ -7,7 +7,7 @@ use rivet_core::install::{Action, FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
 use rivet_core::manage::Removal;
 use rivet_core::notice::Notice;
-use rivet_core::picker::{FolderRefusal, NotFound, Refusal, STEAM_LIBRARY};
+use rivet_core::picker::{FolderRefusal, NotFound, Refusal, STEAM_LIBRARY, Store};
 use rivet_core::portability::{Destination, Exported, ReadFailure};
 use rivet_core::switcher::{NameRefusal, Naming, ProfileChange};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,38 @@ pub const LOADING: &str = "Loading";
 /// is done.
 pub const EXPERIMENTAL: &str = "Experimental Windows build";
 pub const PICKER_TITLE: &str = "Choose your game";
+pub const PICKER_LIST: &str = "List";
+pub const PICKER_GRID: &str = "Grid";
+pub const YOUR_GAMES: &str = "Your games";
+pub const ALL_GAMES: &str = "All games";
+/// The tag on a game Rivet has a folder for, so it is ready to mod.
+pub const READY: &str = "Ready";
+
+/// The stores a game is sold on, joined with middle dots.
+///
+/// ```
+/// use rivet_app::text::stores;
+/// use rivet_core::picker::Store;
+///
+/// assert_eq!(
+///   stores(&[Store::Steam, Store::EpicGamesStore]),
+///   "Steam · Epic Games Store"
+/// );
+/// ```
+pub fn stores(stores: &[Store]) -> String {
+  let names: Vec<&str> = stores
+    .iter()
+    .map(|store| match store {
+      Store::Steam => "Steam",
+      Store::EpicGamesStore => "Epic Games Store",
+      Store::XboxGamePass => "Xbox Game Pass",
+      Store::OculusStore => "Oculus Store",
+      Store::EaApp => "EA app",
+    })
+    .collect();
+
+  names.join(" · ")
+}
 pub const SEARCH_PLACEHOLDER: &str = "Search games";
 pub const NO_GAME_MATCHES: &str = "No game matches your search.";
 /// Beside the game's name in the sidebar, so it leaves "game" out.

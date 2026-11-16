@@ -15,6 +15,8 @@ fn the_redesigns_icons_load_beside_the_component_defaults() {
     IconName::ChevronRight,
     IconName::ChevronsUpDown,
     IconName::Check,
+    IconName::List,
+    IconName::LayoutGrid,
   ];
 
   for icon in icons {

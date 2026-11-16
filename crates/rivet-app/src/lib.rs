@@ -47,16 +47,17 @@ use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::portability::{Exporting, Importing};
 use rivet_core::readme::{Package, Readme, Status};
-use rivet_core::settings::{Appearance, INTERFACE_SIZES, RuntimeChoice, ThemeFamily};
+use rivet_core::settings::{Appearance, INTERFACE_SIZES, PickerLayout, RuntimeChoice, ThemeFamily};
 use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use segmented::{Segment, Segmented};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use theme::{Typography as _, spec};
+use thunderstore_engine::ecosystem::GameDef;
 use thunderstore_engine::profile::launch::{HostOs, LaunchMode, Runtime};
 use thunderstore_engine::query::PackageRow;
 
@@ -462,35 +463,118 @@ impl Shell {
         ))
         .test_support()
     });
-    let rows: Vec<_> = games
-      .into_iter()
-      .map(|game| {
-        let slug = game.slug.clone();
+    let layout = self.state.settings.picker_layout;
+    let empty = games.is_empty().then_some(text::NO_GAME_MATCHES);
+    let games = match layout {
+      PickerLayout::List => {
+        let (set_up, rest) = rivet_core::picker::set_up_first(games, &self.state.settings);
+        let headed = !set_up.is_empty();
+        let heading = |id: &'static str, label: &'static str| {
+          div()
+            .id(id)
+            .pt_2()
+            .text_small()
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(palette.muted_text)
+            .child(label)
+            .test_support()
+        };
+        let set_up: Vec<_> = set_up
+          .into_iter()
+          .map(|game| self.render_pickable(game, layout, cx))
+          .collect();
+        let rest: Vec<_> = rest
+          .into_iter()
+          .map(|game| self.render_pickable(game, layout, cx))
+          .collect();
+        let all = (headed && !rest.is_empty()).then(|| heading("all-games", text::ALL_GAMES));
 
-        div()
-          .id(SharedString::from(game.slug.clone()))
-          .px_3()
-          .py_2()
-          .map(|row| paint_row(row, false, palette))
-          .child(SharedString::from(game.display_name().to_string()))
-          .on_click(cx.listener(move |this, _, _, cx| {
-            this.dispatch(Msg::GamePicked(slug.clone()), cx);
-          }))
-          .test_support()
-      })
-      .collect();
-    let list = v_flex()
-      .id("games")
-      .flex_1()
-      .overflow_y_scroll()
-      .when(rows.is_empty(), |list| list.child(text::NO_GAME_MATCHES))
-      .children(rows);
+        v_flex()
+          .id("games-list")
+          .flex_1()
+          .w_full()
+          .max_w(spec(LIST_WIDTH))
+          .mx_auto()
+          .overflow_y_scroll()
+          .children(empty)
+          .children(headed.then(|| heading("your-games", text::YOUR_GAMES)))
+          .children(set_up)
+          .children(all)
+          .children(rest)
+      }
+      PickerLayout::Grid => {
+        let tiles: Vec<_> = games
+          .into_iter()
+          .map(|game| self.render_pickable(game, layout, cx))
+          .collect();
 
-    v_flex()
-      .size_full()
-      .p_4()
+        v_flex()
+          .id("games-grid")
+          .flex_1()
+          .overflow_y_scroll()
+          .child(
+            div()
+              .flex()
+              .flex_row()
+              .flex_wrap()
+              .justify_center()
+              .gap_3()
+              .children(empty)
+              .children(tiles),
+          )
+      }
+    }
+    .test_support();
+    let shell = cx.weak_entity();
+    let labelled = |icon: gpui_kit::assets::IconName, label: &'static str| {
+      h_flex()
+        .gap_1p5()
+        .child(Icon::new(icon).small())
+        .child(label)
+    };
+    let layouts = Segmented::new("picker-layouts")
+      .child(Segment::new(
+        "picker-list",
+        labelled(gpui_kit::assets::IconName::List, text::PICKER_LIST),
+        layout == PickerLayout::List,
+        send(&shell, Msg::PickerLayoutChosen(PickerLayout::List)),
+      ))
+      .child(Segment::new(
+        "picker-grid",
+        labelled(gpui_kit::assets::IconName::LayoutGrid, text::PICKER_GRID),
+        layout == PickerLayout::Grid,
+        send(&shell, Msg::PickerLayoutChosen(PickerLayout::Grid)),
+      ));
+    let toolbar = h_flex()
+      .flex_none()
+      .h(spec(TOOLBAR_HEIGHT))
       .gap_3()
-      .child(div().text_xl().child(text::PICKER_TITLE))
+      .child(
+        div()
+          .id("picker-search")
+          .flex_1()
+          .min_w(spec(SEARCH_MIN_WIDTH))
+          .child(
+            Input::new(&self.search)
+              .small()
+              .prefix(Icon::new(IconName::Search))
+              .cleanable(true),
+          )
+          .test_support(),
+      )
+      .child(div().id("picker-layout").child(layouts).test_support());
+    let header = v_flex()
+      .flex_none()
+      .w_full()
+      .max_w(spec(LIST_WIDTH))
+      .mx_auto()
+      .gap_3()
+      .child(
+        div()
+          .text_size(spec(GAME_NAME_SIZE))
+          .font_weight(FontWeight::BOLD)
+          .child(text::PICKER_TITLE),
+      )
       .children(
         self
           .state
@@ -500,9 +584,129 @@ impl Shell {
       )
       .children(fallback)
       .children(refusal.map(|refusal| failure(palette, refusal)))
-      .child(Input::new(&self.search))
-      .child(list)
+      .child(toolbar);
+
+    v_flex()
+      .size_full()
+      .p(spec(MAIN_PADDING))
+      .gap_3()
+      .child(header)
+      .child(games)
       .into_any_element()
+  }
+
+  /// `game` in the picker, found in tests by its community slug. In the
+  /// list it is a row with its cover, its name over the stores it is sold
+  /// on, and a tag when Rivet has its folder; in the grid, a cover tile with
+  /// its name under it.
+  fn render_pickable(
+    &self,
+    game: &GameDef,
+    layout: PickerLayout,
+    cx: &mut Context<Self>,
+  ) -> AnyElement {
+    let palette = Palette::new(cx);
+    let slug = game.slug.clone();
+    let name = game.display_name();
+    let cover = self
+      .state
+      .picker
+      .covers
+      .get(&game.slug)
+      .map(PathBuf::as_path);
+    let item = match layout {
+      PickerLayout::List => {
+        let stores = rivet_core::picker::stores(game);
+        let stores = (!stores.is_empty()).then(|| {
+          let names = text::stores(&stores);
+
+          div()
+            .id("stores")
+            .truncate()
+            .text_small()
+            .text_color(palette.muted_text)
+            .aria_label(names.clone())
+            .child(names)
+            .test_support()
+        });
+        let set_up = self.state.settings.folder(&game.slug).is_some().then(|| {
+          let color = cx.theme().success;
+
+          div()
+            .id("ready")
+            .flex_none()
+            .aria_label(text::READY)
+            .child(
+              Tag::custom(color, color, color)
+                .outline()
+                .small()
+                .rounded_full()
+                .text_size(spec(TAG_TEXT_SIZE))
+                .child(
+                  h_flex()
+                    .gap_1()
+                    .child(Icon::new(IconName::Check).xsmall())
+                    .child(text::READY),
+                ),
+            )
+            .test_support()
+        });
+
+        list_row(slug.clone(), false, palette)
+          .child(game_cover(
+            name,
+            cover,
+            LIST_COVER_WIDTH,
+            LIST_COVER_HEIGHT,
+            cx,
+          ))
+          .child(
+            v_flex()
+              .flex_1()
+              .min_w_0()
+              .gap_0p5()
+              .child(name_label(name))
+              .children(stores),
+          )
+          .children(set_up)
+          .child(
+            Icon::new(IconName::ChevronRight)
+              .small()
+              .text_color(palette.muted_text),
+          )
+      }
+      PickerLayout::Grid => v_flex()
+        .id(SharedString::from(slug.clone()))
+        .w(spec(GRID_COVER_WIDTH + 2. * GRID_TILE_PADDING))
+        .p(spec(GRID_TILE_PADDING))
+        .gap_2()
+        .rounded(spec(ROW_RADIUS))
+        .map(|tile| paint_row(tile, false, palette))
+        .child(game_cover(
+          name,
+          cover,
+          GRID_COVER_WIDTH,
+          GRID_COVER_HEIGHT,
+          cx,
+        ))
+        .child(name_label(name)),
+    };
+    let item = item
+      .cursor_pointer()
+      .on_click(cx.listener(move |this, _, _, cx| {
+        this.dispatch(Msg::GamePicked(slug.clone()), cx);
+      }))
+      .test_support();
+
+    match layout {
+      PickerLayout::List => div()
+        .flex_none()
+        .h(spec(GAME_ROW_HEIGHT))
+        .py(spec(ROW_GAP / 2.))
+        .child(item)
+        .into_any_element(),
+      PickerLayout::Grid => item.into_any_element(),
+    }
   }
 
   /// The bar along the bottom of the window, [`STATUS_BAR_HEIGHT`] tall
@@ -2238,6 +2442,49 @@ fn mod_icon(name: &str, url: Option<&str>, size: f32, cx: &App) -> AnyElement {
     .into_any_element()
 }
 
+/// A game's cover, `width` by `height` spec pixels, from the cached file at
+/// `path`, found in tests as `cover`. Until the cover is cached, or when it
+/// fails to load, the initials of `name` show in its place.
+fn game_cover(name: &str, path: Option<&Path>, width: f32, height: f32, cx: &App) -> AnyElement {
+  let name = SharedString::from(name.to_string());
+  let avatar_size = spec(width).to_pixels(cx.theme().font_size);
+  let initials = move || {
+    v_flex()
+      .id("initials")
+      .size_full()
+      .justify_center()
+      .child(
+        Avatar::new()
+          .name(name.clone())
+          .with_size(avatar_size)
+          .rounded(spec(ICON_RADIUS)),
+      )
+      .test_support()
+      .into_any_element()
+  };
+  let cover = match path {
+    Some(path) => div()
+      .id("cover")
+      .size_full()
+      .child(
+        img(path.to_path_buf())
+          .size_full()
+          .rounded(spec(ICON_RADIUS))
+          .with_fallback(initials),
+      )
+      .test_support()
+      .into_any_element(),
+    None => initials(),
+  };
+
+  div()
+    .flex_none()
+    .w(spec(width))
+    .h(spec(height))
+    .child(cover)
+    .into_any_element()
+}
+
 /// A mod's state as a tag, found in tests by `id`, outlined and lettered in
 /// `color`.
 fn state_tag(id: String, color: Hsla, label: String) -> AnyElement {
@@ -2395,6 +2642,20 @@ const ROW_RADIUS: f32 = 6.0;
 const ROW_GROUP: &str = "row";
 const ICON_SIZE: f32 = 40.0;
 const ICON_RADIUS: f32 = 6.0;
+/// The picker's list, centered so its rows don't stretch across a wide
+/// window.
+const LIST_WIDTH: f32 = 760.0;
+/// A cover in the picker's list, in the covers' 3:4 shape.
+const LIST_COVER_WIDTH: f32 = 45.0;
+const LIST_COVER_HEIGHT: f32 = 60.0;
+/// Tall enough for a [`LIST_COVER_HEIGHT`] cover, with a [`ROW_GAP`].
+const GAME_ROW_HEIGHT: f32 = 76.0;
+/// A cover in the picker's grid, in the covers' 3:4 shape.
+const GRID_COVER_WIDTH: f32 = 120.0;
+const GRID_COVER_HEIGHT: f32 = 160.0;
+/// The space around a cover inside its grid tile, so hovering paints a
+/// margin around it.
+const GRID_TILE_PADDING: f32 = 6.0;
 /// Wide enough for the widest main action.
 const ACTIONS_WIDTH: f32 = 84.0;
 /// Wide enough for a small switch. The mod loader's row keeps it empty, so

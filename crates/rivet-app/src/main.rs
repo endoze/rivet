@@ -15,6 +15,7 @@ fn main() {
     cache: rivet_platform::paths::cache_folder().expect("the platform reports no cache location"),
     data: rivet_platform::paths::data_folder().expect("the platform reports no data location"),
     thunderstore: rivet_commands::THUNDERSTORE.to_string(),
+    covers: rivet_commands::COVERS.to_string(),
     ecosystem: Ecosystem::bundled(),
     steam: rivet_platform::steam::root(),
     steam_installs: rivet_platform::steam::installs(),

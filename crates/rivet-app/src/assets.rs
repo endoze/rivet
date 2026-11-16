@@ -4,7 +4,7 @@
 use gpui_kit::{AssetSource, Result, SharedString};
 use std::borrow::Cow;
 
-gpui_kit::assets::icon_assets!(Extra, [X, Gamepad2]);
+gpui_kit::assets::icon_assets!(Extra, [X, Gamepad2, List, LayoutGrid]);
 
 /// Rivet's asset source. Draw an extra icon with its `gpui_kit::assets::IconName`.
 #[derive(Clone, Copy, Debug, Default)]
