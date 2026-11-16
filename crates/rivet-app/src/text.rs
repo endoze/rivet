@@ -431,17 +431,21 @@ pub const UNINSTALL: &str = "Uninstall";
 pub const ENABLE_ALL: &str = "Enable all";
 pub const DISABLE_ALL: &str = "Disable all";
 pub const UPDATE: &str = "Update";
+pub const UPDATE_ALL: &str = "Update all";
 
-/// The button updating every mod an update would change.
+/// How many of the profile's mods an update would change, over the list.
 ///
 /// ```
-/// use rivet_app::text::update_mods;
+/// use rivet_app::text::updates_available;
 ///
-/// assert_eq!(update_mods(1), "Update 1 mod");
-/// assert_eq!(update_mods(2), "Update 2 mods");
+/// assert_eq!(updates_available(1), "1 update available");
+/// assert_eq!(updates_available(2), "2 updates available");
 /// ```
-pub fn update_mods(count: usize) -> String {
-  format!("Update {}", mod_count(count))
+pub fn updates_available(count: usize) -> String {
+  match count {
+    1 => "1 update available".to_string(),
+    count => format!("{count} updates available"),
+  }
 }
 
 pub const DEPRECATED: &str = "Deprecated";

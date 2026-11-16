@@ -1347,7 +1347,7 @@ fn the_installed_tab_badges_packages_and_updates_one_or_all(cx: &mut TestAppCont
     assert!(window.try_find("deprecated-badge-Owner-ModB").is_some());
     assert!(window.try_find("missing-badge-Owner-ModC").is_some());
     assert!(window.try_find("update-Owner-ModC").is_none());
-    assert_eq!(window.find("update-all").label(), Some("Update 1 mod"));
+    assert_eq!(window.find("update-all").label(), Some("Update all"));
 
     window.click("update-all", cx);
   })
@@ -1374,6 +1374,80 @@ fn the_installed_tab_badges_packages_and_updates_one_or_all(cx: &mut TestAppCont
   .unwrap();
 
   assert_eq!(updated(&mut sent), (2, vec!["Owner-ModD".to_string()]));
+}
+
+#[gpui_kit::test]
+fn the_top_of_the_profile_list_offers_update_all_only_while_updates_wait(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let mut updated_mod_d = package("Owner-ModD", &[]);
+
+  updated_mod_d.1.version = "2.0.0".to_string();
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(index_with_mod_b_deprecated())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModB", &[]), package("Owner-ModD", &[])].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    let line = window.within("updates-available");
+
+    assert_eq!(
+      line.find("updates-available-count").label(),
+      Some("1 update available")
+    );
+    assert_eq!(line.find("update-all").label(), Some("Update all"));
+    assert!(window.within("toolbar").try_find("update-all").is_none());
+    assert!(window.within("toolbar").try_find("profile-menu").is_some());
+
+    window.click("update-all", cx);
+  })
+  .unwrap();
+
+  assert_eq!(updated(&mut sent), (1, vec!["Owner-ModD".to_string()]));
+
+  answers
+    .unbounded_send(Msg::OperationFinished {
+      operation: 1,
+      outcome: Ok(Outcome {
+        changed: vec![],
+        failed: vec![],
+        cancelled: vec![],
+        profile: Ok([package("Owner-ModB", &[]), updated_mod_d].into()),
+      }),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("updates-available").is_none());
+    assert!(window.try_find("update-all").is_none());
+  })
+  .unwrap();
 }
 
 #[gpui_kit::test]

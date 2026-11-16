@@ -22,7 +22,7 @@ Your profiles are listed in the sidebar; click one to see its mods. Use **New** 
 The **In this profile** tab lists the mods in the open profile.
 
 - **Turn a mod off** with its switch. It stays installed, so you can turn it back on later. Handy for finding which mod is causing a problem.
-- **Update** a mod from its row when a newer version is out, or update every mod at once with the **Update** button at the top right.
+- **Update** a mod from its row when a newer version is out, or update every mod at once with **Update all** above the list.
 - **Uninstall** a mod by clicking it and pressing **Uninstall** in the details panel.
 - **Stay on an older version** by pressing **Choose version** in the details panel. Rivet pins that version and leaves it alone when you update everything. Press **Unpin** to follow new versions again.
 

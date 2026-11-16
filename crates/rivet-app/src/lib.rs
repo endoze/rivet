@@ -1299,22 +1299,12 @@ impl Shell {
       ))
   }
 
-  /// The profile view's actions: updating every mod an update would change,
-  /// and a menu with the list's sort and turning every mod on or off.
+  /// The profile view's actions: a menu with the list's sort and turning
+  /// every mod on or off.
   fn render_profile_tools(&self, shell: &WeakEntity<Self>) -> Vec<AnyElement> {
     let state = &self.state;
     let can_change = state.can_manage();
     let sort = state.manage.sort;
-    let updatable = state
-      .badges()
-      .values()
-      .filter(|badges| badges.updatable())
-      .count();
-    let update = Button::new("update-all")
-      .label(text::update_mods(updatable))
-      .small()
-      .disabled(!can_change || updatable == 0)
-      .on_click(send(shell, Msg::UpdateAllPressed));
     let shell = shell.clone();
     let menu = Button::new("profile-menu")
       .icon(IconName::Ellipsis)
@@ -1358,7 +1348,7 @@ impl Shell {
           )
       });
 
-    vec![update.into_any_element(), menu.into_any_element()]
+    vec![menu.into_any_element()]
   }
 
   /// The menu filtering the view shown: a checkbox per category, which both
@@ -1450,12 +1440,14 @@ impl Shell {
       }),
     )
     .flex_1();
+    let updates = self.render_updates_available(cx);
 
     v_flex()
       .flex_1()
       .min_h_0()
       .gap_2()
       .image_cache(self.icons.clone())
+      .children(updates)
       .children(empty)
       .child(
         v_flex()
@@ -1466,6 +1458,55 @@ impl Shell {
           .test_support(),
       )
       .into_any_element()
+  }
+
+  /// The line over the profile's list saying how many of its mods an update
+  /// would change, with Update all, disabled while a change can't start.
+  /// `None` while no mod has an update.
+  fn render_updates_available(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let state = &self.state;
+    let updatable = state
+      .badges()
+      .values()
+      .filter(|badges| badges.updatable())
+      .count();
+
+    if updatable == 0 {
+      return None;
+    }
+
+    let palette = Palette::new(cx);
+    let count = div()
+      .id("updates-available-count")
+      .flex_1()
+      .truncate()
+      .aria_label(text::updates_available(updatable))
+      .child(text::updates_available(updatable))
+      .test_support();
+    let update = Button::new("update-all")
+      .label(text::UPDATE_ALL)
+      .small()
+      .flex_none()
+      .disabled(!state.can_manage())
+      .on_click(send(&cx.weak_entity(), Msg::UpdateAllPressed));
+
+    Some(
+      h_flex()
+        .id("updates-available")
+        .flex_none()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_1p5()
+        .bg(palette.panel)
+        .border_1()
+        .border_color(palette.border)
+        .rounded(spec(PANE_RADIUS))
+        .child(count)
+        .child(update)
+        .test_support()
+        .into_any_element(),
+    )
   }
 
   /// The detail pane: the shown mod's icon, name, author and tags with
