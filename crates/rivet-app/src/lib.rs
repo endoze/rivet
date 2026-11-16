@@ -11,10 +11,12 @@ pub mod theme;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
+use gpui_kit::component::avatar::Avatar;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab as Segment, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::TextView;
@@ -24,10 +26,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-  Anchor, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, Entity,
-  FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions,
-  Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-  TestSupportExt as _, WeakEntity, Window, div, img, px, uniform_list,
+  Anchor, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, ElementId,
+  Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
+  PathPromptOptions, Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+  StyledImage as _, Subscription, Task, TestSupportExt as _, WeakEntity, Window, div, img, px,
+  uniform_list,
 };
 use icons::IconCache;
 use modal::Modal;
@@ -1075,40 +1078,48 @@ impl Shell {
   }
 
   /// The open profile's packages the search and chosen categories keep, with
-  /// their badges, or why there are none.
+  /// their badges, or why there are none. Only the rows in view are built.
   fn render_installed(&self, cx: &mut Context<Self>) -> AnyElement {
     let state = &self.state;
-    let can_change = state.can_manage();
-    let badges = state.badges();
     let installed = state.profile.as_ref().and_then(Profile::installed);
-    let rows: Vec<AnyElement> = state
-      .installed_rows()
-      .into_iter()
-      .map(|(full_name, package)| {
-        let toggle = state.can_toggle(full_name);
-        let selected = is_selected(state.readme.as_ref(), full_name);
-        let badges = badges.get(full_name);
-
-        installed_row(full_name, package, badges, toggle, can_change, selected, cx)
-      })
-      .collect();
+    let count = state.installed_rows().len();
     let empty = match installed {
       Some(installed) if installed.is_empty() => Some(text::NO_INSTALLED),
-      Some(_) if rows.is_empty() => Some(text::NO_INSTALLED_MATCHES),
+      Some(_) if count == 0 => Some(text::NO_INSTALLED_MATCHES),
       _ => None,
     };
+    let rows = uniform_list(
+      "installed-rows",
+      count,
+      cx.processor(|this, range: Range<usize>, _, cx| {
+        let state = &this.state;
+        let badges = state.badges();
+        let rows = state.installed_rows();
+
+        rows
+          .get(range)
+          .unwrap_or_default()
+          .iter()
+          .map(|&(full_name, package)| {
+            installed_row(state, full_name, package, badges.get(full_name), cx)
+          })
+          .collect()
+      }),
+    )
+    .flex_1();
 
     v_flex()
       .flex_1()
       .min_h_0()
       .gap_2()
+      .image_cache(self.icons.clone())
       .children(empty)
       .child(
         v_flex()
           .id("installed-packages")
           .flex_1()
-          .overflow_y_scroll()
-          .children(rows)
+          .min_h_0()
+          .child(rows)
           .test_support(),
       )
       .into_any_element()
@@ -1408,15 +1419,16 @@ fn send(
 /// A menu item reading `label`, found in tests by `id`, in `color` when
 /// given and the theme's text color otherwise.
 fn menu_item(
-  id: &'static str,
+  id: impl Into<ElementId>,
   label: impl Into<SharedString>,
   color: Option<Hsla>,
 ) -> PopupMenuItem {
+  let id = id.into();
   let label = label.into();
 
   PopupMenuItem::element(move |_, _| {
     div()
-      .id(id)
+      .id(id.clone())
       .when_some(color, |item, color| item.text_color(color))
       .child(label.clone())
       .test_support()
@@ -1667,87 +1679,75 @@ fn render_running(
     .into_any_element()
 }
 
-/// One package of the Installed tab: its name, author, version, badges,
-/// whether it is enabled, and the buttons that change it. Clicking it
-/// selects it.
+/// One mod of the open profile: its icon, name, author and version with its
+/// state tags, its main action, its menu of rarer actions, and its switch.
+/// The mod loader has no switch and is tagged as the loader, and a disabled
+/// mod is dimmed. Clicking the row selects it.
 fn installed_row(
+  state: &State,
   full_name: &str,
   package: &InstalledPackage,
   badges: Option<&Badges>,
-  can_toggle: bool,
-  can_change: bool,
-  selected: bool,
   cx: &mut Context<Shell>,
 ) -> AnyElement {
-  let selection = Package::installed(full_name, package);
   let palette = Palette::new(cx);
-  let muted = palette.muted_text;
-  let (state_id, state_label) = match (can_toggle, package.enabled) {
-    (false, _) => ("loader", text::MOD_LOADER),
-    (true, true) => ("enabled", text::ENABLED),
-    (true, false) => ("disabled", text::DISABLED),
+  let on = cx.theme().success;
+  let can_change = state.can_manage();
+  let loader = !state.can_toggle(full_name);
+  let selected = is_selected(state.readme.as_ref(), full_name);
+  let selection = Package::installed(full_name, package);
+  let name = package.name(full_name);
+  let icon = state
+    .browse
+    .as_ref()
+    .and_then(|browse| browse.index.as_ref())
+    .and_then(|index| index.package(full_name))
+    .and_then(|row| row.icon());
+  let tag = |kind: &str, color: Hsla, label: String| {
+    state_tag(format!("{kind}-badge-{full_name}"), color, label)
   };
-  let toggle = can_toggle.then(|| {
-    let (id, label, msg) = if package.enabled {
-      (
-        "disable",
-        text::DISABLE,
-        Msg::DisablePressed(full_name.to_string()),
-      )
-    } else {
-      (
-        "enable",
-        text::ENABLE,
-        Msg::EnablePressed(full_name.to_string()),
-      )
-    };
-
-    Button::new(SharedString::from(format!("{id}-{full_name}")))
-      .label(label)
-      .small()
-      .disabled(!can_change)
-      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
+  let state_tags = badges.into_iter().flat_map(|badges| {
+    [
+      badges.update.as_deref().map(|version| {
+        tag(
+          "update",
+          palette.tag_update,
+          text::update_available(version),
+        )
+      }),
+      badges
+        .pinned
+        .then(|| tag("pinned", palette.muted_text, text::PINNED.to_string())),
+      badges.deprecated.then(|| {
+        tag(
+          "deprecated",
+          palette.tag_deprecated,
+          text::DEPRECATED.to_string(),
+        )
+      }),
+      (!badges.missing.is_empty()).then(|| {
+        tag(
+          "missing",
+          palette.tag_missing,
+          text::missing_badge(&badges.missing),
+        )
+      }),
+    ]
   });
-  let badge = |kind: &str, tag: Tag, label: String| {
-    div()
-      .id(SharedString::from(format!("{kind}-badge-{full_name}")))
-      .flex_none()
-      .child(tag.small().child(label))
-      .test_support()
-  };
-  let outdated = badges.is_some_and(|badges| badges.update.is_some());
-  let tags = badges
+  let tags: Vec<_> = loader
+    .then(|| tag("loader", palette.tag_loader, text::MOD_LOADER.to_string()))
     .into_iter()
-    .flat_map(|badges| {
-      [
-        badges
-          .update
-          .as_deref()
-          .map(|version| badge("update", Tag::info(), text::update_available(version))),
-        badges
-          .pinned
-          .then(|| badge("pinned", Tag::secondary(), text::PINNED.to_string())),
-        badges
-          .deprecated
-          .then(|| badge("deprecated", Tag::warning(), text::DEPRECATED.to_string())),
-        (!badges.missing.is_empty()).then(|| {
-          badge(
-            "missing",
-            Tag::danger(),
-            text::missing_badge(&badges.missing),
-          )
-        }),
-      ]
-    })
-    .flatten();
+    .chain(state_tags.flatten())
+    .collect();
   let pinned = badges.is_some_and(|badges| badges.pinned);
-  let update = match (outdated, pinned) {
-    (_, true) => Some((
+  let outdated = badges.is_some_and(|badges| badges.update.is_some());
+  let main = match (pinned, outdated) {
+    (true, _) => Some((
       "unpin",
       text::UNPIN,
       Msg::UnpinPressed(full_name.to_string()),
     )),
-    (true, false) => Some((
+    (false, true) => Some((
       "update",
       text::UPDATE,
       Msg::UpdatePressed(full_name.to_string()),
@@ -1760,95 +1760,231 @@ fn installed_row(
       .small()
       .disabled(!can_change)
       .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
+      .into_any_element()
   });
-  let choose_version = {
-    let msg = Msg::InstallPressed(full_name.to_string());
+  let actions = main
+    .into_iter()
+    .chain([mod_menu(full_name, can_change, palette, cx)])
+    .collect();
+  let switch = (!loader).then(|| {
+    let toggled = full_name.to_string();
 
-    Button::new(SharedString::from(format!("version-{full_name}")))
-      .label(text::CHOOSE_VERSION)
+    Switch::new(SharedString::from(format!("switch-{full_name}")))
       .small()
+      .checked(package.enabled)
+      .color(on)
       .disabled(!can_change)
-      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
-  };
-  let uninstall = full_name.to_string();
-  let item = h_flex()
-    .id(SharedString::from(format!("profile-{full_name}")))
-    .size_full()
-    .overflow_hidden()
-    .px_3()
-    .gap_3()
-    .map(|row| paint_row(row, selected, palette))
-    .when(!package.enabled, |row| row.opacity(0.6))
-    .on_click(cx.listener(move |this, _, _, cx| {
-      this.dispatch(Msg::PackageSelected(selection.clone()), cx);
-    }))
-    .child(
-      headline(
-        package.name(full_name).to_string(),
-        text::byline(&package.author, &package.version),
-        muted,
-      )
-      .flex_1(),
-    )
-    .children(tags)
-    .child(
-      div()
-        .id(SharedString::from(format!("{state_id}-{full_name}")))
-        .flex_none()
-        .text_small()
-        .child(state_label)
-        .test_support(),
-    )
-    .children(update)
-    .child(choose_version)
-    .children(toggle)
-    .child(
-      Button::new(SharedString::from(format!("uninstall-{full_name}")))
-        .label(text::UNINSTALL)
-        .small()
-        .disabled(!can_change)
-        .on_click(cx.listener(move |this, _, _, cx| {
-          this.dispatch(Msg::UninstallPressed(uninstall.clone()), cx);
-        })),
-    )
-    .test_support();
+      .accessibility_label(text::ENABLED)
+      .on_click(cx.listener(move |this, enable: &bool, _, cx| {
+        let msg = if *enable {
+          Msg::EnablePressed(toggled.clone())
+        } else {
+          Msg::DisablePressed(toggled.clone())
+        };
 
-  row_slot(INSTALLED_ROW_HEIGHT, item).into_any_element()
-}
-
-/// A row's name and byline on one line, each cut short with an ellipsis
-/// when the row is too narrow for it.
-fn headline(name: String, byline: String, muted: Hsla) -> Div {
-  h_flex()
-    .gap_2()
+        this.dispatch(msg, cx);
+      }))
+  });
+  let byline = h_flex()
+    .gap_1p5()
     .overflow_hidden()
-    .child(
-      div()
-        .id("name")
-        .truncate()
-        .font_weight(FontWeight::SEMIBOLD)
-        .child(name)
-        .test_support(),
-    )
     .child(
       div()
         .id("byline")
         .truncate()
         .text_small()
         .tabular()
+        .text_color(palette.muted_text)
+        .child(text::byline(&package.author, &package.version))
+        .test_support(),
+    )
+    .children(tags);
+  let item = list_row(format!("profile-{full_name}"), selected, palette)
+    .on_click(cx.listener(move |this, _, _, cx| {
+      this.dispatch(Msg::PackageSelected(selection.clone()), cx);
+    }))
+    .child(
+      row_lead(mod_icon(name, icon), name_label(name), byline)
+        .when(!package.enabled, |lead| lead.opacity(DIMMED)),
+    )
+    .child(actions_slot(full_name, selected, actions))
+    .child(div().flex_none().w(px(SWITCH_WIDTH)).children(switch))
+    .test_support();
+
+  row_slot(item).into_any_element()
+}
+
+/// The ⋯ menu of a profile's mod: choosing its version, and uninstalling it.
+fn mod_menu(
+  full_name: &str,
+  can_change: bool,
+  palette: Palette,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
+  let shell = cx.weak_entity();
+  let package = full_name.to_string();
+  let danger = can_change.then_some(palette.danger_text);
+
+  Button::new(SharedString::from(format!("mod-menu-{full_name}")))
+    .icon(IconName::Ellipsis)
+    .ghost()
+    .small()
+    .accessibility_label(text::MOD_MENU)
+    .dropdown_menu(move |menu, _, _| {
+      let id = |action: &str| SharedString::from(format!("{action}-{package}"));
+
+      menu
+        .item(
+          menu_item(id("version"), text::CHOOSE_VERSION, None)
+            .disabled(!can_change)
+            .on_click(send(&shell, Msg::InstallPressed(package.clone()))),
+        )
+        .item(
+          menu_item(id("uninstall"), text::UNINSTALL, danger)
+            .disabled(!can_change)
+            .on_click(send(&shell, Msg::UninstallPressed(package.clone()))),
+        )
+    })
+    .into_any_element()
+}
+
+/// A row of either list, found in tests by `id`, painted for whether it is
+/// `selected`. It is a [`ROW_GROUP`], so its actions can show while the
+/// pointer is over it.
+fn list_row(id: impl Into<SharedString>, selected: bool, palette: Palette) -> Stateful<Div> {
+  h_flex()
+    .id(id.into())
+    .group(ROW_GROUP)
+    .size_full()
+    .overflow_hidden()
+    .px_2()
+    .gap_3()
+    .rounded(px(ROW_RADIUS))
+    .map(|row| paint_row(row, selected, palette))
+}
+
+/// A row's icon, then its `first` and `second` lines of text, taking the
+/// width the row's other parts leave.
+fn row_lead(icon: impl IntoElement, first: impl IntoElement, second: impl IntoElement) -> Div {
+  h_flex().flex_1().min_w_0().gap_3().child(icon).child(
+    v_flex()
+      .flex_1()
+      .min_w_0()
+      .overflow_hidden()
+      .child(first)
+      .child(second),
+  )
+}
+
+/// A mod's icon, [`ICON_SIZE`] square, from `url`, or the initials of `name`
+/// when there is none or it fails to load.
+fn mod_icon(name: &str, url: Option<&str>) -> AnyElement {
+  let name = SharedString::from(name.to_string());
+  let initials = move || {
+    div()
+      .id("initials")
+      .child(
+        Avatar::new()
+          .name(name.clone())
+          .with_size(px(ICON_SIZE))
+          .rounded(px(ICON_RADIUS)),
+      )
+      .test_support()
+      .into_any_element()
+  };
+  let icon = match url {
+    Some(url) => img(SharedString::from(url.to_string()))
+      .size(px(ICON_SIZE))
+      .rounded(px(ICON_RADIUS))
+      .with_fallback(initials)
+      .into_any_element(),
+    None => initials(),
+  };
+
+  div()
+    .id("icon")
+    .flex_none()
+    .size(px(ICON_SIZE))
+    .child(icon)
+    .test_support()
+    .into_any_element()
+}
+
+/// A mod's state as a tag, found in tests by `id`, outlined and lettered in
+/// `color`.
+fn state_tag(id: String, color: Hsla, label: String) -> AnyElement {
+  div()
+    .id(SharedString::from(id))
+    .flex_none()
+    .child(
+      Tag::custom(color, color, color)
+        .outline()
+        .small()
+        .rounded_full()
+        .text_size(px(TAG_TEXT_SIZE))
+        .child(label),
+    )
+    .test_support()
+    .into_any_element()
+}
+
+/// A row's `actions`, at its end in a slot [`ACTIONS_WIDTH`] wide. They show
+/// while `shown` or while the pointer is over the row, and hidden they keep
+/// their space, so showing them moves nothing.
+fn actions_slot(full_name: &str, shown: bool, actions: Vec<AnyElement>) -> AnyElement {
+  h_flex()
+    .id(SharedString::from(format!("actions-{full_name}")))
+    .flex_none()
+    .w(px(ACTIONS_WIDTH))
+    .justify_end()
+    .gap_1()
+    .when(!shown, |slot| {
+      slot
+        .opacity(0.)
+        .group_hover(ROW_GROUP, |slot| slot.opacity(1.))
+    })
+    .children(actions)
+    .test_support()
+    .into_any_element()
+}
+
+/// A row's name on one line, cut short with an ellipsis when the row is too
+/// narrow for it.
+fn name_label(name: &str) -> AnyElement {
+  div()
+    .id("name")
+    .truncate()
+    .font_weight(FontWeight::SEMIBOLD)
+    .child(name.to_string())
+    .test_support()
+    .into_any_element()
+}
+
+/// A row's name and byline on one line, each cut short with an ellipsis
+/// when the row is too narrow for it.
+fn headline(name: &str, byline: String, muted: Hsla) -> Div {
+  h_flex()
+    .gap_2()
+    .overflow_hidden()
+    .child(name_label(name))
+    .child(
+      div()
+        .id("byline")
+        .truncate()
+        .text_small()
         .text_color(muted)
         .child(byline)
         .test_support(),
     )
 }
 
-/// Puts a row in a slot `height` tall that leaves a [`ROW_GAP`] to the
+/// Puts a row in a slot [`ROW_HEIGHT`] tall that leaves a [`ROW_GAP`] to the
 /// next, so every row is the same height and the row paints only its own
 /// background.
-fn row_slot(height: f32, row: impl IntoElement) -> Div {
+fn row_slot(row: impl IntoElement) -> Div {
   div()
     .flex_none()
-    .h(px(height))
+    .h(px(ROW_HEIGHT))
     .py(px(ROW_GAP / 2.))
     .child(row)
 }
@@ -1883,15 +2019,28 @@ fn install_action(
     .into_any_element()
 }
 
-/// Fixed so the list can be virtualized: only the rows in view are built.
-/// Tall enough for the name line and two description lines.
-const ROW_HEIGHT: f32 = 96.0;
-const INSTALLED_ROW_HEIGHT: f32 = 56.0;
+/// Fixed so the lists can be virtualized: only the rows in view are built.
+/// Tall enough for an icon and two lines of text, with a [`ROW_GAP`].
+const ROW_HEIGHT: f32 = 62.0;
 /// The space between two rows of a list.
 const ROW_GAP: f32 = 6.0;
+const ROW_RADIUS: f32 = 6.0;
+/// Names a row to the actions that show while the pointer is over it.
+const ROW_GROUP: &str = "row";
+const ICON_SIZE: f32 = 40.0;
+const ICON_RADIUS: f32 = 6.0;
+/// Wide enough for the widest main action and the ⋯ button beside it.
+const ACTIONS_WIDTH: f32 = 112.0;
+/// Wide enough for a small switch. The mod loader's row keeps it empty, so
+/// the columns line up.
+const SWITCH_WIDTH: f32 = 28.0;
+/// Wide enough for a count [`text::downloads`] writes.
+const DOWNLOADS_WIDTH: f32 = 64.0;
+const TAG_TEXT_SIZE: f32 = 11.5;
+/// How much of a disabled mod's icon and text shows.
+const DIMMED: f32 = 0.55;
 /// Tall enough for one line of small text and an extra-small button.
 const STATUS_BAR_HEIGHT: f32 = 36.0;
-const ICON_SIZE: f32 = 48.0;
 /// Wide enough for the longest label on the settings screen.
 const SETTINGS_LABEL_WIDTH: f32 = 140.0;
 const SIDEBAR_WIDTH: f32 = 248.0;
@@ -2022,12 +2171,10 @@ fn render_browse(
             .filter_map(|&row| PackageRow::new(&index.0, row))
             .map(|row| {
               let full_name = row.full_name().unwrap_or_default();
-              let action =
-                install_action(full_name, state.is_installed(full_name), can_install, cx);
-
+              let installed = state.is_installed(full_name);
               let selected = is_selected(state.readme.as_ref(), full_name);
 
-              package_row(row, action, selected, cx)
+              package_row(row, installed, can_install, selected, cx)
             })
             .collect()
         }),
@@ -2051,64 +2198,52 @@ fn render_browse(
   }
 }
 
+/// One Thunderstore package: its icon, name and author, one line of its
+/// description, its downloads, and Install, or a mark that stays shown when
+/// the open profile holds it. Clicking the row selects it.
 fn package_row(
   row: PackageRow<'_>,
-  action: AnyElement,
+  installed: bool,
+  can_install: bool,
   selected: bool,
   cx: &mut Context<Shell>,
 ) -> AnyElement {
   let palette = Palette::new(cx);
   let muted = palette.muted_text;
-  let icon = match row.icon() {
-    Some(url) => img(SharedString::from(url.to_string()))
-      .size(px(ICON_SIZE))
-      .flex_none()
-      .into_any_element(),
-    None => div().size(px(ICON_SIZE)).flex_none().into_any_element(),
-  };
-  let text = |field: Option<&str>| SharedString::from(field.unwrap_or_default().to_string());
+  let full_name = row.full_name().unwrap_or_default();
+  let name = row.name().unwrap_or_default();
   let selection = Package::listed(row);
-
-  let item = h_flex()
-    .id(text(row.full_name()))
-    .size_full()
-    .overflow_hidden()
-    .px_3()
-    .gap_3()
-    .map(|row| paint_row(row, selected, palette))
+  let author = headline(name, text::author(row.owner().unwrap_or_default()), muted);
+  let description = div()
+    .id("description")
+    .truncate()
+    .text_small()
+    .text_color(muted)
+    .child(text::one_paragraph(row.description().unwrap_or_default()))
+    .test_support();
+  let downloads = h_flex()
+    .id("downloads")
+    .flex_none()
+    .w(px(DOWNLOADS_WIDTH))
+    .justify_end()
+    .text_small()
+    .tabular()
+    .text_color(muted)
+    .child(text::downloads(row.downloads()))
+    .test_support();
+  let action = install_action(full_name, installed, can_install, cx);
+  let item = list_row(full_name.to_string(), selected, palette)
     .when_some(selection, |row, selection| {
       row.on_click(cx.listener(move |this, _, _, cx| {
         this.dispatch(Msg::PackageSelected(selection.clone()), cx);
       }))
     })
-    .child(icon)
-    .child(
-      v_flex()
-        .flex_1()
-        .overflow_hidden()
-        .child(headline(
-          row.name().unwrap_or_default().to_string(),
-          text::byline(
-            row.owner().unwrap_or_default(),
-            row.version_number().unwrap_or_default(),
-          ),
-          muted,
-        ))
-        .child(
-          div()
-            .id("description")
-            .line_clamp(2)
-            .text_ellipsis()
-            .text_small()
-            .text_color(muted)
-            .child(text::one_paragraph(row.description().unwrap_or_default()))
-            .test_support(),
-        ),
-    )
-    .child(action)
+    .child(row_lead(mod_icon(name, row.icon()), author, description))
+    .child(downloads)
+    .child(actions_slot(full_name, selected || installed, vec![action]))
     .test_support();
 
-  row_slot(ROW_HEIGHT, item).into_any_element()
+  row_slot(item).into_any_element()
 }
 
 fn failure(palette: Palette, failure: text::Failure) -> impl IntoElement {

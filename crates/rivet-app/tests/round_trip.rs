@@ -1089,9 +1089,9 @@ fn the_installed_tab_asks_before_disabling_a_dependency_and_the_disable_can_be_c
     window.render_frame(cx);
 
     assert!(window.try_find("profile-Owner-ModA").is_some());
-    assert!(window.try_find("enabled-Owner-ModC").is_some());
+    assert_eq!(window.find("switch-Owner-ModC").checked(), Some(true));
 
-    window.click("disable-Owner-ModA", cx);
+    window.click("switch-Owner-ModA", cx);
   })
   .unwrap();
   settle(cx, window);
@@ -1366,11 +1366,9 @@ fn a_pinned_package_is_marked_until_it_is_unpinned(cx: &mut TestAppContext) {
 
     assert!(window.try_find("pinned-badge-Owner-ModD").is_none());
     assert!(window.try_find("update-badge-Owner-ModD").is_some());
-
-    window.click("version-Owner-ModD", cx);
   })
   .unwrap();
-  settle(cx, window);
+  choose(cx, window, "mod-menu-Owner-ModD", "version-Owner-ModD");
 
   assert!(dialog_open(cx, window), "choosing a version asked nothing");
 }
@@ -2263,11 +2261,7 @@ fn the_installed_tab_asks_about_an_uninstall_in_the_modal_without_moving_the_lis
     })
     .unwrap();
 
-  cx.update_window(window, |_, window, cx| {
-    window.click("uninstall-Owner-ModA", cx);
-  })
-  .unwrap();
-  settle(cx, window);
+  choose(cx, window, "mod-menu-Owner-ModA", "uninstall-Owner-ModA");
 
   assert!(
     dialog_open(cx, window),
@@ -2397,11 +2391,7 @@ fn a_refused_uninstall_shows_in_the_modal_and_dismissing_it_clears_it(cx: &mut T
     })
     .unwrap();
 
-  cx.update_window(window, |_, window, cx| {
-    window.click("uninstall-Owner-ModA", cx);
-  })
-  .unwrap();
-  settle(cx, window);
+  choose(cx, window, "mod-menu-Owner-ModA", "uninstall-Owner-ModA");
 
   assert!(
     !dialog_open(cx, window),

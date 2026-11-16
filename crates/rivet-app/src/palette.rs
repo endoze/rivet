@@ -43,6 +43,14 @@ pub struct Palette {
   pub warning: Hsla,
   /// The icon and outline of an error toast.
   pub error: Hsla,
+  /// The text and outline of a mod's update tag.
+  pub tag_update: Hsla,
+  /// The text and outline of a deprecated mod's tag.
+  pub tag_deprecated: Hsla,
+  /// The text and outline of the tag on a mod missing a dependency.
+  pub tag_missing: Hsla,
+  /// The text and outline of the mod loader's tag.
+  pub tag_loader: Hsla,
 }
 
 impl Palette {
@@ -52,7 +60,9 @@ impl Palette {
   /// success, warning, and danger colors, moved the same way only as far as
   /// it takes to reach the WCAG AA contrast for icons on a toast.
   /// `danger_text` is the theme's danger color moved as far as it takes to
-  /// reach WCAG AA on a menu.
+  /// reach WCAG AA on a menu. The tag colors are the theme's info, warning,
+  /// danger, and primary colors, each moved as far as it takes to reach WCAG
+  /// AA on a row at rest, hovered, or selected, and on the panel.
   pub fn new(cx: &App) -> Self {
     let theme = cx.theme();
     let background = theme.background;
@@ -69,6 +79,14 @@ impl Palette {
       &[background, panel, row_hover, row_selected, code],
     );
     let accent = |color: Hsla| reaching(NON_TEXT, toast.blend(color), text, &[toast]);
+    let tag = |color: Hsla| {
+      reaching(
+        AA,
+        background.blend(color),
+        text,
+        &[background, panel, row_hover, row_selected],
+      )
+    };
 
     Self {
       text,
@@ -86,6 +104,10 @@ impl Palette {
       success: accent(theme.success),
       warning: accent(theme.warning),
       error: accent(theme.danger),
+      tag_update: tag(theme.info),
+      tag_deprecated: tag(theme.warning),
+      tag_missing: tag(theme.danger),
+      tag_loader: tag(theme.primary),
     }
   }
 }

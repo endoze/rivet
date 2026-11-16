@@ -85,6 +85,32 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
     }
   }
 
+  let tags = [
+    ("update", palette.tag_update),
+    ("pinned", palette.muted_text),
+    ("deprecated", palette.tag_deprecated),
+    ("missing dependency", palette.tag_missing),
+    ("mod loader", palette.tag_loader),
+  ];
+
+  for (name, tag) in tags {
+    for (background_name, background) in &backgrounds[..4] {
+      let ratio = contrast(tag, *background);
+
+      assert!(
+        ratio >= AA,
+        "{mode:?}: the {name} tag on {background_name} is {ratio:.2}:1, under {AA}:1"
+      );
+    }
+
+    for (other_name, other) in tags {
+      assert!(
+        name == other_name || tag != other,
+        "{mode:?}: the {name} and {other_name} tags look alike"
+      );
+    }
+  }
+
   let toast_text = contrast(palette.text, palette.toast);
 
   assert!(

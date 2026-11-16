@@ -209,6 +209,44 @@ pub fn byline(owner: &str, version: &str) -> String {
   format!("by {owner}, {version}")
 }
 
+/// A Thunderstore package's author, such as `by Owner`.
+pub fn author(owner: &str) -> String {
+  format!("by {owner}")
+}
+
+/// A download count in at most four characters: ten million and up in whole
+/// millions, other millions to one decimal, thousands rounded, and smaller
+/// counts in full.
+///
+/// ```
+/// use rivet_app::text::downloads;
+///
+/// assert_eq!(downloads(950), "950");
+/// assert_eq!(downloads(48_600), "49k");
+/// assert_eq!(downloads(999_499), "999k");
+/// assert_eq!(downloads(999_500), "1M");
+/// assert_eq!(downloads(2_000_000), "2M");
+/// assert_eq!(downloads(1_250_000), "1.3M");
+/// assert_eq!(downloads(9_949_999), "9.9M");
+/// assert_eq!(downloads(9_950_000), "10M");
+/// assert_eq!(downloads(12_345_678), "12M");
+/// ```
+pub fn downloads(count: u64) -> String {
+  match count {
+    0..1_000 => count.to_string(),
+    1_000..999_500 => format!("{}k", (count + 500) / 1_000),
+    999_500..9_950_000 => {
+      let tenths = (count + 50_000) / 100_000;
+
+      match tenths % 10 {
+        0 => format!("{}M", tenths / 10),
+        tenth => format!("{}.{tenth}M", tenths / 10),
+      }
+    }
+    _ => format!("{}M", (count + 500_000) / 1_000_000),
+  }
+}
+
 /// `text` as one paragraph: every run of whitespace, line breaks included,
 /// becomes a single space, so only wrapping decides where lines break.
 ///
@@ -324,8 +362,9 @@ pub const INSTALLED_SEARCH_PLACEHOLDER: &str = "Search this profile";
 pub const SORT_NAME: &str = "Name";
 pub const SORT_AUTHOR: &str = "Author";
 pub const SORT_NEWEST: &str = "Newest";
-pub const ENABLE: &str = "Enable";
-pub const DISABLE: &str = "Disable";
+/// The menu of one mod's rarer actions: choosing its version and
+/// uninstalling it.
+pub const MOD_MENU: &str = "More for this mod";
 pub const UNINSTALL: &str = "Uninstall";
 pub const ENABLE_ALL: &str = "Enable all";
 pub const DISABLE_ALL: &str = "Disable all";
@@ -405,8 +444,8 @@ pub fn missing_badge(missing: &[String]) -> String {
     count => format!("Missing {count} dependencies"),
   }
 }
+/// The name of a mod's on/off switch.
 pub const ENABLED: &str = "Enabled";
-pub const DISABLED: &str = "Disabled";
 pub const MOD_LOADER: &str = "Mod loader";
 pub const NO_INSTALLED: &str = "No mods are installed in this profile.";
 pub const NO_INSTALLED_MATCHES: &str = "No mod in this profile matches your search and categories.";

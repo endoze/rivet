@@ -20,6 +20,10 @@ const LONG_DESCRIPTION: &str = "Adds a great many things to the game.\n\nFeature
   is far longer than a single row could ever show.";
 const LONG_OWNER: &str = "SomeoneWithAnAuthorNameFarTooLongForAnyRowToShowInFull";
 const LONG_NAME: &str = "AModWhoseNameKeepsGoingWellPastTheEdgeOfTheRowItSitsIn";
+/// The game's mod loader, which [`one_game`] names.
+const LOADER: &str = "denikson-BepInExPack_Valheim";
+/// The spec's icon size for a row.
+const ICON_SIZE: f32 = 40.;
 
 #[gpui_kit::test]
 fn a_package_row_keeps_long_text_inside_one_uniform_row(cx: &mut TestAppContext) {
@@ -46,12 +50,172 @@ fn a_package_row_keeps_long_text_inside_one_uniform_row(cx: &mut TestAppContext)
     let one_line = description(window, &rows[0]);
     let wordy = description(window, &rows[1]);
 
+    assert_eq!(wordy, one_line, "a description is more than one line");
+
+    for row in &rows {
+      assert_icon(window, row);
+      assert!(
+        window.within(row.clone()).try_find("downloads").is_some(),
+        "{row} does not show its downloads"
+      );
+    }
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_profile_row_shows_an_icon_its_tags_and_a_switch(cx: &mut TestAppContext) {
+  let (unlisted, mut off) = installed("Owner-Unlisted", "Owner");
+
+  off.enabled = false;
+
+  let window = open_valheim(
+    cx,
+    vec![
+      installed("Owner-Plain", "Owner"),
+      (unlisted, off),
+      installed(LOADER, "denikson"),
+    ],
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    for name in ["Owner-Plain", "Owner-Unlisted", LOADER] {
+      assert_icon(window, &format!("profile-{name}"));
+    }
+
+    assert_eq!(window.find("switch-Owner-Plain").checked(), Some(true));
+    assert_eq!(window.find("switch-Owner-Unlisted").checked(), Some(false));
     assert!(
-      wordy <= one_line * 2.,
-      "a description is {wordy:?} tall, more than two lines of {one_line:?}"
+      window.try_find(format!("switch-{LOADER}")).is_none(),
+      "the mod loader can be switched off"
+    );
+    assert!(
+      window
+        .within(format!("profile-{LOADER}"))
+        .try_find(format!("loader-badge-{LOADER}"))
+        .is_some(),
+      "the mod loader is not tagged as one"
     );
   })
   .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_row_shows_initials_when_its_icon_fails_to_load(cx: &mut TestAppContext) {
+  let window = open_valheim(cx, vec![]);
+
+  cx.update_window(window, |_, window, cx| window.render_frame(cx))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(
+      window.within("Owner-Plain").try_find("initials").is_some(),
+      "a row whose icon failed to load shows no initials"
+    );
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_row_shows_initials_when_it_has_no_icon(cx: &mut TestAppContext) {
+  let window = open_valheim(cx, vec![installed("Owner-Unlisted", "Owner")]);
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(
+      window
+        .within("profile-Owner-Unlisted")
+        .try_find("initials")
+        .is_some(),
+      "a row without an icon shows no initials"
+    );
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_rows_main_action_shows_on_hover_and_on_the_selected_row_without_resizing_it(
+  cx: &mut TestAppContext,
+) {
+  let window = open_valheim(cx, vec![]);
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    let shown = |window: &mut Window, row: &str| window.find(format!("actions-{row}")).visible();
+    let row = window.find("Owner-Plain").bounds();
+    let actions = window.find("actions-Owner-Plain").bounds();
+
+    assert!(!shown(window, "Owner-Plain"), "an action shows at rest");
+
+    window.hover("Owner-Plain", cx);
+
+    assert!(shown(window, "Owner-Plain"), "hovering shows no action");
+    assert!(!shown(window, "Owner-Wordy"));
+    assert!(window.try_find("install-Owner-Plain").is_some());
+    assert_eq!(
+      window.find("Owner-Plain").bounds(),
+      row,
+      "hovering resized the row"
+    );
+    assert_eq!(
+      window.find("actions-Owner-Plain").bounds(),
+      actions,
+      "hovering moved the action"
+    );
+
+    window.click("Owner-Wordy", cx);
+    window.hover("toolbar", cx);
+
+    assert!(
+      shown(window, "Owner-Wordy"),
+      "the selected row shows no action"
+    );
+    assert!(!shown(window, "Owner-Plain"));
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_long_profile_list_builds_only_the_rows_in_view(cx: &mut TestAppContext) {
+  let mods = (0..300)
+    .map(|n| installed(&format!("Owner-Mod{n:03}"), "Owner"))
+    .collect();
+  let window = open_valheim(cx, mods);
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-Owner-Mod000").is_some());
+    assert!(
+      window.try_find("profile-Owner-Mod299").is_none(),
+      "rows out of view were built"
+    );
+  })
+  .unwrap();
+}
+
+/// Asserts that `row` shows a square icon [`ICON_SIZE`] wide.
+fn assert_icon(window: &mut Window, row: &str) {
+  let icon = window.within(row.to_string()).find("icon").bounds().size;
+
+  assert_eq!(
+    icon.width,
+    px(ICON_SIZE),
+    "{row}'s icon is not {ICON_SIZE}px"
+  );
+  assert_eq!(icon.height, px(ICON_SIZE), "{row}'s icon is not square");
 }
 
 #[gpui_kit::test]
@@ -257,7 +421,10 @@ fn one_game() -> Ecosystem {
             "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
           }]
         }
-      }
+      },
+      "modloaderPackages": [
+        { "packageId": "denikson-BepInExPack_Valheim", "rootFolder": "BepInExPack_Valheim", "loader": "bepinex" }
+      ]
     }"#,
   )
   .unwrap()
