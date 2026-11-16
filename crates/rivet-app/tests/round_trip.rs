@@ -3,6 +3,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::{ElementSnapshot, TestQueryExt as _, TestWindowExt as _};
 use gpui_kit::{
   AnyWindowHandle, AppContext as _, Role, TestAppContext, VisualTestContext, Window, WindowOptions,
+  px,
 };
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
@@ -2191,6 +2192,28 @@ fn game_screen_on(cx: &mut TestAppContext, host: HostOs) -> AnyWindowHandle {
   cx.run_until_parked();
 
   window
+}
+
+#[gpui_kit::test]
+fn the_game_screen_puts_the_tabs_right_under_the_header_with_no_folder_line(
+  cx: &mut TestAppContext,
+) {
+  cx.update(gpui_kit::init);
+
+  let window = game_screen_on(cx, HostOs::Linux);
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    let header = window.find("header").bounds();
+    let tabs = window.find("tab-browse").bounds();
+
+    assert!(
+      tabs.top() - header.bottom() <= px(16.),
+      "something sits between the header and the tabs: {header:?} then {tabs:?}"
+    );
+  })
+  .unwrap();
 }
 
 #[gpui_kit::test]

@@ -561,14 +561,12 @@ impl Shell {
 
   fn render_game(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
-    let folder = self.state.settings.folder(game).map(text::installed_in);
 
     v_flex()
       .size_full()
       .p_4()
       .gap_3()
       .child(self.render_header(game, cx))
-      .children(folder)
       .children(self.render_profile_notes(cx))
       .children(self.render_launch_notes(cx))
       .children(

@@ -87,10 +87,6 @@ pub fn fallback(game: &str, reason: &NotFound) -> String {
   }
 }
 
-pub fn installed_in(folder: &Path) -> String {
-  format!("Installed in {}", folder.display())
-}
-
 pub fn refusal(game: &str, refusal: &Refusal) -> Failure {
   let folder = refusal.folder.display();
 
