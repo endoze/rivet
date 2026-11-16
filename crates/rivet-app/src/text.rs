@@ -793,13 +793,20 @@ pub fn launch_failed(game: &str, launch: LaunchMode, failure: &LaunchFailure) ->
   }
 }
 
+/// The tooltip and accessible name of [`NEW_PROFILE_BUTTON`].
 pub const NEW_PROFILE: &str = "New profile…";
+/// The label of the button beside the "Profiles" heading that names a new
+/// profile.
+pub const NEW_PROFILE_BUTTON: &str = "New";
 pub const RENAME_PROFILE: &str = "Rename…";
 pub const DUPLICATE_PROFILE: &str = "Duplicate…";
 pub const DELETE_PROFILE: &str = "Delete…";
 pub const PROFILES: &str = "Profiles";
-/// Opens a menu of the places a profile can be imported from.
+/// The tooltip and accessible name of [`IMPORT_PROFILE_BUTTON`].
 pub const IMPORT_PROFILE: &str = "Import a profile";
+/// The label of the button beside the "Profiles" heading that opens a menu
+/// of the places a profile can be imported from.
+pub const IMPORT_PROFILE_BUTTON: &str = "Import";
 pub const RUNS_NATIVELY: &str = "Runs natively";
 pub const RUNS_UNDER_PROTON: &str = "Runs under Proton";
 pub const DELETE: &str = "Delete";

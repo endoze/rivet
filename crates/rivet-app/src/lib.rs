@@ -1403,30 +1403,42 @@ impl Shell {
             this.dispatch(Msg::LaunchPressed(LaunchMode::Vanilla), cx);
           })),
       );
+    let profiles_heading = h_flex()
+      .flex_none()
+      .gap_1()
+      .pl_4()
+      .pr_2()
+      .pt_3p5()
+      .pb_1p5()
+      .child(
+        div()
+          .flex_1()
+          .min_w_0()
+          .truncate()
+          .text_small()
+          .font_weight(FontWeight::SEMIBOLD)
+          .text_color(palette.muted_text)
+          .child(text::PROFILES),
+      )
+      .child(
+        Button::new("new-profile")
+          .label(text::NEW_PROFILE_BUTTON)
+          .ghost()
+          .small()
+          .tooltip(text::NEW_PROFILE)
+          .accessibility_label(text::NEW_PROFILE)
+          .disabled(!state.can_switch_profile())
+          .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Create))),
+      )
+      .child(self.render_import_menu(&shell));
     let profiles = v_flex()
       .id("profiles")
       .flex_1()
       .min_h_0()
       .overflow_y_scroll()
       .px_2()
-      .pt_3p5()
       .pb_1p5()
-      .child(
-        div()
-          .px_2()
-          .pb_1p5()
-          .text_small()
-          .font_weight(FontWeight::SEMIBOLD)
-          .text_color(palette.muted_text)
-          .child(text::PROFILES),
-      )
-      .children(self.render_profile_items(&shell, cx))
-      .child(
-        sidebar_item("new-profile", text::NEW_PROFILE)
-          .disabled(!state.can_switch_profile())
-          .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Create))),
-      )
-      .child(self.render_import_menu(&shell));
+      .children(self.render_profile_items(&shell, cx));
     let foot = v_flex()
       .flex_none()
       .p_2()
@@ -1445,6 +1457,7 @@ impl Shell {
       .border_r_1()
       .border_color(palette.border)
       .child(heading)
+      .child(profiles_heading)
       .child(profiles)
       .child(foot)
       .test_support()
@@ -1510,15 +1523,22 @@ impl Shell {
       .collect()
   }
 
-  /// Import a profile, with its menu of the places to import from: a code, a
-  /// file, and r2modman when it holds profiles for the open game.
+  /// The Import button beside the "Profiles" heading, with its menu of the
+  /// places to import from: a code, a file, and r2modman when it holds
+  /// profiles for the open game.
   fn render_import_menu(&self, shell: &WeakEntity<Self>) -> impl IntoElement + use<> {
     let state = &self.state;
     let can_import = state.can_import_profile();
     let can_offer_r2modman = state.can_offer_r2modman();
     let shell = shell.clone();
+    let button = Button::new("import-profile")
+      .label(text::IMPORT_PROFILE_BUTTON)
+      .ghost()
+      .small()
+      .tooltip(text::IMPORT_PROFILE)
+      .accessibility_label(text::IMPORT_PROFILE);
 
-    sidebar_item("import-profile", text::IMPORT_PROFILE).dropdown_menu(move |menu, _, _| {
+    button.dropdown_menu(move |menu, _, _| {
       menu
         .item(
           menu_item("import-code", text::IMPORT_CODE, None)

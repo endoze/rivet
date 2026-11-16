@@ -2,7 +2,8 @@ use futures::channel::mpsc::unbounded;
 use gpui_kit::component::{ActiveTheme as _, ThemeMode, WindowExt as _};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-  AnyWindowHandle, AppContext as _, TestAppContext, VisualTestContext, Window, WindowOptions, px,
+  AnyWindowHandle, AppContext as _, Role, TestAppContext, VisualTestContext, Window, WindowOptions,
+  px,
 };
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
@@ -2903,14 +2904,71 @@ fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_toolbar(
     ] {
       assert!(within.try_find(id).is_some(), "{id} is not in the sidebar");
     }
+  })
+  .unwrap();
+}
 
-    let row = within.find("open-settings").bounds().size.width;
+#[gpui_kit::test]
+fn the_profile_list_holds_the_profiles_and_its_commands_sit_above_it(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfilesListed {
+      game: "valheim".to_string(),
+      names: Ok(vec![DEFAULT_PROFILE.to_string(), "Modded".to_string()]),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    let list = window.within("profiles");
+    let held: Vec<_> = list
+      .find_all_by_role(Role::Button)
+      .iter()
+      .filter_map(|item| item.label().map(str::to_string))
+      .collect();
+
+    assert_eq!(
+      held,
+      ["Default", "Modded"],
+      "the profile list holds more than profiles"
+    );
+
+    let first = window.find("pick-profile-Default").bounds();
+    let sidebar = window.within("sidebar");
 
     for id in ["new-profile", "import-profile"] {
-      assert_eq!(
-        within.find(id).bounds().size.width,
-        row,
-        "{id} does not fill its row"
+      let command = sidebar.find(id).bounds();
+
+      assert!(
+        command.bottom() <= first.top(),
+        "{id} is not above the profiles: {command:?} against {first:?}"
+      );
+    }
+  })
+  .unwrap();
+  cx.update_window(window, |_, window, cx| {
+    window.click("import-profile", cx);
+    window.render_frame(cx);
+
+    for id in ["import-code", "import-file"] {
+      assert!(
+        window.try_find(id).is_some(),
+        "importing does not offer {id}"
       );
     }
   })
