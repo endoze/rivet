@@ -114,10 +114,13 @@ impl State {
   /// queue behind a running change to the profile, so they wait only for the
   /// profile to take installs. The rest are planned from the packages shown,
   /// which a running change would make stale, so they wait for it to end.
+  /// In a game whose mods Rivet cannot [install](State::installs_mods), only
+  /// unpinning and uninstalling can be taken.
   pub fn can_take(&self, action: &Action) -> bool {
     match action {
-      Action::Install | Action::ChooseVersion => self.can_install(),
-      Action::Update(_) | Action::Unpin | Action::Uninstall => self.can_manage(),
+      Action::Install | Action::ChooseVersion => self.can_add_mods(),
+      Action::Update(_) => self.can_update(),
+      Action::Unpin | Action::Uninstall => self.can_manage(),
     }
   }
 
@@ -162,10 +165,19 @@ mod tests {
   /// 1,000 and 234 downloads, in Tools and Maps, and of `Owner-Pinned` at
   /// 1.0.0 then 2.0.0. Its profile holds `installed`.
   fn opened(installed: Installed) -> State {
+    opened_in("valheim", installed)
+  }
+
+  /// As [`opened`], with `game` open instead.
+  fn opened_in(game: &str, installed: Installed) -> State {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
-      last_game: Some("valheim".to_string()),
-      games: [("valheim".to_string(), GameSettings::new("/games/valheim"))].into(),
+      last_game: Some(game.to_string()),
+      games: [(
+        game.to_string(),
+        GameSettings::new(format!("/games/{game}")),
+      )]
+      .into(),
       ..Settings::default()
     };
     let mut listed = crate::test_listed("Owner-Listed", &["1.0.0", "2.0.0"], false);
@@ -185,11 +197,11 @@ mod tests {
       Msg::Started,
       Msg::SettingsLoaded(Ok(settings)),
       Msg::CachedIndexRead {
-        community: "valheim".to_string(),
+        community: game.to_string(),
         index: Ok(Some(index)),
       },
       Msg::ProfileOpened {
-        game: "valheim".to_string(),
+        game: game.to_string(),
         profile: DEFAULT_PROFILE.to_string(),
         installed: Ok(installed),
       },
@@ -211,6 +223,17 @@ mod tests {
         version: version.to_string(),
       }),
     );
+  }
+
+  #[test]
+  fn a_game_whose_mods_cannot_be_installed_only_lets_its_mods_be_unpinned_or_uninstalled() {
+    let state = opened_in("balatro", test_installed(&[("Owner-Listed", "1.0.0")]));
+
+    assert!(!state.can_take(&Action::Install));
+    assert!(!state.can_take(&Action::ChooseVersion));
+    assert!(!state.can_take(&Action::Update("2.0.0".to_string())));
+    assert!(state.can_take(&Action::Unpin));
+    assert!(state.can_take(&Action::Uninstall));
   }
 
   #[test]

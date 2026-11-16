@@ -581,10 +581,19 @@ mod tests {
 
   /// A state with valheim open and its Default profile holding `installed`.
   fn ready(installed: Installed) -> State {
+    ready_in("valheim", installed)
+  }
+
+  /// As [`ready`], with `game` open instead.
+  fn ready_in(game: &str, installed: Installed) -> State {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
-      last_game: Some("valheim".to_string()),
-      games: [("valheim".to_string(), GameSettings::new("/games/valheim"))].into(),
+      last_game: Some(game.to_string()),
+      games: [(
+        game.to_string(),
+        GameSettings::new(format!("/games/{game}")),
+      )]
+      .into(),
       ..Settings::default()
     };
 
@@ -593,7 +602,7 @@ mod tests {
     update(
       &mut state,
       Msg::ProfileOpened {
-        game: "valheim".to_string(),
+        game: game.to_string(),
         profile: DEFAULT_PROFILE.to_string(),
         installed: Ok(installed),
       },
@@ -1046,6 +1055,27 @@ mod tests {
     assert_eq!(
       update(&mut state, Msg::EnablePressed("Owner-Solo".to_string())),
       vec![set_enabled(2, &["Owner-Solo"], true)]
+    );
+  }
+
+  #[test]
+  fn a_game_whose_mods_cannot_be_installed_still_lists_and_uninstalls_them() {
+    let mut state = ready_in("balatro", [package("Owner-Solo", &[])].into());
+
+    let listed: Vec<&str> = state
+      .installed_rows()
+      .into_iter()
+      .map(|(name, _)| name)
+      .collect();
+
+    assert_eq!(listed, vec!["Owner-Solo"]);
+    assert_eq!(
+      update(&mut state, Msg::UninstallPressed("Owner-Solo".to_string())),
+      vec![Effect::Run(Command::CheckUninstall {
+        game: "balatro".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        packages: names(&["Owner-Solo"]),
+      })]
     );
   }
 

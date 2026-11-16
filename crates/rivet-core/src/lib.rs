@@ -1045,7 +1045,8 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
               "exeNames": ["valheim.exe", "valheim.x86_64"],
               "settingsIdentifier": "Valheim",
               "internalFolderName": "Valheim",
-              "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+              "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/",
+              "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
             },
             {
               "gameInstanceType": "server",
@@ -1061,7 +1062,8 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
           "r2modman": [{
             "gameInstanceType": "game",
             "exeNames": ["Risk of Rain 2.exe"],
-            "packageIndex": "https://thunderstore.io/c/riskofrain2/api/v1/package/"
+            "packageIndex": "https://thunderstore.io/c/riskofrain2/api/v1/package/",
+            "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
           }]
         },
         "lethal-company": {
@@ -1071,7 +1073,20 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
             "gameInstanceType": "game",
             "exeNames": ["Lethal Company.exe"],
             "distributions": [{ "platform": "steam", "identifier": "1966720" }],
-            "packageIndex": "https://thunderstore.io/c/lethal-company/api/v1/package/"
+            "packageIndex": "https://thunderstore.io/c/lethal-company/api/v1/package/",
+            "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
+          }]
+        },
+        "balatro": {
+          "label": "balatro",
+          "meta": { "displayName": "Balatro" },
+          "r2modman": [{
+            "gameInstanceType": "game",
+            "packageLoader": "lovely",
+            "exeNames": ["Balatro.exe"],
+            "settingsIdentifier": "Balatro",
+            "internalFolderName": "Balatro",
+            "packageIndex": "https://thunderstore.io/c/balatro/api/v1/package/"
           }]
         },
         "no-install-definition": {

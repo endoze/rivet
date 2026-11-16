@@ -521,7 +521,8 @@ mod tests {
               "packageLoader": "bepinex",
               "exeNames": ["valheim.exe", "valheim.x86_64"],
               "distributions": [{ "platform": "steam", "identifier": "892970" }],
-              "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+              "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/",
+              "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
             }]
           },
           "lethal": {
@@ -532,7 +533,8 @@ mod tests {
               "packageLoader": "bepinex",
               "exeNames": ["Lethal Company.exe"],
               "distributions": [{ "platform": "steam", "identifier": "1966720" }],
-              "packageIndex": "https://thunderstore.io/c/lethal-company/api/v1/package/"
+              "packageIndex": "https://thunderstore.io/c/lethal-company/api/v1/package/",
+              "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
             }]
           },
           "elsewhere": {
@@ -542,7 +544,8 @@ mod tests {
               "gameInstanceType": "game",
               "packageLoader": "bepinex",
               "exeNames": ["elsewhere.x86_64"],
-              "packageIndex": "https://thunderstore.io/c/elsewhere/api/v1/package/"
+              "packageIndex": "https://thunderstore.io/c/elsewhere/api/v1/package/",
+              "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
             }]
           },
           "plain": {

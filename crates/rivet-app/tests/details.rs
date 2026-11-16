@@ -1,4 +1,5 @@
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
   AnyWindowHandle, AppContext as _, TestAppContext, Window, WindowOptions, point, px,
@@ -225,6 +226,54 @@ fn a_profile_mod_offers_its_update_version_and_uninstall_in_the_pane(cx: &mut Te
 }
 
 #[gpui_kit::test]
+fn a_game_whose_mods_cannot_be_installed_says_why_in_the_pane_and_installs_nothing(
+  cx: &mut TestAppContext,
+) {
+  let (valheim, _) = open_game(cx, "valheim", vec![]);
+  let (balatro, _) = open_game(cx, "balatro", vec![]);
+  let tabs_top = |window: AnyWindowHandle, cx: &mut TestAppContext| {
+    cx.update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+      window.click("tab-browse", cx);
+      window.render_frame(cx);
+      window.find("tab-browse").bounds().top()
+    })
+    .unwrap()
+  };
+
+  assert_eq!(
+    tabs_top(balatro, cx),
+    tabs_top(valheim, cx),
+    "something was drawn above the tabs"
+  );
+
+  cx.update_window(valheim, |_, window, _| {
+    assert!(window.try_find("details-unsupported").is_none());
+  })
+  .unwrap();
+  cx.update_window(balatro, |_, window, cx| {
+    assert_eq!(
+      window.within("details").find("details-unsupported").label(),
+      Some("Rivet can't install this game's mods yet. You can still launch it vanilla.")
+    );
+
+    window.within("details").click("details-install", cx);
+    window.click("install-Owner-ModA", cx);
+  })
+  .unwrap();
+  cx.run_until_parked();
+
+  let offered = cx
+    .update_window(balatro, |_, window, cx| {
+      window.render_frame(cx);
+      window.has_active_dialog(cx)
+    })
+    .unwrap();
+
+  assert!(!offered, "an install was offered");
+}
+
+#[gpui_kit::test]
 fn a_search_shows_its_first_mod_at_once_and_fetches_its_readme_once_typing_pauses(
   cx: &mut TestAppContext,
 ) {
@@ -292,6 +341,16 @@ fn open_valheim(
   cx: &mut TestAppContext,
   installed: Vec<(String, InstalledPackage)>,
 ) -> (AnyWindowHandle, UnboundedReceiver<Command>) {
+  open_game(cx, "valheim", installed)
+}
+
+/// Opens `game` on its Default profile holding `installed`, with the
+/// package list loaded.
+fn open_game(
+  cx: &mut TestAppContext,
+  game: &str,
+  installed: Vec<(String, InstalledPackage)>,
+) -> (AnyWindowHandle, UnboundedReceiver<Command>) {
   cx.update(gpui_kit::init);
 
   let (commands, sent) = unbounded::<Command>();
@@ -303,19 +362,23 @@ fn open_valheim(
     .expect("open test window")
   });
   let settings = Settings {
-    last_game: Some("valheim".to_string()),
-    games: [("valheim".to_string(), GameSettings::new("/games/Valheim"))].into(),
+    last_game: Some(game.to_string()),
+    games: [(
+      game.to_string(),
+      GameSettings::new(format!("/games/{game}")),
+    )]
+    .into(),
     ..Settings::default()
   };
 
   for msg in [
     Msg::SettingsLoaded(Ok(settings)),
     Msg::CachedIndexRead {
-      community: "valheim".to_string(),
+      community: game.to_string(),
       index: Ok(Some(index())),
     },
     Msg::ProfileOpened {
-      game: "valheim".to_string(),
+      game: game.to_string(),
       profile: DEFAULT_PROFILE.to_string(),
       installed: Ok(installed.into_iter().collect()),
     },
@@ -399,6 +462,7 @@ fn installed(full_name: &str) -> (String, InstalledPackage) {
   )
 }
 
+/// Valheim, and Balatro, whose loader the engine has no install rules for.
 fn one_game() -> Ecosystem {
   Ecosystem::from_json(
     r#"{
@@ -409,7 +473,18 @@ fn one_game() -> Ecosystem {
           "r2modman": [{
             "gameInstanceType": "game",
             "exeNames": ["valheim.x86_64"],
-            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/",
+            "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
+          }]
+        },
+        "balatro": {
+          "label": "balatro",
+          "meta": { "displayName": "Balatro" },
+          "r2modman": [{
+            "gameInstanceType": "game",
+            "packageLoader": "lovely",
+            "exeNames": ["Balatro.exe"],
+            "packageIndex": "https://thunderstore.io/c/balatro/api/v1/package/"
           }]
         }
       },

@@ -104,6 +104,15 @@ impl State {
   }
 }
 
+impl State {
+  /// Whether the open profile's mods can be updated:
+  /// [`State::can_manage`], in a game whose mods Rivet
+  /// [installs](State::installs_mods).
+  pub fn can_update(&self) -> bool {
+    self.installs_mods() && self.can_manage()
+  }
+}
+
 impl Badges {
   /// The package is outdated and not pinned, so an update would change it.
   pub fn updatable(&self) -> bool {
@@ -128,7 +137,7 @@ pub(crate) fn update_pressed(state: &mut State, full_name: String) -> Vec<Effect
 /// Updates every outdated package of the open profile as one operation,
 /// saying how many outdated packages it left alone for being pinned.
 pub(crate) fn update_all(state: &mut State) -> Vec<Effect> {
-  if !state.can_manage() {
+  if !state.can_update() {
     return Vec::new();
   }
 
@@ -153,7 +162,7 @@ pub(crate) fn update_all(state: &mut State) -> Vec<Effect> {
 /// Updates `packages` of the open profile as one operation, when a change can
 /// start and the package list is loaded.
 fn start(state: &mut State, packages: Vec<String>) -> Vec<Effect> {
-  if packages.is_empty() || !state.can_manage() {
+  if packages.is_empty() || !state.can_update() {
     return Vec::new();
   }
 
@@ -285,10 +294,19 @@ mod tests {
   /// and its Default profile holding each at 1.0.0 but `Owner-Current` at
   /// 2.0.0.
   fn ready() -> State {
+    ready_in("valheim")
+  }
+
+  /// As [`ready`], with `game` open instead.
+  fn ready_in(game: &str) -> State {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
-      last_game: Some("valheim".to_string()),
-      games: [("valheim".to_string(), GameSettings::new("/games/valheim"))].into(),
+      last_game: Some(game.to_string()),
+      games: [(
+        game.to_string(),
+        GameSettings::new(format!("/games/{game}")),
+      )]
+      .into(),
       ..Settings::default()
     };
     let index = index(vec![
@@ -302,14 +320,14 @@ mod tests {
     update(
       &mut state,
       Msg::CachedIndexRead {
-        community: "valheim".to_string(),
+        community: game.to_string(),
         index: Ok(Some(index)),
       },
     );
     update(
       &mut state,
       Msg::ProfileOpened {
-        game: "valheim".to_string(),
+        game: game.to_string(),
         profile: DEFAULT_PROFILE.to_string(),
         installed: Ok(crate::test_installed(&[
           ("Owner-Old", "1.0.0"),
@@ -361,6 +379,19 @@ mod tests {
       ]
       .into()
     );
+  }
+
+  #[test]
+  fn a_game_whose_mods_cannot_be_installed_refuses_updates() {
+    let mut state = ready_in("balatro");
+
+    assert!(!state.can_update());
+    assert_eq!(
+      update(&mut state, Msg::UpdatePressed("Owner-Old".to_string())),
+      vec![]
+    );
+    assert_eq!(update(&mut state, Msg::UpdateAllPressed), vec![]);
+    assert!(state.queue.operations.is_empty());
   }
 
   #[test]

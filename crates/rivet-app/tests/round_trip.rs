@@ -1597,7 +1597,8 @@ fn one_game() -> Ecosystem {
           "r2modman": [{
             "gameInstanceType": "game",
             "exeNames": ["valheim.x86_64"],
-            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/",
+            "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
           }]
         }
       }
@@ -1680,7 +1681,8 @@ fn native_steam_game() -> Ecosystem {
             "packageLoader": "bepinex",
             "exeNames": ["valheim.x86_64"],
             "distributions": [{ "platform": "steam", "identifier": "892970" }],
-            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/",
+            "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
           }]
         }
       },

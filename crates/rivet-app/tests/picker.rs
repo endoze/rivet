@@ -172,6 +172,41 @@ fn a_list_row_names_the_stores_its_game_is_sold_on(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_game_whose_mods_cannot_be_installed_is_marked_and_still_opens(cx: &mut TestAppContext) {
+  for layout in [PickerLayout::List, PickerLayout::Grid] {
+    let picker = open_picker(cx, layout);
+
+    cx.update_window(picker.window, |_, window, cx| {
+      window.render_frame(cx);
+
+      assert_eq!(
+        window.within("riskofrain2").find("no-mod-support").label(),
+        Some("Mods not supported yet"),
+        "{layout:?}"
+      );
+      assert!(
+        window
+          .within("valheim")
+          .try_find("no-mod-support")
+          .is_none(),
+        "{layout:?}"
+      );
+
+      window.click("riskofrain2", cx);
+    })
+    .unwrap();
+
+    assert_eq!(
+      picker
+        .shell
+        .read_with(cx, |shell, _| shell.state().picker.step.clone()),
+      Step::Choosing("riskofrain2".to_string()),
+      "{layout:?}"
+    );
+  }
+}
+
+#[gpui_kit::test]
 fn the_list_is_a_centered_column_narrower_than_the_window(cx: &mut TestAppContext) {
   let picker = open_picker(cx, PickerLayout::List);
 
@@ -321,7 +356,7 @@ fn open_picker_with(cx: &mut TestAppContext, settings: Settings) -> Picker {
 
 /// Valheim with a cover and no store, and Risk of Rain 2 without a cover,
 /// listed on Steam and the Epic Games Store but with no Steam app id to find
-/// its folder by.
+/// its folder by, and no install rules, so Rivet cannot install its mods.
 fn two_games() -> Ecosystem {
   Ecosystem::from_json(
     r#"{
@@ -332,7 +367,8 @@ fn two_games() -> Ecosystem {
           "r2modman": [{
             "gameInstanceType": "game",
             "exeNames": ["valheim.x86_64"],
-            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
+            "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/",
+            "installRules": [{ "route": "BepInEx/plugins", "isDefaultLocation": true }]
           }]
         },
         "riskofrain2": {

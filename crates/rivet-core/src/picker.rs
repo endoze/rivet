@@ -211,6 +211,26 @@ pub fn offered(game: &GameDef) -> bool {
   game.community().is_some()
 }
 
+/// Whether Rivet can put `game`'s mods in place: the engine has install
+/// rules for its loader. Without them an install records a mod and copies
+/// none of its files, so installing, updating and importing are blocked
+/// while the game can still be launched vanilla.
+///
+/// ```
+/// use rivet_core::picker::installs_mods;
+/// use thunderstore_engine::ecosystem::Ecosystem;
+///
+/// let ecosystem = Ecosystem::bundled();
+///
+/// assert!(installs_mods(ecosystem.game("valheim").unwrap()));
+/// assert!(!installs_mods(ecosystem.game("balatro").unwrap()));
+/// ```
+pub fn installs_mods(game: &GameDef) -> bool {
+  game
+    .profile()
+    .is_some_and(|profile| !profile.install_rules.is_empty())
+}
+
 /// Why a chosen folder was refused as a game's install folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FolderRefusal {
@@ -291,12 +311,40 @@ mod tests {
   }
 
   #[test]
+  fn mods_install_only_for_games_whose_loader_has_install_rules() {
+    let ecosystem = Ecosystem::bundled();
+    let installs = |slug: &str| installs_mods(ecosystem.game(slug).unwrap());
+    let unsupported = [
+      "gorilla-tag",
+      "bloons-td-6",
+      "schedule-i",
+      "labyrinthine",
+      "baby-steps",
+      "webfishing",
+      "balatro",
+      "scrap-mechanic",
+      "ancient-dungeon-vr",
+      "hades-ii",
+      "risk-of-rain-returns",
+      "pair-a-dice",
+    ];
+
+    for slug in unsupported {
+      assert!(!installs(slug), "{slug} has no install rules");
+    }
+
+    assert!(installs("valheim"), "BepInEx has install rules");
+    assert!(installs("brotato"), "GodotML has install rules here");
+    assert!(installs("bonelab"), "MelonLoader has install rules");
+  }
+
+  #[test]
   fn offers_every_game_it_can_install_and_list_packages_for_sorted_by_name() {
     let ecosystem = test_ecosystem();
 
     assert_eq!(
       names(games(&ecosystem, "")),
-      vec!["Lethal Company", "Risk of Rain 2", "Valheim"]
+      vec!["Balatro", "Lethal Company", "Risk of Rain 2", "Valheim"]
     );
   }
 
@@ -352,7 +400,10 @@ mod tests {
     let (set_up, rest) = set_up_first(games(&ecosystem, ""), &settings);
 
     assert_eq!(names(set_up), vec!["Valheim"]);
-    assert_eq!(names(rest), vec!["Lethal Company", "Risk of Rain 2"]);
+    assert_eq!(
+      names(rest),
+      vec!["Balatro", "Lethal Company", "Risk of Rain 2"]
+    );
   }
 
   #[test]

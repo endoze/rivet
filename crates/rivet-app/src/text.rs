@@ -26,6 +26,8 @@ pub const YOUR_GAMES: &str = "Your games";
 pub const ALL_GAMES: &str = "All games";
 /// The tag on a game Rivet has a folder for, so it is ready to mod.
 pub const READY: &str = "Ready";
+/// The mark on a game whose mods Rivet cannot install yet.
+pub const NO_MOD_SUPPORT: &str = "Mods not supported yet";
 
 /// The stores a game is sold on, joined with middle dots.
 ///
@@ -326,6 +328,9 @@ pub fn one_paragraph(text: &str) -> String {
 
 pub const INSTALL: &str = "Install";
 pub const INSTALLED: &str = "Installed";
+/// The detail pane's line in a game whose mods Rivet cannot install.
+pub const MODS_UNSUPPORTED: &str =
+  "Rivet can't install this game's mods yet. You can still launch it vanilla.";
 pub const CANCEL: &str = "Cancel";
 pub const DISMISS: &str = "Dismiss";
 pub const NO_DEPENDENCIES: &str = "Nothing else comes with it.";

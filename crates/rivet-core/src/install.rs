@@ -271,6 +271,23 @@ impl State {
       && !self.is_changing_profile()
       && !self.is_profile_exporting()
   }
+
+  /// Whether Rivet can put the open game's mods in place, as
+  /// [`crate::picker::installs_mods`] works out. False outside a game.
+  pub fn installs_mods(&self) -> bool {
+    self
+      .profile
+      .as_ref()
+      .and_then(|profile| self.ecosystem.game(&profile.game))
+      .is_some_and(crate::picker::installs_mods)
+  }
+
+  /// Whether a mod can be installed into the open profile, at the latest or
+  /// a chosen version: [`State::can_install`], in a game whose mods Rivet
+  /// [installs](State::installs_mods).
+  pub fn can_add_mods(&self) -> bool {
+    self.installs_mods() && self.can_install()
+  }
 }
 
 /// Opens `game`'s `name` profile as the selected one, creating it if the game
@@ -320,7 +337,7 @@ pub(crate) fn profile_opened(
 /// latest. Ignored until the list and the profile are loaded, and for a
 /// package the list does not have.
 pub(crate) fn install_pressed(state: &mut State, full_name: String) -> Vec<Effect> {
-  if !state.can_install() {
+  if !state.can_add_mods() {
     return Vec::new();
   }
 
@@ -425,14 +442,14 @@ fn plan(
 }
 
 /// Starts the confirmed install, unless something it needs is missing or
-/// [`State::can_install`] says it cannot.
+/// [`State::can_add_mods`] says it cannot.
 pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
   let confirmed = state
     .confirmation
     .as_ref()
     .is_some_and(Confirmation::can_confirm);
 
-  if !confirmed || !state.can_install() {
+  if !confirmed || !state.can_add_mods() {
     return Vec::new();
   }
 
@@ -556,19 +573,21 @@ mod tests {
 
   /// A state with valheim open, its list and profile loaded.
   fn ready(packages: &[(&str, &str)]) -> State {
-    let (mut state, _) = opened("valheim");
+    ready_in("valheim", packages)
+  }
+
+  /// A state with `game` open, its list and profile loaded.
+  fn ready_in(game: &str, packages: &[(&str, &str)]) -> State {
+    let (mut state, _) = opened(game);
 
     update(
       &mut state,
       Msg::CachedIndexRead {
-        community: "valheim".to_string(),
+        community: game.to_string(),
         index: Ok(Some(index())),
       },
     );
-    update(
-      &mut state,
-      profile_opened("valheim", Ok(installed(packages))),
-    );
+    update(&mut state, profile_opened(game, Ok(installed(packages))));
 
     state
   }
@@ -583,6 +602,16 @@ mod tests {
 
   fn press(state: &mut State, full_name: &str) -> Vec<Effect> {
     update(state, Msg::InstallPressed(full_name.to_string()))
+  }
+
+  #[test]
+  fn a_game_whose_mods_cannot_be_installed_refuses_installs() {
+    let mut state = ready_in("balatro", &[]);
+
+    assert!(!state.installs_mods());
+    assert!(!state.can_add_mods());
+    assert_eq!(press(&mut state, "Owner-Pack"), vec![]);
+    assert_eq!(state.confirmation, None);
   }
 
   #[test]

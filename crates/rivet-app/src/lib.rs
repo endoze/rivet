@@ -598,7 +598,8 @@ impl Shell {
   /// `game` in the picker, found in tests by its community slug. In the
   /// list it is a row with its cover, its name over the stores it is sold
   /// on, and a tag when Rivet has its folder; in the grid, a cover tile with
-  /// its name under it.
+  /// its name under it. Either way a game whose mods Rivet cannot install is
+  /// marked under its name.
   fn render_pickable(
     &self,
     game: &GameDef,
@@ -614,6 +615,16 @@ impl Shell {
       .covers
       .get(&game.slug)
       .map(PathBuf::as_path);
+    let no_mod_support = (!rivet_core::picker::installs_mods(game)).then(|| {
+      div()
+        .id("no-mod-support")
+        .truncate()
+        .text_small()
+        .text_color(palette.muted_text)
+        .aria_label(text::NO_MOD_SUPPORT)
+        .child(text::NO_MOD_SUPPORT)
+        .test_support()
+    });
     let item = match layout {
       PickerLayout::List => {
         let stores = rivet_core::picker::stores(game);
@@ -666,7 +677,8 @@ impl Shell {
               .min_w_0()
               .gap_0p5()
               .child(name_label(name))
-              .children(stores),
+              .children(stores)
+              .children(no_mod_support),
           )
           .children(set_up)
           .child(
@@ -689,7 +701,8 @@ impl Shell {
           GRID_COVER_HEIGHT,
           cx,
         ))
-        .child(name_label(name)),
+        .child(name_label(name))
+        .children(no_mod_support),
     };
     let item = item
       .cursor_pointer()
@@ -1461,7 +1474,8 @@ impl Shell {
   }
 
   /// The line over the profile's list saying how many of its mods an update
-  /// would change, with Update all, disabled while a change can't start.
+  /// would change, with Update all, disabled while [`State::can_update`] is
+  /// false.
   /// `None` while no mod has an update.
   fn render_updates_available(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
     let state = &self.state;
@@ -1487,7 +1501,7 @@ impl Shell {
       .label(text::UPDATE_ALL)
       .small()
       .flex_none()
-      .disabled(!state.can_manage())
+      .disabled(!state.can_update())
       .on_click(send(&cx.weak_entity(), Msg::UpdateAllPressed));
 
     Some(
@@ -1642,9 +1656,19 @@ impl Shell {
   }
 
   /// A button for each thing the detail pane offers to do to its mod, the
-  /// rarer ones quieter, each enabled while [`State::can_take`] it.
+  /// rarer ones quieter, each enabled while [`State::can_take`] it, then a
+  /// line saying why when the game's mods cannot be installed.
   fn render_details_actions(&self, details: &Details, cx: &mut Context<Self>) -> impl IntoElement {
     let state = &self.state;
+    let unsupported = (!state.installs_mods()).then(|| {
+      div()
+        .id("details-unsupported")
+        .text_small()
+        .text_color(Palette::new(cx).muted_text)
+        .aria_label(text::MODS_UNSUPPORTED)
+        .child(text::MODS_UNSUPPORTED)
+        .test_support()
+    });
     let buttons: Vec<Button> = details
       .actions
       .iter()
@@ -1667,7 +1691,10 @@ impl Shell {
       })
       .collect();
 
-    h_flex().flex_wrap().gap_2().children(buttons)
+    v_flex()
+      .gap_2()
+      .child(h_flex().flex_wrap().gap_2().children(buttons))
+      .children(unsupported)
   }
 
   /// The column along the left of a game, [`SIDEBAR_WIDTH`] wide whatever
@@ -2352,19 +2379,21 @@ fn installed_row(
       "unpin",
       text::UNPIN,
       Msg::UnpinPressed(full_name.to_string()),
+      can_change,
     )),
     (false, true) => Some((
       "update",
       text::UPDATE,
       Msg::UpdatePressed(full_name.to_string()),
+      state.can_update(),
     )),
     (false, false) => None,
   }
-  .map(|(id, label, msg)| {
+  .map(|(id, label, msg, enabled)| {
     Button::new(SharedString::from(format!("{id}-{full_name}")))
       .label(label)
       .small()
-      .disabled(!can_change)
+      .disabled(!enabled)
       .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
       .into_any_element()
   });
@@ -2902,7 +2931,7 @@ fn render_browse(
           let Some(index) = browse.index.as_ref() else {
             return Vec::new();
           };
-          let can_install = state.can_install();
+          let can_install = state.can_add_mods();
 
           browse.rows[range]
             .iter()

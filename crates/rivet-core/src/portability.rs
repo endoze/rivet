@@ -138,16 +138,17 @@ pub struct Import {
 }
 
 impl State {
-  /// Whether a profile can be imported into the open game: its package list
-  /// is loaded, nothing else is being imported, and no change to its
-  /// profiles is being made.
+  /// Whether a profile can be imported into the open game: Rivet
+  /// [installs](State::installs_mods) its mods, its package list is loaded,
+  /// nothing else is being imported, and no change to its profiles is being
+  /// made.
   pub fn can_import_profile(&self) -> bool {
     let listed = self
       .browse
       .as_ref()
       .is_some_and(|browse| browse.index.is_some());
 
-    listed && self.importing.is_none() && self.can_switch_profile()
+    self.installs_mods() && listed && self.importing.is_none() && self.can_switch_profile()
   }
 
   /// Whether an export is reading the open profile's folder, so the profile
@@ -505,10 +506,19 @@ mod tests {
   /// with the profiles `Default` and `Modded` listed and the package list
   /// loaded.
   fn ready() -> State {
+    ready_in("valheim")
+  }
+
+  /// As [`ready`], with `game` open instead.
+  fn ready_in(game: &str) -> State {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
-      last_game: Some("valheim".to_string()),
-      games: [("valheim".to_string(), GameSettings::new("/games/valheim"))].into(),
+      last_game: Some(game.to_string()),
+      games: [(
+        game.to_string(),
+        GameSettings::new(format!("/games/{game}")),
+      )]
+      .into(),
       ..Settings::default()
     };
 
@@ -517,14 +527,14 @@ mod tests {
     update(
       &mut state,
       Msg::CachedIndexRead {
-        community: "valheim".to_string(),
+        community: game.to_string(),
         index: Ok(Some(index())),
       },
     );
     update(
       &mut state,
       Msg::ProfileOpened {
-        game: "valheim".to_string(),
+        game: game.to_string(),
         profile: DEFAULT_PROFILE.to_string(),
         installed: Ok(test_installed(&[("Owner-ModA", "1.0.0")])),
       },
@@ -532,7 +542,7 @@ mod tests {
     update(
       &mut state,
       Msg::ProfilesListed {
-        game: "valheim".to_string(),
+        game: game.to_string(),
         names: Ok(vec![DEFAULT_PROFILE.to_string(), "Modded".to_string()]),
       },
     );
@@ -813,6 +823,16 @@ mod tests {
     update(&mut state, Msg::ExportCodePressed("Modded".to_string()));
 
     assert!(!state.can_rename_or_delete_profile("Modded"));
+  }
+
+  #[test]
+  fn a_game_whose_mods_cannot_be_installed_imports_no_profile() {
+    let mut state = ready_in("balatro");
+
+    assert!(!state.can_import_profile());
+    assert_eq!(update(&mut state, Msg::ImportCodePressed), vec![]);
+    assert_eq!(update(&mut state, Msg::ImportFilePressed), vec![]);
+    assert_eq!(state.importing, None);
   }
 
   #[test]

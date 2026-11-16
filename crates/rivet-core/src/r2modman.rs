@@ -219,7 +219,8 @@ fn answer(state: &mut State, game: &str) -> Vec<Effect> {
 }
 
 /// Looks for r2modman's profiles of `game` once its own profiles are first
-/// listed after it opened.
+/// listed after it opened, unless Rivet cannot install its mods, so they
+/// could not be imported.
 pub(crate) fn listed(state: &mut State, game: &str) -> Vec<Effect> {
   if state
     .r2modman
@@ -232,6 +233,7 @@ pub(crate) fn listed(state: &mut State, game: &str) -> Vec<Effect> {
   let folders: Vec<String> = state
     .ecosystem
     .game(game)
+    .filter(|definition| crate::picker::installs_mods(definition))
     .map(|definition| {
       definition
         .r2modman_folders()
@@ -382,6 +384,14 @@ mod tests {
         "{game}"
       );
     }
+  }
+
+  #[test]
+  fn a_game_whose_mods_cannot_be_installed_offers_no_r2modman_import() {
+    let mut state = opened_in(test_ecosystem(), "balatro");
+
+    assert_eq!(list_profiles_of(&mut state, "balatro"), vec![]);
+    assert!(!state.can_offer_r2modman());
   }
 
   #[test]
