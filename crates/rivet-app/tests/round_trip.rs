@@ -562,12 +562,85 @@ fn the_filter_menu_filters_both_views_by_category(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_profile_menu_sorts_and_turns_every_mod_on(cx: &mut TestAppContext) {
+fn each_view_s_sort_sits_right_after_filter_and_details_stays_at_the_far_end(
+  cx: &mut TestAppContext,
+) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[])].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("close-details", cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    let next_to = |left: &str, right: &str, window: &mut gpui_kit::Window| {
+      let gap = window.find(right.to_string()).bounds().left()
+        - window.find(left.to_string()).bounds().right();
+
+      assert!(
+        gap >= px(0.) && gap <= px(16.),
+        "{right} does not sit right after {left}: {gap:?} apart"
+      );
+    };
+    let toolbar = window.find("toolbar").bounds();
+    let filter = window.find("filter-menu").bounds();
+    let details = window.find("open-details").bounds();
+
+    assert!(
+      toolbar.right() - details.right() <= px(16.),
+      "Details is not at the far end: {details:?} in {toolbar:?}"
+    );
+
+    next_to("filter-menu", "installed-sort", window);
+
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
+
+    next_to("filter-menu", "browse-sort", window);
+    next_to("browse-sort", "refresh", window);
+
+    assert_eq!(window.find("filter-menu").bounds(), filter, "Filter moved");
+    assert_eq!(
+      window.find("open-details").bounds(),
+      details,
+      "Details moved"
+    );
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_profile_s_sort_button_names_and_changes_its_sort(cx: &mut TestAppContext) {
   use rivet_core::manage::Sort;
 
   cx.update(gpui_kit::init);
 
-  let (commands, mut sent) = unbounded::<Command>();
+  let (commands, _sent) = unbounded::<Command>();
   let (answers, inbox) = unbounded::<Msg>();
   let (window, shell) = cx.update(|cx| {
     gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
@@ -575,7 +648,83 @@ fn the_profile_menu_sorts_and_turns_every_mod_on(cx: &mut TestAppContext) {
     })
     .expect("open test window")
   });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[])].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(
+      window.within("toolbar").try_find("profile-menu").is_none(),
+      "the profile's ... menu is still in the toolbar"
+    );
+    assert_eq!(
+      window.within("toolbar").find("installed-sort").label(),
+      Some("Sort: Name")
+    );
+
+    window.click("installed-sort", cx);
+    window.render_frame(cx);
+
+    for choice in ["installed-sort-name", "installed-sort-newest"] {
+      assert!(window.try_find(choice).is_some(), "{choice} is not offered");
+    }
+
+    window.click("installed-sort-author", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert_eq!(
+    shell.read_with(cx, |shell, _| shell.state().manage.sort),
+    Sort::Author
+  );
+
+  cx.update_window(window, |_, window, _| {
+    assert_eq!(window.find("installed-sort").label(), Some("Sort: Author"));
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_open_profile_s_menu_turns_every_mod_on_and_off(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
   let (name, mut off) = package("Owner-ModC", &[]);
+  let mut set_enabled = move || {
+    std::iter::from_fn(|| sent.try_recv().ok())
+      .filter_map(|command| match command {
+        Command::SetEnabled(set) => Some((set.packages, set.enabled)),
+        _ => None,
+      })
+      .collect::<Vec<_>>()
+  };
+  let names = |names: &[&str]| {
+    names
+      .iter()
+      .map(|name| name.to_string())
+      .collect::<Vec<_>>()
+  };
 
   off.enabled = false;
 
@@ -586,34 +735,70 @@ fn the_profile_menu_sorts_and_turns_every_mod_on(cx: &mut TestAppContext) {
       profile: DEFAULT_PROFILE.to_string(),
       installed: Ok([package("Owner-ModA", &[]), (name, off)].into()),
     },
+    Msg::ProfilesListed {
+      game: "valheim".to_string(),
+      names: Ok(vec![DEFAULT_PROFILE.to_string(), "Modded".to_string()]),
+    },
   ] {
     answers.unbounded_send(msg).unwrap();
   }
 
   cx.run_until_parked();
-  cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
-    window.click("tab-installed", cx);
-  })
-  .unwrap();
-  choose(cx, window, "profile-menu", "installed-sort-author");
+  choose_on_profile(cx, window, "Modded", "enable-all");
 
   assert_eq!(
-    shell.read_with(cx, |shell, _| shell.state().manage.sort),
-    Sort::Author
+    set_enabled(),
+    vec![],
+    "another profile's menu enabled the open one's mods"
   );
 
-  choose(cx, window, "profile-menu", "enable-all");
+  close_menu(cx, window, "enable-all");
+  choose_on_profile(cx, window, DEFAULT_PROFILE, "enable-all");
 
-  let set = std::iter::from_fn(|| sent.try_recv().ok())
-    .find_map(|command| match command {
-      Command::SetEnabled(set) => Some(set),
-      _ => None,
+  assert_eq!(set_enabled(), vec![(names(&["Owner-ModC"]), true)]);
+
+  choose_on_profile(cx, window, DEFAULT_PROFILE, "disable-all");
+
+  assert_eq!(
+    set_enabled(),
+    vec![],
+    "Disable all started while a change ran"
+  );
+
+  close_menu(cx, window, "disable-all");
+  answers
+    .unbounded_send(Msg::OperationFinished {
+      operation: 1,
+      outcome: Ok(Outcome {
+        changed: vec!["Owner-ModC".to_string()],
+        failed: vec![],
+        cancelled: vec![],
+        profile: Ok([package("Owner-ModA", &[]), package("Owner-ModC", &[])].into()),
+      }),
     })
-    .expect("enabling every mod was sent");
+    .unwrap();
+  cx.run_until_parked();
+  choose_on_profile(cx, window, DEFAULT_PROFILE, "disable-all");
 
-  assert_eq!(set.packages, ["Owner-ModC"]);
-  assert!(set.enabled);
+  assert_eq!(
+    set_enabled(),
+    vec![(names(&["Owner-ModA", "Owner-ModC"]), false)]
+  );
+}
+
+/// Checks the menu holding `item` is still open, as a click on a disabled
+/// item leaves it, then closes it.
+fn close_menu(cx: &mut TestAppContext, window: AnyWindowHandle, item: &'static str) {
+  cx.update_window(window, |_, window, cx| {
+    assert!(
+      window.try_find(item).is_some(),
+      "the menu took the click on a disabled {item}"
+    );
+
+    window.press("escape", cx);
+  })
+  .unwrap();
+  settle(cx, window);
 }
 
 fn open_default_profile() -> Command {
@@ -1421,7 +1606,12 @@ fn the_top_of_the_profile_list_offers_update_all_only_while_updates_wait(cx: &mu
     );
     assert_eq!(line.find("update-all").label(), Some("Update all"));
     assert!(window.within("toolbar").try_find("update-all").is_none());
-    assert!(window.within("toolbar").try_find("profile-menu").is_some());
+    assert!(
+      window
+        .within("toolbar")
+        .try_find("installed-sort")
+        .is_some()
+    );
 
     window.click("update-all", cx);
   })

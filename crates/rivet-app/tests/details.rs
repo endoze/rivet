@@ -320,7 +320,7 @@ fn drag_pane_edge(window: &mut Window, by: gpui_kit::Pixels, cx: &mut gpui_kit::
   window.render_frame(cx);
 }
 
-/// Where the toolbar's search box and its last button sit.
+/// Where the toolbar's search box and its refresh button sit.
 fn toolbar(window: &mut Window) -> [gpui_kit::Bounds<gpui_kit::Pixels>; 2] {
   ["package-search", "refresh"].map(|id| window.find(id).bounds())
 }

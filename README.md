@@ -25,7 +25,7 @@ Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases
 
 A profile is one set of mods for a game. Every game starts with a profile called Default. Make more to keep separate setups, such as one for playing with friends and one for trying new mods.
 
-Your profiles are listed in the sidebar; click one to see its mods. Use **New** to make an empty profile, and right-click a profile to rename, duplicate, delete or share it.
+Your profiles are listed in the sidebar; click one to see its mods. Use **New** to make an empty profile, and right-click a profile to rename, duplicate, delete or share it. The open profile's right-click menu also has **Enable all** and **Disable all**, which turn every mod in it on or off.
 
 ## Managing your mods
 

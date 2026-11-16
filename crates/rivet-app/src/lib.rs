@@ -1236,9 +1236,9 @@ impl Shell {
 
   /// The bar over the list, [`TOOLBAR_HEIGHT`] tall whichever view it shows,
   /// so switching views leaves the list where it was: the segmented control
-  /// choosing the view, the search box of the view shown, the Filter menu,
-  /// that view's actions, and at the far end Details while the detail pane is
-  /// closed.
+  /// choosing the view, the search box of the view shown, the Filter menu and
+  /// right after it that view's actions, and at the far end Details while the
+  /// detail pane is closed.
   /// Details keeps its slot [`DETAILS_BUTTON_WIDTH`] wide while the pane is
   /// open, so nothing moves when it comes and goes.
   fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1281,8 +1281,8 @@ impl Shell {
           .test_support(),
       )
       .child(self.render_filter_menu(&shell))
-      .child(div().flex_1())
       .children(tools)
+      .child(div().flex_1())
       .child(
         h_flex()
           .flex_none()
@@ -1328,18 +1328,16 @@ impl Shell {
       ))
   }
 
-  /// The profile view's actions: a menu with the list's sort and turning
-  /// every mod on or off.
+  /// The profile view's actions: its sort, named on the button like
+  /// Thunderstore's.
   fn render_profile_tools(&self, shell: &WeakEntity<Self>) -> Vec<AnyElement> {
-    let state = &self.state;
-    let can_change = state.can_manage();
-    let sort = state.manage.sort;
+    let sort = self.state.manage.sort;
     let shell = shell.clone();
-    let menu = Button::new("profile-menu")
-      .icon(IconName::Ellipsis)
+    let button = Button::new("installed-sort")
+      .label(text::installed_sort_menu(sort))
       .ghost()
       .small()
-      .accessibility_label(text::PROFILE_MENU)
+      .dropdown_caret(true)
       .dropdown_menu(move |menu, _, _| {
         let sort_item = |id: &'static str, label: &'static str, choice: Sort| {
           menu_item(id, label, None)
@@ -1348,7 +1346,6 @@ impl Shell {
         };
 
         menu
-          .label(text::SORT_BY)
           .item(sort_item(
             "installed-sort-name",
             text::SORT_NAME,
@@ -1364,20 +1361,9 @@ impl Shell {
             text::SORT_NEWEST,
             Sort::Newest,
           ))
-          .separator()
-          .item(
-            menu_item("enable-all", text::ENABLE_ALL, None)
-              .disabled(!can_change)
-              .on_click(send(&shell, Msg::EnableAllPressed)),
-          )
-          .item(
-            menu_item("disable-all", text::DISABLE_ALL, None)
-              .disabled(!can_change)
-              .on_click(send(&shell, Msg::DisableAllPressed)),
-          )
       });
 
-    vec![menu.into_any_element()]
+    vec![button.into_any_element()]
   }
 
   /// The menu filtering the view shown: a checkbox per category, which both
@@ -1952,6 +1938,8 @@ impl Shell {
   }
 
   /// Builds the right-click menu of what can be done to the profile `name`.
+  /// Enable all and Disable all act on the open profile, so they are disabled
+  /// on any other's menu.
   fn profile_menu(
     &self,
     name: &str,
@@ -1961,6 +1949,11 @@ impl Shell {
     let can_rename_or_delete = state.can_rename_or_delete_profile(name);
     let can_duplicate = state.can_duplicate_profile(name);
     let can_export = state.can_export_profile(name);
+    let is_open = state
+      .profile
+      .as_ref()
+      .is_some_and(|profile| profile.name == name);
+    let can_change_all = is_open && state.can_manage();
     let name = name.to_string();
     let shell = shell.clone();
 
@@ -1993,6 +1986,17 @@ impl Shell {
           menu_item("share-file", text::SHARE_FILE, None)
             .disabled(!can_export)
             .on_click(send(&shell, Msg::ExportFilePressed(name.clone()))),
+        )
+        .separator()
+        .item(
+          menu_item("enable-all", text::ENABLE_ALL, None)
+            .disabled(!can_change_all)
+            .on_click(send(&shell, Msg::EnableAllPressed)),
+        )
+        .item(
+          menu_item("disable-all", text::DISABLE_ALL, None)
+            .disabled(!can_change_all)
+            .on_click(send(&shell, Msg::DisableAllPressed)),
         )
         .separator()
         .item(

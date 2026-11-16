@@ -5,7 +5,7 @@ use rivet_core::SettingsError;
 use rivet_core::browse::{SortDirection, SortKey};
 use rivet_core::install::{Action, FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
-use rivet_core::manage::Removal;
+use rivet_core::manage::{Removal, Sort};
 use rivet_core::notice::Notice;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal, STEAM_LIBRARY, Store};
 use rivet_core::portability::{Destination, Exported, ReadFailure};
@@ -65,7 +65,6 @@ pub const LOADING_PACKAGES: &str = "Loading mods";
 pub const NO_PACKAGES: &str = "No mods to show.";
 pub const PACKAGE_SEARCH_PLACEHOLDER: &str = "Search Thunderstore";
 pub const NO_PACKAGE_MATCHES: &str = "No mods match your search and filters.";
-pub const SORT_BY: &str = "Sort by";
 pub const SHOW_NSFW: &str = "Show NSFW";
 pub const SHOW_DEPRECATED: &str = "Show deprecated";
 pub const CLEAR_FILTERS: &str = "Clear filters";
@@ -427,12 +426,28 @@ pub fn install_failed(package: &str, failed: &[FailedPackage], installed: &[Stri
 
 pub const TAB_BROWSE: &str = "Find mods";
 pub const TAB_INSTALLED: &str = "In this profile";
-/// The menu of the profile's list: its sort, and turning every mod on or off.
-pub const PROFILE_MENU: &str = "More";
 pub const INSTALLED_SEARCH_PLACEHOLDER: &str = "Search this profile";
 pub const SORT_NAME: &str = "Name";
 pub const SORT_AUTHOR: &str = "Author";
 pub const SORT_NEWEST: &str = "Newest";
+
+/// The label of the menu choosing the profile's sort, naming the current one.
+///
+/// ```
+/// use rivet_app::text::installed_sort_menu;
+/// use rivet_core::manage::Sort;
+///
+/// assert_eq!(installed_sort_menu(Sort::Newest), "Sort: Newest");
+/// ```
+pub fn installed_sort_menu(sort: Sort) -> String {
+  let name = match sort {
+    Sort::Name => SORT_NAME,
+    Sort::Author => SORT_AUTHOR,
+    Sort::Newest => SORT_NEWEST,
+  };
+
+  format!("Sort: {name}")
+}
 pub const UNINSTALL: &str = "Uninstall";
 pub const ENABLE_ALL: &str = "Enable all";
 pub const DISABLE_ALL: &str = "Disable all";
