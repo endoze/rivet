@@ -1,0 +1,40 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.34.0"
+ci = "github"
+installers = []
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+pr-run-mode = "plan"
+# Rivet updates itself; see crates/rivet-commands/src/self_update.rs.
+install-updater = false
+github-build-setup = "../build-setup.yml"
+allow-dirty = ["msi"]
+
+[dist.github-custom-runners]
+global = "ubuntu-latest"
+x86_64-pc-windows-msvc = "windows-latest"
+
+# The Linux binary needs the glibc it was built against or newer, so it builds
+# in Debian 12 (glibc 2.36) rather than on the runner's newer system. dist
+# installs no apt packages in a container; .github/build-setup.yml does.
+[dist.github-custom-runners.x86_64-unknown-linux-gnu]
+runner = "ubuntu-latest"
+container = { image = "rust:1.100-bookworm", host = "x86_64-unknown-linux-gnu" }
+
+[dist.github-action-commits]
+"actions/checkout" = "3d3c42e5aac5ba805825da76410c181273ba90b1" # v7.0.1
+"actions/upload-artifact" = "cf430e030ddbb5b0abf93d22962f4752f3646cd9" # v7.0.2
+"actions/download-artifact" = "9000827ccba6bdab643e8b6fd33ac0654aef8333" # v8.0.2
+
+# The bare builds and checksums Rivet's updater downloads, unpacked from the
+# archives above by .github/bare-builds.sh.
+[[dist.extra-artifacts]]
+artifacts = [
+  "target/bare/rivet-linux-x86_64",
+  "target/bare/rivet-linux-x86_64.sha256",
+  "target/bare/rivet-windows-x86_64.exe",
+  "target/bare/rivet-windows-x86_64.exe.sha256",
+]
+build = ["bash", ".github/bare-builds.sh"]

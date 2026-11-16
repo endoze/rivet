@@ -1,0 +1,16 @@
+# Steps dist runs before each platform's release build.
+- name: Install the libraries gpui builds against
+  if: runner.os == 'Linux'
+  shell: bash
+  run: |
+    apt-get update
+    apt-get install -y --no-install-recommends pkg-config cmake clang libfontconfig-dev \
+      libfreetype-dev libvulkan-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev \
+      libxcb1-dev libssl-dev libzstd-dev
+- name: Use aws-lc-sys's prebuilt objects, since runner images don't promise NASM
+  shell: bash
+  run: echo "AWS_LC_SYS_PREBUILT_NASM=1" >> "$GITHUB_ENV"
+# dist builds without --locked, so a stale Cargo.lock would ship untested versions.
+- name: Refuse a Cargo.lock that is out of date
+  shell: bash
+  run: cargo metadata --locked --format-version 1 > /dev/null
