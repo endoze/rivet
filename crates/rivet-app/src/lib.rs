@@ -2872,8 +2872,8 @@ fn render_browse(
 }
 
 /// One Thunderstore package: its icon, name and author, one line of its
-/// description, its downloads, and Install, or a mark that stays shown when
-/// the open profile holds it. Clicking the row selects it.
+/// description, its downloads, and Install, or a mark when the open profile
+/// holds it, always shown. Clicking the row selects it.
 fn package_row(
   row: PackageRow<'_>,
   installed: bool,
@@ -2917,7 +2917,7 @@ fn package_row(
       description,
     ))
     .child(downloads)
-    .child(actions_slot(full_name, selected || installed, vec![action]))
+    .child(actions_slot(full_name, true, vec![action]))
     .test_support();
 
   row_slot(item).into_any_element()

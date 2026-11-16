@@ -149,32 +149,36 @@ fn a_row_shows_initials_when_it_has_no_icon(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_rows_main_action_shows_on_hover_and_on_the_selected_row_without_resizing_it(
+fn a_profile_rows_main_action_shows_on_hover_and_on_the_selected_row_without_resizing_it(
   cx: &mut TestAppContext,
 ) {
-  let window = open_valheim(cx, vec![]);
+  let pinned = |full_name: &str| {
+    let (name, mut package) = installed(full_name, "Owner");
+
+    package.pinned = true;
+
+    (name, package)
+  };
+  let window = open_valheim(cx, vec![pinned("Owner-Plain"), pinned("Owner-Wordy")]);
 
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-    window.click("tab-browse", cx);
+    window.click("tab-installed", cx);
     window.render_frame(cx);
+    window.hover("toolbar", cx);
 
     let shown = |window: &mut Window, row: &str| window.find(format!("actions-{row}")).visible();
-    let row = window.find("Owner-Wordy").bounds();
+    let row = window.find("profile-Owner-Wordy").bounds();
     let actions = window.find("actions-Owner-Wordy").bounds();
 
-    assert!(
-      shown(window, "Owner-Plain"),
-      "the row shown by default shows no action"
-    );
     assert!(!shown(window, "Owner-Wordy"), "an action shows at rest");
 
-    window.hover("Owner-Wordy", cx);
+    window.hover("profile-Owner-Wordy", cx);
 
     assert!(shown(window, "Owner-Wordy"), "hovering shows no action");
-    assert!(window.try_find("install-Owner-Wordy").is_some());
+    assert!(window.try_find("unpin-Owner-Wordy").is_some());
     assert_eq!(
-      window.find("Owner-Wordy").bounds(),
+      window.find("profile-Owner-Wordy").bounds(),
       row,
       "hovering resized the row"
     );
@@ -184,7 +188,7 @@ fn a_rows_main_action_shows_on_hover_and_on_the_selected_row_without_resizing_it
       "hovering moved the action"
     );
 
-    window.click("Owner-Wordy", cx);
+    window.click("profile-Owner-Wordy", cx);
     window.hover("toolbar", cx);
 
     assert!(
@@ -192,6 +196,25 @@ fn a_rows_main_action_shows_on_hover_and_on_the_selected_row_without_resizing_it
       "the selected row shows no action"
     );
     assert!(!shown(window, "Owner-Plain"));
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn every_find_mods_row_shows_its_install_button_at_rest(cx: &mut TestAppContext) {
+  let window = open_valheim(cx, vec![]);
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
+    window.hover("toolbar", cx);
+
+    assert!(
+      window.find("actions-Owner-Wordy").visible(),
+      "an unselected row hides its Install button"
+    );
+    assert!(window.try_find("install-Owner-Wordy").is_some());
   })
   .unwrap();
 }
