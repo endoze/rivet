@@ -1264,7 +1264,10 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
       window.render_frame(cx);
 
       assert!(window.try_find("launch-option-not-set").is_some());
-      assert!(window.try_find("missing-loader").is_some());
+      assert!(
+        window.try_find("missing-loader").is_none(),
+        "an empty profile warned that it has no mod loader"
+      );
 
       let tabs = window.find("tab-browse").bounds();
 

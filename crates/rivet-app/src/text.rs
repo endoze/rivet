@@ -616,19 +616,6 @@ fn loader_name(loader: LoaderKind) -> &'static str {
   }
 }
 
-/// The open profile lacks the mod loader its game's packages load through.
-pub fn missing_loader(profile: &str, loader: LoaderKind) -> Failure {
-  let loader = loader_name(loader);
-
-  Failure {
-    headline: format!("The {profile} profile has no mod loader"),
-    detail: format!(
-      "This game's mods load through {loader}, which is not installed, so a modded launch would start the game without them."
-    ),
-    next: format!("Install {loader}, or any mod that needs it, from the list."),
-  }
-}
-
 /// A launch that did not start the game.
 pub fn launch_failed(game: &str, launch: LaunchMode, failure: &LaunchFailure) -> Failure {
   let headline = format!("{game} could not be started {}", mode(launch));

@@ -1033,32 +1033,12 @@ impl Shell {
   /// What the user must fix before a launch can work, or `None` when there
   /// is nothing to say.
   fn render_launch_notes(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-    let palette = Palette::new(cx);
-    let launcher = self.state.launcher.as_ref();
-    let missing_loader = self.state.missing_loader().and_then(|loader| {
-      let profile = self.state.profile.as_ref()?;
-
-      Some(
-        div()
-          .id("missing-loader")
-          .child(failure(
-            palette,
-            text::missing_loader(&profile.name, loader),
-          ))
-          .test_support()
-          .into_any_element(),
-      )
-    });
-    let steam = launcher
+    self
+      .state
+      .launcher
+      .as_ref()
       .and_then(|launcher| launcher.steam.as_ref())
-      .and_then(|steam| render_steam_option(steam, cx));
-    let notes: Vec<AnyElement> = [missing_loader, steam].into_iter().flatten().collect();
-
-    if notes.is_empty() {
-      return None;
-    }
-
-    Some(v_flex().gap_2().children(notes).into_any_element())
+      .and_then(|steam| render_steam_option(steam, cx))
   }
 }
 

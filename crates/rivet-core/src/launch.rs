@@ -299,31 +299,6 @@ impl State {
       && !self.is_checking()
       && !self.is_changing_profile()
   }
-
-  /// The mod loader the open game's packages load through, when the open
-  /// profile does not hold it, so a modded launch would load none of them.
-  ///
-  /// Judged from the packages the profile records, which is how the app
-  /// installs a loader. A launch also looks for loader files on disk.
-  pub fn missing_loader(&self) -> Option<LoaderKind> {
-    let profile = self.profile.as_ref()?;
-    let installed = profile.installed()?;
-    let context = context(self, &profile.game, LaunchMode::Modded)?;
-    let loader = self
-      .ecosystem
-      .require_profile(&profile.game)
-      .ok()?
-      .package_loader;
-    let needs_none = matches!(loader, LoaderKind::None | LoaderKind::Other);
-    let held = installed.keys().any(|name| {
-      self
-        .ecosystem
-        .modloader_package(name)
-        .is_some_and(|pack| pack.loader == loader)
-    });
-
-    (!needs_none && !held && context.os != HostOs::MacOs).then_some(loader)
-  }
 }
 
 /// Launches the open game from its profile in `mode`, unless
@@ -1524,34 +1499,6 @@ mod tests {
         Effect::Notify(Notice::LaunchLineCopied),
       ]
     );
-  }
-
-  #[test]
-  fn a_profile_without_its_games_mod_loader_names_the_missing_loader() {
-    let state = ready("valheim", &["Owner-Mod"]);
-
-    assert_eq!(state.missing_loader(), Some(LoaderKind::BepInEx));
-  }
-
-  #[test]
-  fn a_profile_holding_its_games_mod_loader_misses_nothing() {
-    let state = ready("valheim", &["denikson-BepInExPack_Valheim", "Owner-Mod"]);
-
-    assert_eq!(state.missing_loader(), None);
-  }
-
-  #[test]
-  fn a_game_that_needs_no_mod_loader_misses_nothing() {
-    let state = ready("plain", &[]);
-
-    assert_eq!(state.missing_loader(), None);
-  }
-
-  #[test]
-  fn a_profile_not_yet_read_misses_nothing() {
-    let (state, _) = opened("valheim");
-
-    assert_eq!(state.missing_loader(), None);
   }
 
   #[test]
