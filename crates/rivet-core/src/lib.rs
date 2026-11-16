@@ -32,6 +32,7 @@ use r2modman::R2modman;
 use readme::Readme;
 use settings::{Appearance, GameSettings, RuntimeChoice, Settings, ThemeFamily};
 use settings_screen::{SettingsScreen, Target};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 use switcher::{Naming, ProfileChange, Switcher};
@@ -331,6 +332,12 @@ pub enum Msg {
     game: String,
     names: Result<Vec<String>, String>,
   },
+  /// How many packages each of a game's profiles holds, by name, leaving out
+  /// any whose list of packages could not be read.
+  ProfilesCounted {
+    game: String,
+    counts: BTreeMap<String, usize>,
+  },
   /// A profile in the switcher was picked, by name.
   ProfilePicked(String),
   /// A button that asks for a profile name was pressed.
@@ -530,6 +537,9 @@ pub enum Command {
   },
   /// List a game's profiles. Answered with [`Msg::ProfilesListed`].
   ListProfiles(String),
+  /// Count the packages in each of `game`'s profiles `names`, changing
+  /// nothing. Answered with [`Msg::ProfilesCounted`].
+  CountProfiles { game: String, names: Vec<String> },
   /// Answered with [`Msg::ProfileChanged`].
   ChangeProfile { game: String, change: ProfileChange },
   /// Answered with [`Msg::ReadmeFetched`].
@@ -737,6 +747,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::LaunchLineCopyPressed => launch::copy_line(state),
     Msg::WindowFocused => launch::window_focused(state),
     Msg::ProfilesListed { game, names } => switcher::listed(state, game, names),
+    Msg::ProfilesCounted { game, counts } => switcher::counts_read(state, &game, counts),
     Msg::ProfilePicked(name) => switcher::picked(state, name),
     Msg::ProfileNamePressed(naming) => switcher::name_pressed(state, naming),
     Msg::ProfileNameSubmitted(name) => switcher::name_submitted(state, name),

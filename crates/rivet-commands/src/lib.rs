@@ -20,7 +20,7 @@ use rivet_core::switcher::ProfileChange;
 use rivet_core::updates::Update;
 use rivet_core::{Command, Msg};
 use sha2::{Digest as _, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use thunderstore_engine::client::{Refreshed, ThunderstoreClient};
@@ -279,6 +279,10 @@ pub async fn run(
 
       Msg::ProfilesListed { game, names }
     }
+    Command::CountProfiles { game, names } => Msg::ProfilesCounted {
+      counts: count_profiles(config, &game, names).await,
+      game,
+    },
     Command::ChangeProfile { game, change } => {
       let result = change_profile(config, &game, &change).await;
 
@@ -337,6 +341,35 @@ async fn list_profiles(config: &Config, game: &str) -> Result<Vec<String>, Strin
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())
+}
+
+/// How many packages each of `game`'s profiles `names` holds, leaving out any
+/// that does not exist or whose mod list cannot be read.
+async fn count_profiles(
+  config: &Config,
+  game: &str,
+  names: Vec<String>,
+) -> BTreeMap<String, usize> {
+  let (data, game) = (config.data.clone(), game.to_string());
+
+  tokio::task::spawn_blocking(move || {
+    names
+      .into_iter()
+      .filter_map(|name| {
+        let folder = layout::profile_dir(&data, &game, &name);
+
+        if !folder.is_dir() {
+          return None;
+        }
+
+        let recorded = modlist::read(&folder).ok()?;
+
+        Some((name, installed(&recorded).len()))
+      })
+      .collect()
+  })
+  .await
+  .unwrap_or_default()
 }
 
 /// Makes `change` to `game`'s profiles with the engine.
@@ -1733,6 +1766,58 @@ mod tests {
     let dir = TempDir::new().unwrap();
 
     assert_eq!(list(&config_in(&dir)), listed(&[]));
+  }
+
+  /// A `mods.yml` holding a package for each of `names`, version 1.0.0.
+  fn mod_list(names: &[&str]) -> String {
+    names
+      .iter()
+      .map(|name| format!("- name: {name}\n  authorName: Owner\n  versionNumber: {{ major: 1, minor: 0, patch: 0 }}\n"))
+      .collect()
+  }
+
+  #[test]
+  fn each_profile_is_counted_leaving_out_one_whose_mod_list_cannot_be_read() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+
+    for name in ["Default", "Broken", "Empty", "Modded"] {
+      run_now(change(ProfileChange::Create(name.to_string())), &config);
+    }
+
+    let files = [
+      ("Default", mod_list(&["Owner-ModA"])),
+      (
+        "Modded",
+        mod_list(&["Owner-ModA", "Owner-ModB", "Owner-ModC"]),
+      ),
+      ("Broken", "{ not: [a mod list".to_string()),
+    ];
+
+    for (name, body) in files {
+      std::fs::write(profile_folder(&config, name).join("mods.yml"), body).unwrap();
+    }
+
+    let answer = run_now(
+      Command::CountProfiles {
+        game: "valheim".to_string(),
+        names: names(&["Broken", "Default", "Empty", "Gone", "Modded"]),
+      },
+      &config,
+    );
+
+    assert_eq!(
+      answer,
+      Msg::ProfilesCounted {
+        game: "valheim".to_string(),
+        counts: [
+          ("Default".to_string(), 1),
+          ("Empty".to_string(), 0),
+          ("Modded".to_string(), 3),
+        ]
+        .into(),
+      }
+    );
   }
 
   #[test]

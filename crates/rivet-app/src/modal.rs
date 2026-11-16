@@ -708,6 +708,7 @@ mod tests {
       changing: None,
       list_failure: None,
       counts: Default::default(),
+      counting: Default::default(),
     });
     state.confirmation = installing.then(|| Confirmation {
       package: Planned {

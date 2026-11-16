@@ -5,7 +5,7 @@ use crate::install::{self, DEFAULT_PROFILE, ProfileStatus};
 use crate::manage::Tab;
 use crate::notice::Notice;
 use crate::{Command, Effect, State};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use thunderstore_engine::profile::layout::{BadName, BadProfile, validate_name};
 
 /// The open game's profiles and any change to them in progress.
@@ -26,6 +26,9 @@ pub struct Switcher {
   /// How many packages each profile read since the game opened held when it
   /// was last read, by name.
   pub counts: BTreeMap<String, usize>,
+  /// The profiles being counted since they were listed, by name, less any
+  /// read or changed since, whose count would now be out of date.
+  pub counting: BTreeSet<String>,
 }
 
 impl Switcher {
@@ -38,6 +41,7 @@ impl Switcher {
       changing: None,
       list_failure: None,
       counts: BTreeMap::new(),
+      counting: BTreeSet::new(),
     }
   }
 }
@@ -241,6 +245,7 @@ pub(crate) fn counted(state: &mut State, game: &str, name: &str, count: usize) {
     .as_mut()
     .filter(|switcher| switcher.game == game)
   {
+    switcher.counting.remove(name);
     switcher.counts.insert(name.to_string(), count);
   }
 }
@@ -283,7 +288,51 @@ pub(crate) fn listed(
     }
   }
 
-  crate::r2modman::listed(state, &game)
+  switcher.counting = switcher
+    .names
+    .iter()
+    .filter(|name| !switcher.counts.contains_key(*name))
+    .cloned()
+    .collect();
+
+  let mut effects = Vec::new();
+
+  if !switcher.counting.is_empty() {
+    effects.push(Effect::Run(Command::CountProfiles {
+      game: game.clone(),
+      names: switcher.counting.iter().cloned().collect(),
+    }));
+  }
+
+  effects.extend(crate::r2modman::listed(state, &game));
+
+  effects
+}
+
+/// Records the `counts` read for `game`'s profiles after they were listed,
+/// for those still listed and neither read nor changed since.
+pub(crate) fn counts_read(
+  state: &mut State,
+  game: &str,
+  counts: BTreeMap<String, usize>,
+) -> Vec<Effect> {
+  let Some(switcher) = state
+    .switcher
+    .as_mut()
+    .filter(|switcher| switcher.game == game)
+  else {
+    return Vec::new();
+  };
+
+  for (name, count) in counts {
+    if switcher.counting.remove(&name) {
+      switcher.counts.insert(name, count);
+    }
+  }
+
+  switcher.counting.clear();
+
+  Vec::new()
 }
 
 /// Selects `name`, a listed profile of the open game, remembers it, and
@@ -540,6 +589,16 @@ pub(crate) fn changed(
     .and_then(install::Profile::installed)
     .map(|installed| installed.len());
 
+  match &change {
+    ProfileChange::Create(name) | ProfileChange::Delete(name) => {
+      switcher.counting.remove(name);
+    }
+    ProfileChange::Rename { from, to } | ProfileChange::Duplicate { from, to } => {
+      switcher.counting.remove(from);
+      switcher.counting.remove(to);
+    }
+  }
+
   match change {
     ProfileChange::Create(name) => {
       insert(&mut switcher.names, name.clone());
@@ -594,6 +653,7 @@ pub(crate) fn imported(state: &mut State, game: &str, name: String, complete: bo
     return Vec::new();
   };
 
+  switcher.counting.remove(&name);
   insert(&mut switcher.names, name.clone());
 
   if !complete || !state.can_switch_profile() {
@@ -1398,5 +1458,116 @@ mod tests {
     update(&mut state, changed(delete("Copy"), Ok(())));
 
     assert_eq!(state.mod_count("Copy"), None);
+  }
+
+  fn count(names: &[&str]) -> Effect {
+    Effect::Run(Command::CountProfiles {
+      game: "valheim".to_string(),
+      names: strings(names),
+    })
+  }
+
+  fn counted(game: &str, counts: &[(&str, usize)]) -> Msg {
+    Msg::ProfilesCounted {
+      game: game.to_string(),
+      counts: counts
+        .iter()
+        .map(|(name, count)| (name.to_string(), *count))
+        .collect(),
+    }
+  }
+
+  #[test]
+  fn every_profile_s_mod_count_arrives_after_the_list() {
+    let (mut state, _) = started_on(None);
+
+    update(&mut state, opened_with("Default", &[("Owner-A", "1.0.0")]));
+
+    let effects = update(&mut state, listed(&["Default", "Heavy", "Modded"]));
+
+    assert!(
+      effects.contains(&count(&["Heavy", "Modded"])),
+      "{effects:?}"
+    );
+    assert_eq!(
+      counts(&state),
+      vec![("Default", Some(1)), ("Heavy", None), ("Modded", None)]
+    );
+
+    update(
+      &mut state,
+      counted("valheim", &[("Heavy", 3), ("Modded", 2)]),
+    );
+
+    assert_eq!(
+      counts(&state),
+      vec![
+        ("Default", Some(1)),
+        ("Heavy", Some(3)),
+        ("Modded", Some(2))
+      ]
+    );
+  }
+
+  #[test]
+  fn a_count_for_a_profile_no_longer_listed_or_a_game_left_is_ignored() {
+    let mut state = ready("Default", &["Default", "Heavy", "Modded"]);
+
+    update(&mut state, counted("lethal-company", &[("Heavy", 4)]));
+    update(&mut state, Msg::DeleteProfilePressed("Modded".to_string()));
+    update(&mut state, Msg::DeleteProfileConfirmed);
+    update(&mut state, changed(delete("Modded"), Ok(())));
+    update(&mut state, counted("valheim", &[("Modded", 2)]));
+
+    assert_eq!(counts(&state), vec![("Default", Some(0)), ("Heavy", None)]);
+    assert_eq!(state.mod_count("Modded"), None);
+  }
+
+  #[test]
+  fn a_count_read_before_a_profile_was_opened_does_not_replace_the_newer_one() {
+    let mut state = ready("Default", &["Default", "Modded"]);
+
+    update(&mut state, Msg::ProfilePicked("Modded".to_string()));
+    update(&mut state, opened_with("Modded", &[("Owner-A", "1.0.0")]));
+    update(&mut state, counted("valheim", &[("Modded", 5)]));
+    update(&mut state, Msg::ProfilePicked("Default".to_string()));
+
+    assert_eq!(
+      counts(&state),
+      vec![("Default", Some(0)), ("Modded", Some(1))]
+    );
+  }
+
+  #[test]
+  fn a_count_read_before_a_profile_was_renamed_is_ignored() {
+    let mut state = ready("Default", &["Default", "Heavy", "Modded"]);
+
+    submit(&mut state, Naming::Rename("Heavy".to_string()), "Spare");
+    update(&mut state, changed(rename("Heavy", "Spare"), Ok(())));
+    submit(&mut state, Naming::Rename("Modded".to_string()), "Heavy");
+    update(&mut state, changed(rename("Modded", "Heavy"), Ok(())));
+    update(
+      &mut state,
+      counted("valheim", &[("Heavy", 3), ("Modded", 2)]),
+    );
+
+    assert_eq!(
+      counts(&state),
+      vec![("Default", Some(0)), ("Heavy", None), ("Spare", None)]
+    );
+  }
+
+  #[test]
+  fn a_count_read_before_a_profile_was_deleted_and_created_again_is_ignored() {
+    let mut state = ready("Default", &["Default", "Modded"]);
+
+    update(&mut state, Msg::DeleteProfilePressed("Modded".to_string()));
+    update(&mut state, Msg::DeleteProfileConfirmed);
+    update(&mut state, changed(delete("Modded"), Ok(())));
+    submit(&mut state, Naming::Create, "Modded");
+    update(&mut state, changed(create("Modded"), Ok(())));
+    update(&mut state, counted("valheim", &[("Modded", 2)]));
+
+    assert_eq!(state.mod_count("Modded"), None);
   }
 }
