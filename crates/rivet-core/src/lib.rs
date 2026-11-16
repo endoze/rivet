@@ -30,7 +30,7 @@ use portability::{Export, Exported, Exporting, Importing, ReadFailure, Shared, S
 use queue::{CloseChoice, Closing, Queue};
 use r2modman::R2modman;
 use readme::Readme;
-use settings::{Appearance, GameSettings, RuntimeChoice, Settings};
+use settings::{Appearance, GameSettings, RuntimeChoice, Settings, ThemeFamily};
 use settings_screen::{SettingsScreen, Target};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -361,6 +361,8 @@ pub enum Msg {
   /// Light, dark, or the system's appearance was chosen on the settings
   /// screen.
   AppearanceChosen(Appearance),
+  /// A family of themes was chosen on the settings screen.
+  ThemeChosen(ThemeFamily),
   /// Remove was pressed beside the loader files on the settings screen.
   RemoveLoaderFilesPressed,
   /// A [`Command::RemoveLoaderFiles`] ended: what became of each file.
@@ -750,6 +752,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::LaunchArgumentsChanged(arguments) => settings_screen::arguments_changed(state, arguments),
     Msg::RuntimeChosen(choice) => settings_screen::runtime_chosen(state, choice),
     Msg::AppearanceChosen(appearance) => settings_screen::appearance_chosen(state, appearance),
+    Msg::ThemeChosen(theme) => settings_screen::theme_chosen(state, theme),
     Msg::RemoveLoaderFilesPressed => loader_files::remove_pressed(state),
     Msg::LoaderFilesRemoved { game, files } => loader_files::removed(state, game, files),
     Msg::ExportCodePressed(name) => portability::export_code_pressed(state, name),

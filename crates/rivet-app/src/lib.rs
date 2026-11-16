@@ -47,7 +47,7 @@ use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::portability::{Exporting, Importing};
 use rivet_core::readme::{Package, Readme, Status};
-use rivet_core::settings::{Appearance, RuntimeChoice};
+use rivet_core::settings::{Appearance, RuntimeChoice, ThemeFamily};
 use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
@@ -814,6 +814,33 @@ impl Shell {
             Appearance::Dark,
           )),
       );
+    let theme_segment = |id: &'static str, title: &'static str, choice: ThemeFamily| {
+      Segment::new(
+        id,
+        title,
+        state.settings.theme == choice,
+        cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::ThemeChosen(choice), cx);
+        }),
+      )
+    };
+    let theme = h_flex()
+      .gap_2()
+      .items_center()
+      .child(label(text::THEME))
+      .child(
+        Segmented::new("theme")
+          .child(theme_segment(
+            "theme-default",
+            text::THEME_DEFAULT,
+            ThemeFamily::Default,
+          ))
+          .child(theme_segment(
+            "theme-one",
+            text::THEME_ONE,
+            ThemeFamily::One,
+          )),
+      );
     let loader_files = v_flex()
       .gap_1()
       .child(
@@ -893,7 +920,7 @@ impl Shell {
         steam_folder,
         Target::SteamFolder,
       )))
-      .child(section(text::DISPLAY.into()).child(appearance))
+      .child(section(text::DISPLAY.into()).child(theme).child(appearance))
       .into_any_element()
   }
 
@@ -2532,7 +2559,12 @@ fn failure(palette: Palette, failure: text::Failure) -> impl IntoElement {
 
 impl Render for Shell {
   fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-    theme::apply(self.state.settings.appearance, window, cx);
+    theme::apply(
+      self.state.settings.theme,
+      self.state.settings.appearance,
+      window,
+      cx,
+    );
 
     if let Some(text) = self.fill_profile_name.take() {
       self.profile_name.update(cx, |input, cx| {

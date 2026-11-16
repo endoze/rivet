@@ -1,9 +1,9 @@
-//! Rivet's light and dark themes and the IBM Plex fonts they set text in,
-//! both bundled into the binary.
+//! Rivet's themes, a light and a dark member of each family, and the IBM
+//! Plex fonts they set text in, both bundled into the binary.
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode};
 use gpui_kit::{App, FontFeatures, Styled, Window, WindowAppearance, px};
-use rivet_core::settings::Appearance;
+use rivet_core::settings::{Appearance, ThemeFamily};
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -70,8 +70,8 @@ struct Tokens {
   info: &'static str,
 }
 
-const LIGHT: Tokens = Tokens {
-  name: "Rivet Light",
+const DEFAULT_LIGHT: Tokens = Tokens {
+  name: "Default Light",
   mode: ThemeMode::Light,
   background: "#eef1f5",
   panel: "#ffffff",
@@ -88,8 +88,8 @@ const LIGHT: Tokens = Tokens {
   info: "#2f6db5",
 };
 
-const DARK: Tokens = Tokens {
-  name: "Rivet Dark",
+const DEFAULT_DARK: Tokens = Tokens {
+  name: "Default Dark",
   mode: ThemeMode::Dark,
   background: "#1a1f27",
   panel: "#212833",
@@ -106,9 +106,68 @@ const DARK: Tokens = Tokens {
   info: "#6fa8e8",
 };
 
-/// Registers the bundled fonts and makes Rivet's themes the ones the light
-/// and dark appearances load, then reloads the current appearance with its
-/// theme. Call it after `gpui_kit::init`.
+/// Atom's One Light. Text, accents, and the background are the
+/// one-light-syntax palette, and the other surfaces are the One Light UI
+/// levels built on that background:
+/// <https://github.com/atom/atom/blob/master/packages/one-light-syntax/styles/colors.less>
+/// and
+/// <https://github.com/atom/atom/blob/master/packages/one-light-ui/styles/ui-variables-custom.less>.
+/// One's accent is the primary action, with One Light UI's dark accent text
+/// on it, since white on the accent is under WCAG AA. The selection is the
+/// info hue at the Default theme's opacity.
+const ONE_LIGHT: Tokens = Tokens {
+  name: "One Light",
+  mode: ThemeMode::Light,
+  background: "#fafafa",
+  panel: "#eaeaeb",
+  raised: "#ffffff",
+  line: "#dbdbdc",
+  text: "#383a42",
+  muted: "#696c77",
+  brass: "#526fff",
+  brass_ink: "#000933",
+  selection: "#0184bc1a",
+  success: "#50a14f",
+  warning: "#986801",
+  danger: "#e45649",
+  info: "#0184bc",
+};
+
+/// Atom's One Dark. Text, accents, and the background are the
+/// one-dark-syntax palette, and the other surfaces are One Dark UI's:
+/// <https://github.com/atom/atom/blob/master/packages/one-dark-syntax/styles/colors.less>
+/// and <https://github.com/atom/atom/tree/master/packages/one-dark-ui>.
+/// One's accent is the primary action, with One Dark UI's dark accent text
+/// on it. The selection is the info hue at the Default theme's opacity.
+const ONE_DARK: Tokens = Tokens {
+  name: "One Dark",
+  mode: ThemeMode::Dark,
+  background: "#282c34",
+  panel: "#21252b",
+  raised: "#2c313a",
+  line: "#181a1f",
+  text: "#abb2bf",
+  muted: "#828997",
+  brass: "#528bff",
+  brass_ink: "#001133",
+  selection: "#56b6c224",
+  success: "#98c379",
+  warning: "#d19a66",
+  danger: "#e06c75",
+  info: "#56b6c2",
+};
+
+/// The light and dark members of `family`.
+fn members(family: ThemeFamily) -> (&'static Tokens, &'static Tokens) {
+  match family {
+    ThemeFamily::Default => (&DEFAULT_LIGHT, &DEFAULT_DARK),
+    ThemeFamily::One => (&ONE_LIGHT, &ONE_DARK),
+  }
+}
+
+/// Registers the bundled fonts and makes the Default themes the ones the
+/// light and dark appearances load, then reloads the current appearance with
+/// its theme. Call it after `gpui_kit::init`.
 ///
 /// # Panics
 ///
@@ -119,13 +178,21 @@ pub fn init(cx: &mut App) {
   cx.text_system()
     .add_fonts(fonts)
     .expect("the bundled fonts load");
-  Theme::update(cx, |theme| {
-    theme.light_theme = Rc::new(config(&LIGHT));
-    theme.dark_theme = Rc::new(config(&DARK));
-  });
 
   let mode = cx.theme().mode;
 
+  change(ThemeFamily::Default, mode, cx);
+}
+
+/// Makes `family`'s themes the ones the light and dark appearances load, then
+/// loads the one for `mode`.
+pub fn change(family: ThemeFamily, mode: ThemeMode, cx: &mut App) {
+  let (light, dark) = members(family);
+
+  Theme::update(cx, |theme| {
+    theme.light_theme = Rc::new(config(light));
+    theme.dark_theme = Rc::new(config(dark));
+  });
   Theme::change(mode, None, cx);
 }
 
@@ -149,14 +216,17 @@ pub fn mode(appearance: Appearance, system: WindowAppearance) -> ThemeMode {
   }
 }
 
-/// Loads the theme `appearance` calls for, reading the system's appearance
-/// from `window`. Does nothing when that theme is already loaded, so it can
-/// run on every render.
-pub fn apply(appearance: Appearance, window: &Window, cx: &mut App) {
+/// Loads the member of `family` that `appearance` calls for, reading the
+/// system's appearance from `window`. Does nothing when that theme is already
+/// loaded, so it can run on every render.
+pub fn apply(family: ThemeFamily, appearance: Appearance, window: &Window, cx: &mut App) {
   let mode = mode(appearance, window.appearance());
+  let (light, dark) = members(family);
+  let wanted = if mode.is_dark() { dark } else { light };
+  let theme = cx.theme();
 
-  if cx.theme().mode != mode {
-    Theme::change(mode, None, cx);
+  if theme.mode != mode || theme.theme_name() != wanted.name {
+    change(family, mode, cx);
   }
 }
 

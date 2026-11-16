@@ -3,7 +3,7 @@
 //! and whether it runs natively or under Proton on Linux.
 
 use crate::picker::{self, FolderRefusal, Refusal};
-use crate::settings::{Appearance, RuntimeChoice};
+use crate::settings::{Appearance, RuntimeChoice, ThemeFamily};
 use crate::{Command, Effect, Screen, State, launch};
 use std::path::PathBuf;
 
@@ -129,6 +129,19 @@ pub(crate) fn appearance_chosen(state: &mut State, appearance: Appearance) -> Ve
   vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
 }
 
+/// Records the family of themes Rivet is drawn in and saves it. The shell
+/// applies the matching theme from the settings.
+pub(crate) fn theme_chosen(state: &mut State, theme: ThemeFamily) -> Vec<Effect> {
+  if !matches!(state.screen, Screen::Settings(_)) || state.settings.theme == theme {
+    return Vec::new();
+  }
+
+  state.settings.theme = theme;
+  state.settings_screen.unsaved = false;
+
+  vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+}
+
 /// Asks for a new `target` folder, unless another change is under way.
 pub(crate) fn change_pressed(state: &mut State, target: Target) -> Vec<Effect> {
   let screen = &mut state.settings_screen;
@@ -237,7 +250,7 @@ pub(crate) fn folder_listed(
 mod tests {
   use super::*;
   use crate::picker::{FolderRefusal, Refusal};
-  use crate::settings::{Appearance, GameSettings, RuntimeChoice, Settings};
+  use crate::settings::{Appearance, GameSettings, RuntimeChoice, Settings, ThemeFamily};
   use crate::{Command, Effect, Msg, Screen, State, test_ecosystem, update};
   use std::path::PathBuf;
   use thunderstore_engine::profile::launch::{
@@ -697,6 +710,35 @@ mod tests {
     let mut state = on_settings("valheim");
 
     let effects = update(&mut state, Msg::AppearanceChosen(Appearance::System));
+
+    assert_eq!(effects, vec![]);
+  }
+
+  #[test]
+  fn choosing_a_theme_saves_it_with_the_settings_typed_so_far() {
+    let mut state = on_settings("valheim");
+
+    update(
+      &mut state,
+      Msg::LaunchArgumentsChanged("-windowed".to_string()),
+    );
+
+    let effects = update(&mut state, Msg::ThemeChosen(ThemeFamily::One));
+
+    assert_eq!(state.settings.theme, ThemeFamily::One);
+    assert_eq!(state.settings.launch_arguments("valheim"), "-windowed");
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+    );
+    assert_eq!(update(&mut state, Msg::SettingsClosed), vec![]);
+  }
+
+  #[test]
+  fn choosing_the_theme_already_set_changes_nothing() {
+    let mut state = on_settings("valheim");
+
+    let effects = update(&mut state, Msg::ThemeChosen(ThemeFamily::Default));
 
     assert_eq!(effects, vec![]);
   }

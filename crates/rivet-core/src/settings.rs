@@ -22,6 +22,10 @@ pub struct Settings {
   /// Whether Rivet looks light or dark, or follows the system.
   #[serde(skip_serializing_if = "Appearance::is_system")]
   pub appearance: Appearance,
+  /// The family of themes Rivet is drawn in. [`Settings::appearance`] picks
+  /// its light or dark member.
+  #[serde(skip_serializing_if = "ThemeFamily::is_default")]
+  pub theme: ThemeFamily,
   /// Per-game settings, keyed by community slug.
   pub games: BTreeMap<String, GameSettings>,
 }
@@ -129,6 +133,23 @@ pub enum Appearance {
 impl Appearance {
   fn is_system(&self) -> bool {
     *self == Self::System
+  }
+}
+
+/// A family of themes, each with a light and a dark member.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeFamily {
+  /// Rivet's own look: Default Light and Default Dark.
+  #[default]
+  Default,
+  /// One Light and One Dark, from Atom's One palettes.
+  One,
+}
+
+impl ThemeFamily {
+  fn is_default(&self) -> bool {
+    *self == Self::Default
   }
 }
 
@@ -273,6 +294,32 @@ mod tests {
     let saved = serde_json::to_value(&settings).unwrap();
 
     assert_eq!(saved["appearance"], "dark");
+    assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
+  }
+
+  #[test]
+  fn the_theme_is_the_default_family_until_one_is_chosen() {
+    let older: Settings = serde_json::from_value(serde_json::json!({ "games": {} })).unwrap();
+
+    assert_eq!(Settings::default().theme, ThemeFamily::Default);
+    assert_eq!(older.theme, ThemeFamily::Default);
+    assert_eq!(
+      serde_json::to_value(Settings::default())
+        .unwrap()
+        .get("theme"),
+      None
+    );
+  }
+
+  #[test]
+  fn a_chosen_theme_is_saved_by_name_and_read_back() {
+    let settings = Settings {
+      theme: ThemeFamily::One,
+      ..Settings::default()
+    };
+    let saved = serde_json::to_value(&settings).unwrap();
+
+    assert_eq!(saved["theme"], "one");
     assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
   }
 }

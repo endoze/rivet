@@ -10,7 +10,7 @@ use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
 use rivet_core::loader_files::{FileRemoval, LoaderFile};
 use rivet_core::readme::{self, Request};
-use rivet_core::settings::{Appearance, GameSettings, RuntimeChoice, Settings};
+use rivet_core::settings::{Appearance, GameSettings, RuntimeChoice, Settings, ThemeFamily};
 use rivet_core::{Command, Msg, Screen, State};
 use std::path::PathBuf;
 use thunderstore_engine::ecosystem::Ecosystem;
@@ -3206,6 +3206,66 @@ fn the_saved_appearance_applies_at_start_and_a_new_choice_applies_at_once(cx: &m
     assert_eq!(pressed, [Some(true), Some(false), Some(false)]);
   })
   .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_saved_theme_applies_at_start_and_a_new_choice_applies_at_once(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+  cx.update(rivet_app::theme::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let mut drain = move || std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>();
+  let one_dark = Settings {
+    appearance: Appearance::Dark,
+    theme: ThemeFamily::One,
+    ..valheim_settings()
+  };
+  let name = |cx: &mut TestAppContext| cx.update(|cx| cx.theme().theme_name().to_string());
+  let choose = |cx: &mut TestAppContext, id: &'static str| {
+    cx.update_window(window, |_, window, cx| {
+      window.click(id, cx);
+      window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+  };
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(one_dark)))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("open-settings", cx);
+    window.render_frame(cx);
+  })
+  .unwrap();
+  drain();
+
+  assert_eq!(name(cx), "One Dark", "the saved theme");
+
+  choose(cx, "theme-default");
+
+  assert_eq!(name(cx), "Default Dark");
+
+  choose(cx, "theme-one");
+  choose(cx, "appearance-light");
+
+  assert_eq!(name(cx), "One Light");
+
+  let saved = drain().into_iter().rev().find_map(|command| match command {
+    Command::SaveSettings(settings) => Some((settings.theme, settings.appearance)),
+    _ => None,
+  });
+
+  assert_eq!(saved, Some((ThemeFamily::One, Appearance::Light)));
 }
 
 #[gpui_kit::test]

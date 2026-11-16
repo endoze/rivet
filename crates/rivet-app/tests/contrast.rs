@@ -1,6 +1,7 @@
-use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
-use gpui_kit::{TestAppContext, rgb};
+use gpui_kit::component::{ActiveTheme as _, ThemeMode};
+use gpui_kit::{SharedString, TestAppContext, rgb};
 use rivet_app::palette::{Palette, contrast};
+use rivet_core::settings::ThemeFamily;
 
 /// WCAG 2 level AA for normal-size text.
 const AA: f32 = 4.5;
@@ -20,22 +21,42 @@ fn contrast_matches_the_wcag_reference_values() {
 
 #[gpui_kit::test]
 fn every_text_is_readable_in_the_light_theme(cx: &mut TestAppContext) {
-  assert_readable(cx, ThemeMode::Light);
+  assert_readable(cx, ThemeFamily::Default, ThemeMode::Light);
 }
 
 #[gpui_kit::test]
 fn every_text_is_readable_in_the_dark_theme(cx: &mut TestAppContext) {
-  assert_readable(cx, ThemeMode::Dark);
+  assert_readable(cx, ThemeFamily::Default, ThemeMode::Dark);
+}
+
+#[gpui_kit::test]
+fn every_text_is_readable_in_one_light(cx: &mut TestAppContext) {
+  assert_readable(cx, ThemeFamily::One, ThemeMode::Light);
+}
+
+#[gpui_kit::test]
+fn every_text_is_readable_in_one_dark(cx: &mut TestAppContext) {
+  assert_readable(cx, ThemeFamily::One, ThemeMode::Dark);
 }
 
 #[gpui_kit::test]
 fn the_selected_segment_stands_out_in_the_light_theme(cx: &mut TestAppContext) {
-  assert_selected_segment_stands_out(cx, ThemeMode::Light);
+  assert_selected_segment_stands_out(cx, ThemeFamily::Default, ThemeMode::Light);
 }
 
 #[gpui_kit::test]
 fn the_selected_segment_stands_out_in_the_dark_theme(cx: &mut TestAppContext) {
-  assert_selected_segment_stands_out(cx, ThemeMode::Dark);
+  assert_selected_segment_stands_out(cx, ThemeFamily::Default, ThemeMode::Dark);
+}
+
+#[gpui_kit::test]
+fn the_selected_segment_stands_out_in_one_light(cx: &mut TestAppContext) {
+  assert_selected_segment_stands_out(cx, ThemeFamily::One, ThemeMode::Light);
+}
+
+#[gpui_kit::test]
+fn the_selected_segment_stands_out_in_one_dark(cx: &mut TestAppContext) {
+  assert_selected_segment_stands_out(cx, ThemeFamily::One, ThemeMode::Dark);
 }
 
 #[test]
@@ -61,11 +82,12 @@ fn the_shell_paints_only_palette_colors() {
 /// segment's indicator is at least [`NON_TEXT`] on the unselected background
 /// and on the selected fill, its label is the full text color, and every
 /// label is readable on what it sits on.
-fn assert_selected_segment_stands_out(cx: &mut TestAppContext, mode: ThemeMode) {
-  cx.update(gpui_kit::init);
-  cx.update(rivet_app::theme::init);
-  cx.update(|cx| Theme::change(mode, None, cx));
-
+fn assert_selected_segment_stands_out(
+  cx: &mut TestAppContext,
+  family: ThemeFamily,
+  mode: ThemeMode,
+) {
+  let theme = load(cx, family, mode);
   let palette = cx.update(|cx| Palette::new(cx));
   let segments = palette.segments;
 
@@ -77,17 +99,17 @@ fn assert_selected_segment_stands_out(cx: &mut TestAppContext, mode: ThemeMode) 
 
     assert!(
       ratio >= NON_TEXT,
-      "{mode:?}: the selected segment's indicator is {ratio:.2}:1 on {name}, under {NON_TEXT}:1"
+      "{theme}: the selected segment's indicator is {ratio:.2}:1 on {name}, under {NON_TEXT}:1"
     );
   }
 
   assert_eq!(
     segments.selected_text, palette.text,
-    "{mode:?}: the selected segment's label is not the full text color"
+    "{theme}: the selected segment's label is not the full text color"
   );
   assert_ne!(
     segments.unselected_text, segments.selected_text,
-    "{mode:?}: the unselected segments' labels look selected"
+    "{theme}: the unselected segments' labels look selected"
   );
 
   for (name, text, background) in [
@@ -98,16 +120,13 @@ fn assert_selected_segment_stands_out(cx: &mut TestAppContext, mode: ThemeMode) 
 
     assert!(
       ratio >= AA,
-      "{mode:?}: a {name} segment's label is {ratio:.2}:1, under {AA}:1"
+      "{theme}: a {name} segment's label is {ratio:.2}:1, under {AA}:1"
     );
   }
 }
 
-fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
-  cx.update(gpui_kit::init);
-  cx.update(rivet_app::theme::init);
-  cx.update(|cx| Theme::change(mode, None, cx));
-
+fn assert_readable(cx: &mut TestAppContext, family: ThemeFamily, mode: ThemeMode) {
+  let theme = load(cx, family, mode);
   let (palette, primary, primary_text) = cx.update(|cx| {
     let theme = cx.theme();
 
@@ -119,7 +138,7 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
 
   assert!(
     primary_button >= AA,
-    "{mode:?}: text on a primary button is {primary_button:.2}:1, under {AA}:1"
+    "{theme}: text on a primary button is {primary_button:.2}:1, under {AA}:1"
   );
 
   let texts = [("text", palette.text), ("muted text", palette.muted_text)];
@@ -137,7 +156,7 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
 
       assert!(
         ratio >= AA,
-        "{mode:?}: {text_name} on {background_name} is {ratio:.2}:1, under {AA}:1"
+        "{theme}: {text_name} on {background_name} is {ratio:.2}:1, under {AA}:1"
       );
     }
   }
@@ -156,14 +175,14 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
 
       assert!(
         ratio >= AA,
-        "{mode:?}: the {name} tag on {background_name} is {ratio:.2}:1, under {AA}:1"
+        "{theme}: the {name} tag on {background_name} is {ratio:.2}:1, under {AA}:1"
       );
     }
 
     for (other_name, other) in tags {
       assert!(
         name == other_name || tag != other,
-        "{mode:?}: the {name} and {other_name} tags look alike"
+        "{theme}: the {name} and {other_name} tags look alike"
       );
     }
   }
@@ -172,18 +191,18 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
 
   assert!(
     toast_text >= AA,
-    "{mode:?}: text on a toast is {toast_text:.2}:1, under {AA}:1"
+    "{theme}: text on a toast is {toast_text:.2}:1, under {AA}:1"
   );
 
   let danger_text = contrast(palette.danger_text, palette.toast);
 
   assert!(
     danger_text >= AA,
-    "{mode:?}: a destructive menu item is {danger_text:.2}:1, under {AA}:1"
+    "{theme}: a destructive menu item is {danger_text:.2}:1, under {AA}:1"
   );
   assert_ne!(
     palette.danger_text, palette.text,
-    "{mode:?}: a destructive menu item looks like any other"
+    "{theme}: a destructive menu item looks like any other"
   );
 
   let accents = [
@@ -198,23 +217,31 @@ fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
 
     assert!(
       ratio >= NON_TEXT,
-      "{mode:?}: the {name} toast's icon is {ratio:.2}:1 on the toast, under {NON_TEXT}:1"
+      "{theme}: the {name} toast's icon is {ratio:.2}:1 on the toast, under {NON_TEXT}:1"
     );
 
     for (other_name, other) in accents {
       assert!(
         name == other_name || accent != other,
-        "{mode:?}: the {name} and {other_name} toasts look alike"
+        "{theme}: the {name} and {other_name} toasts look alike"
       );
     }
   }
 
   assert_ne!(
     palette.row_selected, palette.row_hover,
-    "{mode:?}: the selected row looks hovered"
+    "{theme}: the selected row looks hovered"
   );
   assert_ne!(
     palette.row_selected, palette.panel,
-    "{mode:?}: the selected row looks unselected"
+    "{theme}: the selected row looks unselected"
   );
+}
+
+/// Loads `family`'s theme for `mode` and returns its name.
+fn load(cx: &mut TestAppContext, family: ThemeFamily, mode: ThemeMode) -> SharedString {
+  cx.update(gpui_kit::init);
+  cx.update(rivet_app::theme::init);
+  cx.update(|cx| rivet_app::theme::change(family, mode, cx));
+  cx.update(|cx| cx.theme().theme_name().clone())
 }

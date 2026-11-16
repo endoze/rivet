@@ -1,8 +1,16 @@
-use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
+use gpui_kit::component::{ActiveTheme as _, ThemeMode};
 use gpui_kit::{App, Hsla, TestAppContext, WindowAppearance, rgb, rgba};
 use rivet_app::palette::Palette;
 use rivet_app::theme;
-use rivet_core::settings::Appearance;
+use rivet_core::settings::{Appearance, ThemeFamily};
+
+/// Every theme: each family's light and dark members.
+const THEMES: [(ThemeFamily, ThemeMode); 4] = [
+  (ThemeFamily::Default, ThemeMode::Light),
+  (ThemeFamily::Default, ThemeMode::Dark),
+  (ThemeFamily::One, ThemeMode::Light),
+  (ThemeFamily::One, ThemeMode::Dark),
+];
 
 /// One appearance's row of the spec's design token table.
 struct Spec {
@@ -54,34 +62,109 @@ const LIGHT: Spec = Spec {
   info: 0x2f6db5,
 };
 
+/// Atom's One Dark: the one-dark-syntax colors, with One's accent as the
+/// primary action and its info hue at the spec's selection opacity.
+const ONE_DARK: Spec = Spec {
+  background: 0x282c34,
+  panel: 0x21252b,
+  raised: 0x2c313a,
+  line: 0x181a1f,
+  text: 0xabb2bf,
+  muted: 0x828997,
+  brass: 0x528bff,
+  brass_ink: 0x001133,
+  selection: 0x56b6c224,
+  success: 0x98c379,
+  warning: 0xd19a66,
+  danger: 0xe06c75,
+  info: 0x56b6c2,
+};
+
+/// Atom's One Light, built the same way as [`ONE_DARK`].
+const ONE_LIGHT: Spec = Spec {
+  background: 0xfafafa,
+  panel: 0xeaeaeb,
+  raised: 0xffffff,
+  line: 0xdbdbdc,
+  text: 0x383a42,
+  muted: 0x696c77,
+  brass: 0x526fff,
+  brass_ink: 0x000933,
+  selection: 0x0184bc1a,
+  success: 0x50a14f,
+  warning: 0x986801,
+  danger: 0xe45649,
+  info: 0x0184bc,
+};
+
 #[gpui_kit::test]
 fn the_dark_theme_paints_the_spec_tokens(cx: &mut TestAppContext) {
-  assert_spec_tokens(cx, ThemeMode::Dark, &DARK);
+  assert_theme_tokens(cx, ThemeFamily::Default, ThemeMode::Dark, &DARK);
+  assert_palette_tokens(cx, ThemeMode::Dark, &DARK);
 }
 
 #[gpui_kit::test]
 fn the_light_theme_paints_the_spec_tokens(cx: &mut TestAppContext) {
-  assert_spec_tokens(cx, ThemeMode::Light, &LIGHT);
+  assert_theme_tokens(cx, ThemeFamily::Default, ThemeMode::Light, &LIGHT);
+  assert_palette_tokens(cx, ThemeMode::Light, &LIGHT);
+}
+
+#[gpui_kit::test]
+fn one_dark_paints_the_atom_one_dark_palette(cx: &mut TestAppContext) {
+  assert_theme_tokens(cx, ThemeFamily::One, ThemeMode::Dark, &ONE_DARK);
+}
+
+#[gpui_kit::test]
+fn one_light_paints_the_atom_one_light_palette(cx: &mut TestAppContext) {
+  assert_theme_tokens(cx, ThemeFamily::One, ThemeMode::Light, &ONE_LIGHT);
 }
 
 #[gpui_kit::test]
 fn only_the_primary_action_is_brass_in_the_dark_theme(cx: &mut TestAppContext) {
-  assert_brass_only_on_primary(cx, ThemeMode::Dark, &DARK);
+  assert_brass_only_on_primary(cx, ThemeFamily::Default, ThemeMode::Dark, &DARK);
 }
 
 #[gpui_kit::test]
 fn only_the_primary_action_is_brass_in_the_light_theme(cx: &mut TestAppContext) {
-  assert_brass_only_on_primary(cx, ThemeMode::Light, &LIGHT);
+  assert_brass_only_on_primary(cx, ThemeFamily::Default, ThemeMode::Light, &LIGHT);
 }
 
 #[gpui_kit::test]
-fn both_themes_set_text_in_ibm_plex(cx: &mut TestAppContext) {
-  for mode in [ThemeMode::Light, ThemeMode::Dark] {
-    with_rivet_theme(cx, mode, |cx| {
+fn only_the_primary_action_takes_the_accent_in_one_dark(cx: &mut TestAppContext) {
+  assert_brass_only_on_primary(cx, ThemeFamily::One, ThemeMode::Dark, &ONE_DARK);
+}
+
+#[gpui_kit::test]
+fn only_the_primary_action_takes_the_accent_in_one_light(cx: &mut TestAppContext) {
+  assert_brass_only_on_primary(cx, ThemeFamily::One, ThemeMode::Light, &ONE_LIGHT);
+}
+
+#[gpui_kit::test]
+fn every_theme_is_named_for_its_family_and_appearance(cx: &mut TestAppContext) {
+  let names = THEMES.map(|(family, mode)| {
+    let mut name = String::new();
+
+    with_theme(cx, family, mode, |cx| {
+      name = cx.theme().theme_name().to_string();
+    });
+
+    name
+  });
+
+  assert_eq!(
+    names,
+    ["Default Light", "Default Dark", "One Light", "One Dark"]
+  );
+}
+
+#[gpui_kit::test]
+fn every_theme_sets_text_in_ibm_plex(cx: &mut TestAppContext) {
+  for (family, mode) in THEMES {
+    with_theme(cx, family, mode, |cx| {
       let theme = cx.theme();
 
-      assert_eq!(theme.font_family, theme::SANS, "{mode:?}");
-      assert_eq!(theme.mono_font_family, theme::MONO, "{mode:?}");
+      assert_eq!(theme.font_family, theme::SANS, "{family:?} {mode:?}");
+      assert_eq!(theme.mono_font_family, theme::MONO, "{family:?} {mode:?}");
     });
   }
 }
@@ -156,41 +239,28 @@ fn the_bundled_fonts_load_without_any_system_font() {
   cx.update(|cx| cx.quit());
 }
 
-fn assert_spec_tokens(cx: &mut TestAppContext, mode: ThemeMode, spec: &Spec) {
-  with_rivet_theme(cx, mode, |cx| {
+/// Asserts the theme `family` and `mode` load paints every token in `spec`.
+fn assert_theme_tokens(cx: &mut TestAppContext, family: ThemeFamily, mode: ThemeMode, spec: &Spec) {
+  with_theme(cx, family, mode, |cx| {
     let theme = cx.theme();
-    let palette = Palette::new(cx);
     let tokens = [
       ("background", theme.background, spec.background),
-      ("palette background", palette.background, spec.background),
       ("sidebar", theme.sidebar, spec.panel),
       ("status bar", theme.status_bar, spec.panel),
       ("popover", theme.popover, spec.panel),
-      ("palette panel", palette.panel, spec.panel),
-      ("palette toast", palette.toast, spec.panel),
       ("secondary button", theme.secondary, spec.raised),
       ("button", theme.button, spec.raised),
       ("list hover", theme.list_hover, spec.raised),
-      ("palette row hover", palette.row_hover, spec.raised),
-      ("palette code", palette.code, spec.raised),
       ("border", theme.border, spec.line),
       ("input border", theme.input, spec.line),
-      ("palette border", palette.border, spec.line),
       ("text", theme.foreground, spec.text),
-      ("palette text", palette.text, spec.text),
       ("muted text", theme.muted_foreground, spec.muted),
-      ("palette muted text", palette.muted_text, spec.muted),
       ("primary", theme.primary, spec.brass),
       ("primary text", theme.primary_foreground, spec.brass_ink),
       ("success", theme.success, spec.success),
-      ("palette success", palette.success, spec.success),
       ("warning", theme.warning, spec.warning),
-      ("palette warning", palette.warning, spec.warning),
       ("danger", theme.danger, spec.danger),
-      ("palette error", palette.error, spec.danger),
-      ("palette danger text", palette.danger_text, spec.danger),
       ("info", theme.info, spec.info),
-      ("palette info", palette.info, spec.info),
     ];
 
     for (name, actual, expected) in tokens {
@@ -205,6 +275,33 @@ fn assert_spec_tokens(cx: &mut TestAppContext, mode: ThemeMode, spec: &Spec) {
     for (name, actual) in selections {
       assert_close(mode, name, actual, rgba(spec.selection).into());
     }
+  });
+}
+
+/// Asserts the palette of the Default theme for `mode` keeps the spec's
+/// tokens, which already reach the contrast the palette asks for.
+fn assert_palette_tokens(cx: &mut TestAppContext, mode: ThemeMode, spec: &Spec) {
+  with_theme(cx, ThemeFamily::Default, mode, |cx| {
+    let palette = Palette::new(cx);
+    let tokens = [
+      ("palette background", palette.background, spec.background),
+      ("palette panel", palette.panel, spec.panel),
+      ("palette toast", palette.toast, spec.panel),
+      ("palette row hover", palette.row_hover, spec.raised),
+      ("palette code", palette.code, spec.raised),
+      ("palette border", palette.border, spec.line),
+      ("palette text", palette.text, spec.text),
+      ("palette muted text", palette.muted_text, spec.muted),
+      ("palette success", palette.success, spec.success),
+      ("palette warning", palette.warning, spec.warning),
+      ("palette error", palette.error, spec.danger),
+      ("palette danger text", palette.danger_text, spec.danger),
+      ("palette info", palette.info, spec.info),
+    ];
+
+    for (name, actual, expected) in tokens {
+      assert_close(mode, name, actual, rgb(expected).into());
+    }
 
     let selected_row = Hsla::from(rgb(spec.background)).blend(rgba(spec.selection).into());
 
@@ -217,8 +314,13 @@ fn assert_spec_tokens(cx: &mut TestAppContext, mode: ThemeMode, spec: &Spec) {
   });
 }
 
-fn assert_brass_only_on_primary(cx: &mut TestAppContext, mode: ThemeMode, spec: &Spec) {
-  with_rivet_theme(cx, mode, |cx| {
+fn assert_brass_only_on_primary(
+  cx: &mut TestAppContext,
+  family: ThemeFamily,
+  mode: ThemeMode,
+  spec: &Spec,
+) {
+  with_theme(cx, family, mode, |cx| {
     let theme = cx.theme();
     let brass = Hsla::from(rgb(spec.brass));
     let others = [
@@ -245,10 +347,15 @@ fn assert_brass_only_on_primary(cx: &mut TestAppContext, mode: ThemeMode, spec: 
   });
 }
 
-fn with_rivet_theme(cx: &mut TestAppContext, mode: ThemeMode, check: impl FnOnce(&App)) {
+fn with_theme(
+  cx: &mut TestAppContext,
+  family: ThemeFamily,
+  mode: ThemeMode,
+  check: impl FnOnce(&App),
+) {
   cx.update(gpui_kit::init);
   cx.update(theme::init);
-  cx.update(|cx| Theme::change(mode, None, cx));
+  cx.update(|cx| theme::change(family, mode, cx));
   cx.update(|cx| check(cx));
 }
 

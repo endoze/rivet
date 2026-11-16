@@ -71,6 +71,28 @@ fn the_appearance_control_marks_only_the_chosen_appearance_selected(cx: &mut Tes
 }
 
 #[gpui_kit::test]
+fn the_theme_control_marks_only_the_chosen_theme_selected(cx: &mut TestAppContext) {
+  let window = open_valheim_on_linux(cx);
+  let themes = ["theme-default", "theme-one"];
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("open-settings", cx);
+    window.render_frame(cx);
+
+    assert_only_selected(window, &themes, "theme-default");
+
+    for chosen in ["theme-one", "theme-default"] {
+      window.click(chosen, cx);
+      window.render_frame(cx);
+
+      assert_only_selected(window, &themes, chosen);
+    }
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
 fn tab_reaches_a_segment_and_enter_or_space_chooses_it(cx: &mut TestAppContext) {
   let window = open_valheim_on_linux(cx);
   let runtimes = ["runtime-detect", "runtime-native", "runtime-proton"];
