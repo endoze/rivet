@@ -11,6 +11,7 @@ pub mod queue;
 pub mod readme;
 pub mod settings;
 pub mod switcher;
+pub mod updates;
 
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
 use install::{Confirmation, Install, Installed, Outcome, Profile, Progress};
@@ -25,6 +26,7 @@ use std::path::PathBuf;
 use switcher::{Naming, ProfileChange, Switcher};
 use thunderstore_engine::ecosystem::Ecosystem;
 use thunderstore_engine::profile::launch::{HostOs, LaunchContext, LaunchMode};
+use updates::Update;
 
 /// Everything the app knows.
 #[derive(Debug)]
@@ -213,6 +215,9 @@ pub enum Msg {
   UninstallPressed(String),
   EnableAllPressed,
   DisableAllPressed,
+  /// Update was pressed on an installed package, by `Owner-Name`.
+  UpdatePressed(String),
+  UpdateAllPressed,
   /// The user answered whether a change takes the package's dependants too.
   DependantsChosen(Scope),
   /// The user answered whether an uninstall deletes the folders no package
@@ -331,6 +336,9 @@ pub enum Command {
   /// Answered with any number of [`Msg::OperationProgress`], then
   /// [`Msg::OperationFinished`].
   Install(Install),
+  /// Answered with any number of [`Msg::OperationProgress`], then
+  /// [`Msg::OperationFinished`].
+  Update(Update),
   /// Stop the operation with this id after the package it is on. Not
   /// answered: the operation's own answer says what it did.
   Cancel(u64),
@@ -499,6 +507,8 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::UninstallPressed(package) => manage::uninstall_pressed(state, package),
     Msg::EnableAllPressed => manage::set_all(state, true),
     Msg::DisableAllPressed => manage::set_all(state, false),
+    Msg::UpdatePressed(package) => updates::update_pressed(state, package),
+    Msg::UpdateAllPressed => updates::update_all(state),
     Msg::DependantsChosen(scope) => manage::dependants_chosen(state, scope),
     Msg::FoldersChosen(folders) => manage::folders_chosen(state, folders),
     Msg::PendingDismissed => {

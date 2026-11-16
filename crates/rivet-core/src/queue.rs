@@ -7,6 +7,7 @@ use crate::install::{
 };
 use crate::manage::{SetEnabled, Uninstall};
 use crate::notice::Notice;
+use crate::updates::Update;
 use crate::{Command, Effect, State};
 
 /// Every operation running or waiting its turn. One leaves the queue as soon
@@ -43,6 +44,7 @@ impl Queue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Work {
   Install(Install),
+  Update(Update),
   Uninstall(Uninstall),
   SetEnabled(SetEnabled),
 }
@@ -51,6 +53,7 @@ impl Work {
   fn command(&self) -> Command {
     match self.clone() {
       Work::Install(install) => Command::Install(install),
+      Work::Update(update) => Command::Update(update),
       Work::Uninstall(uninstall) => Command::Uninstall(uninstall),
       Work::SetEnabled(set) => Command::SetEnabled(set),
     }

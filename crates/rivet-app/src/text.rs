@@ -260,6 +260,30 @@ pub const DISABLE: &str = "Disable";
 pub const UNINSTALL: &str = "Uninstall";
 pub const ENABLE_ALL: &str = "Enable all";
 pub const DISABLE_ALL: &str = "Disable all";
+pub const UPDATE: &str = "Update";
+pub const UPDATE_ALL: &str = "Update all";
+pub const DEPRECATED: &str = "Deprecated";
+
+/// The badge of an installed mod with a newer version, such as `1.2.0
+/// available`.
+pub fn update_available(version: &str) -> String {
+  format!("{version} available")
+}
+
+/// The badge of an installed mod missing mods it needs.
+///
+/// ```
+/// use rivet_app::text::missing_badge;
+///
+/// assert_eq!(missing_badge(&["Owner-Lib".to_string()]), "Missing 1 dependency");
+/// assert_eq!(missing_badge(&["A-B".to_string(), "C-D".to_string()]), "Missing 2 dependencies");
+/// ```
+pub fn missing_badge(missing: &[String]) -> String {
+  match missing.len() {
+    1 => "Missing 1 dependency".to_string(),
+    count => format!("Missing {count} dependencies"),
+  }
+}
 pub const ENABLED: &str = "Enabled";
 pub const DISABLED: &str = "Disabled";
 pub const MOD_LOADER: &str = "Mod loader";
@@ -312,6 +336,7 @@ fn subject(packages: &[String]) -> String {
 fn action_verbs(action: &Action) -> (&'static str, &'static str, &'static str) {
   match action {
     Action::Install(_) => ("Installing", "Installed", "installed"),
+    Action::Update(_) => ("Updating", "Updated", "updated"),
     Action::Uninstall(_) => ("Uninstalling", "Uninstalled", "uninstalled"),
     Action::SetEnabled { enabled: true, .. } => ("Enabling", "Enabled", "enabled"),
     Action::SetEnabled { enabled: false, .. } => ("Disabling", "Disabled", "disabled"),

@@ -3,7 +3,7 @@
 
 use crate::notice::Notice;
 use crate::{Command, Effect, State};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use thunderstore_engine::models::PackageIndex;
 use thunderstore_engine::query::{self, BrowseQuery, PackageRow};
@@ -14,7 +14,17 @@ pub use thunderstore_engine::query::{SortDirection, SortKey};
 /// Two are equal when they are the same index, not when their contents match,
 /// so comparing messages never walks tens of thousands of packages.
 #[derive(Debug, Clone)]
-pub struct Index(pub Arc<PackageIndex>);
+pub struct Index(pub Arc<PackageIndex>, Arc<HashMap<String, usize>>);
+
+impl Index {
+  /// The package named `full_name` (`Owner-Name`), or `None` when the index
+  /// lacks it. Finds it without walking the index.
+  pub fn package(&self, full_name: &str) -> Option<PackageRow<'_>> {
+    let idx = *self.1.get(full_name)?;
+
+    PackageRow::new(&self.0, idx)
+  }
+}
 
 impl PartialEq for Index {
   fn eq(&self, other: &Self) -> bool {
@@ -26,7 +36,9 @@ impl Eq for Index {}
 
 impl From<PackageIndex> for Index {
   fn from(index: PackageIndex) -> Self {
-    Self(Arc::new(index))
+    let positions = index.build_name_index();
+
+    Self(Arc::new(index), Arc::new(positions))
   }
 }
 

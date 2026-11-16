@@ -130,6 +130,8 @@ pub struct Operation {
 pub enum Action {
   /// Install the package the user asked for, with everything it needs.
   Install(String),
+  /// Update these packages to their latest versions, with what they need.
+  Update(Vec<String>),
   /// Uninstall these packages, the one the user named first.
   Uninstall(Vec<String>),
   /// Enable or disable these packages, the one the user named first.
@@ -145,7 +147,9 @@ impl Action {
   pub fn packages(&self) -> &[String] {
     match self {
       Action::Install(package) => std::slice::from_ref(package),
-      Action::Uninstall(packages) | Action::SetEnabled { packages, .. } => packages,
+      Action::Update(packages)
+      | Action::Uninstall(packages)
+      | Action::SetEnabled { packages, .. } => packages,
     }
   }
 }

@@ -14,6 +14,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
   Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Theme, WindowExt as _, h_flex,
@@ -37,6 +38,7 @@ use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::readme::{Package, Readme, Status};
 use rivet_core::switcher::Naming;
+use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
 use thunderstore_engine::profile::launch::LaunchMode;
@@ -486,11 +488,14 @@ impl Shell {
       .into_any_element()
   }
 
-  /// The open profile's packages, with search, sort, and the bulk toggles.
+  /// The open profile's packages with their badges, with search, sort,
+  /// updating every outdated one, and the bulk toggles.
   fn render_installed(&self, cx: &mut Context<Self>) -> AnyElement {
     let state = &self.state;
     let can_change = state.can_manage();
     let manage = &state.manage;
+    let badges = state.badges();
+    let any_outdated = badges.values().any(|badge| badge.update.is_some());
     let sort_button = |id: &'static str, label: &'static str, sort: Sort| {
       Button::new(id)
         .label(label)
@@ -519,6 +524,13 @@ impl Shell {
         Sort::Newest,
       ))
       .child(
+        Button::new("update-all")
+          .label(text::UPDATE_ALL)
+          .small()
+          .disabled(!can_change || !any_outdated)
+          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::UpdateAllPressed, cx))),
+      )
+      .child(
         Button::new("enable-all")
           .label(text::ENABLE_ALL)
           .small()
@@ -540,8 +552,9 @@ impl Shell {
       .map(|(full_name, package)| {
         let toggle = state.can_toggle(full_name);
         let selected = is_selected(state.readme.as_ref(), full_name);
+        let badges = badges.get(full_name);
 
-        installed_row(full_name, package, toggle, can_change, selected, cx)
+        installed_row(full_name, package, badges, toggle, can_change, selected, cx)
       })
       .collect();
     let empty = match installed {
@@ -970,11 +983,13 @@ fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
     .into_any_element()
 }
 
-/// One package of the Installed tab: its name, author, version, whether it
-/// is enabled, and the buttons that change it. Clicking it selects it.
+/// One package of the Installed tab: its name, author, version, badges,
+/// whether it is enabled, and the buttons that change it. Clicking it
+/// selects it.
 fn installed_row(
   full_name: &str,
   package: &InstalledPackage,
+  badges: Option<&Badges>,
   can_toggle: bool,
   can_change: bool,
   selected: bool,
@@ -1009,6 +1024,44 @@ fn installed_row(
       .disabled(!can_change)
       .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
   });
+  let badge = |kind: &str, tag: Tag, label: String| {
+    div()
+      .id(SharedString::from(format!("{kind}-badge-{full_name}")))
+      .flex_none()
+      .child(tag.small().child(label))
+      .test_support()
+  };
+  let outdated = badges.is_some_and(|badges| badges.update.is_some());
+  let tags = badges
+    .into_iter()
+    .flat_map(|badges| {
+      [
+        badges
+          .update
+          .as_deref()
+          .map(|version| badge("update", Tag::info(), text::update_available(version))),
+        badges
+          .deprecated
+          .then(|| badge("deprecated", Tag::warning(), text::DEPRECATED.to_string())),
+        (!badges.missing.is_empty()).then(|| {
+          badge(
+            "missing",
+            Tag::danger(),
+            text::missing_badge(&badges.missing),
+          )
+        }),
+      ]
+    })
+    .flatten();
+  let update = outdated.then(|| {
+    let msg = Msg::UpdatePressed(full_name.to_string());
+
+    Button::new(SharedString::from(format!("update-{full_name}")))
+      .label(text::UPDATE)
+      .small()
+      .disabled(!can_change)
+      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
+  });
   let uninstall = full_name.to_string();
   let item = h_flex()
     .id(SharedString::from(format!("profile-{full_name}")))
@@ -1029,6 +1082,7 @@ fn installed_row(
       )
       .flex_1(),
     )
+    .children(tags)
     .child(
       div()
         .id(SharedString::from(format!("{state_id}-{full_name}")))
@@ -1037,6 +1091,7 @@ fn installed_row(
         .child(state_label)
         .test_support(),
     )
+    .children(update)
     .children(toggle)
     .child(
       Button::new(SharedString::from(format!("uninstall-{full_name}")))

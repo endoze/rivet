@@ -13,6 +13,7 @@ use rivet_core::picker::NotFound;
 use rivet_core::readme;
 use rivet_core::settings::Settings;
 use rivet_core::switcher::ProfileChange;
+use rivet_core::updates::Update;
 use rivet_core::{Command, Msg};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -158,6 +159,17 @@ pub async fn run(
     Command::Install(install) => {
       let operation = install.operation;
       let outcome = install_package(config, install, progress.clone()).await;
+
+      config.cancels.forget(operation);
+
+      Msg::OperationFinished {
+        operation,
+        outcome: outcome.map_err(|error| error.to_string()),
+      }
+    }
+    Command::Update(update) => {
+      let operation = update.operation;
+      let outcome = update_packages(config, update, progress.clone()).await;
 
       config.cancels.forget(operation);
 
@@ -381,30 +393,83 @@ async fn open_profile(config: &Config, game: &str, name: &str) -> Result<Install
   .map_err(|error| error.to_string())
 }
 
-/// Installs `install.package` and everything it needs, sending its progress
-/// to `progress` and stopping when the operation is cancelled. An error means
-/// nothing was installed. When the profile's
-/// record cannot be read back after the install, the outcome names what the
-/// install reported installing, with the read failure as its profile.
+/// Installs `install.package` and everything it needs, enabling it if it was
+/// disabled.
 async fn install_package(
   config: &Config,
   install: Install,
   progress: UnboundedSender<Msg>,
 ) -> thunderstore_engine::Result<Outcome> {
-  let folder = layout::profile_dir(&config.data, &install.game, &install.profile);
-  let before = modlist::read(&folder)?;
-  let client = client(config, &install.community)?;
   let requested = [install.package.clone()];
-  let batch = profile::plan_install_batch_from(&before, &requested, &requested);
-  let operation = operation(config, install.operation, progress);
+  let batch = Batch {
+    operation: install.operation,
+    game: &install.game,
+    community: &install.community,
+    profile: &install.profile,
+    index: &install.index,
+    desired: &requested,
+    explicit: &requested,
+  };
+
+  install_batch(config, batch, progress).await
+}
+
+/// Updates `update.packages` to their latest versions with what they need,
+/// leaving disabled ones disabled.
+async fn update_packages(
+  config: &Config,
+  update: Update,
+  progress: UnboundedSender<Msg>,
+) -> thunderstore_engine::Result<Outcome> {
+  let batch = Batch {
+    operation: update.operation,
+    game: &update.game,
+    community: &update.community,
+    profile: &update.profile,
+    index: &update.index,
+    desired: &update.packages,
+    explicit: &[],
+  };
+
+  install_batch(config, batch, progress).await
+}
+
+/// Packages to install into a game's profile from an index.
+struct Batch<'a> {
+  operation: u64,
+  game: &'a str,
+  community: &'a str,
+  profile: &'a str,
+  index: &'a Index,
+  /// Every package to install, each with what it needs.
+  desired: &'a [String],
+  /// The packages the user asked to have active. Any other package keeps its
+  /// disabled state.
+  explicit: &'a [String],
+}
+
+/// Installs `batch`, sending its progress to `progress` and stopping when the
+/// operation is cancelled. An error means nothing was installed. When the
+/// profile's record cannot be read back after the install, the outcome names
+/// what the install reported installing, with the read failure as its
+/// profile.
+async fn install_batch(
+  config: &Config,
+  batch: Batch<'_>,
+  progress: UnboundedSender<Msg>,
+) -> thunderstore_engine::Result<Outcome> {
+  let folder = layout::profile_dir(&config.data, batch.game, batch.profile);
+  let before = modlist::read(&folder)?;
+  let client = client(config, batch.community)?;
+  let operation = operation(config, batch.operation, progress);
   let outcome = profile::install_batch_with(
     &folder,
     &config.data,
     &config.ecosystem,
-    &install.index.0,
+    &batch.index.0,
     &client,
-    &install.game,
-    &batch,
+    batch.game,
+    &profile::plan_install_batch_from(&before, batch.desired, batch.explicit),
     modlist::now_millis(),
     &operation,
   )
@@ -1585,6 +1650,61 @@ mod tests {
         .join("BepInEx/plugins/Owner-ModC/ModC.dll")
         .is_file()
     );
+  }
+
+  /// The mock's package index as it was before `Owner-ModD` 2.0.0 was
+  /// published.
+  fn index_before_mod_d_2(mock: &MockThunderstore) -> Index {
+    let mut packages: Vec<serde_json::Value> =
+      serde_json::from_str(&index_json(&mock.url())).unwrap();
+    let mod_d = packages
+      .iter_mut()
+      .find(|package| package["full_name"] == "Owner-ModD")
+      .unwrap();
+
+    mod_d["versions"]
+      .as_array_mut()
+      .unwrap()
+      .retain(|version| version["version_number"] == "1.0.0");
+
+    let packages: Vec<thunderstore_engine::models::Package> =
+      serde_json::from_value(serde_json::Value::Array(packages)).unwrap();
+
+    PackageIndex::from(packages).into()
+  }
+
+  fn update(packages: &[&str], index: &Index) -> Command {
+    Command::Update(Update {
+      operation: 5,
+      game: "valheim".to_string(),
+      community: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      packages: names(packages),
+      index: index.clone(),
+    })
+  }
+
+  #[test]
+  fn an_update_moves_a_package_to_its_latest_version_and_keeps_it_disabled() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let config = config_for(&dir, &mock);
+    let index = mock_index(&mut mock);
+
+    run_now(open_profile("valheim"), &config);
+    run_now(install("Owner-ModD", &index_before_mod_d_2(&mock)), &config);
+    run_now(set_enabled(&["Owner-ModD"], false), &config);
+
+    let (progress, answer) = run_reporting(update(&["Owner-ModD"], &index), &config);
+    let outcome = finished(answer);
+
+    assert_eq!(outcome.changed, names(&["Owner-ModD"]));
+    assert_eq!(outcome.failed, vec![]);
+    assert_eq!(
+      outcome.profile.as_ref().map(packages),
+      Ok(vec![("Owner-ModD".to_string(), "2.0.0".to_string(), false)])
+    );
+    assert!(stages_of(progress).contains(&("Owner-ModD".to_string(), Stage::Downloading)));
   }
 
   #[test]

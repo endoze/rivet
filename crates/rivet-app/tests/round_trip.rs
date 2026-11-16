@@ -865,6 +865,105 @@ fn the_installed_tab_asks_before_disabling_a_dependency_and_the_disable_can_be_c
   assert!(cancelled);
 }
 
+/// The mock's package index with `Owner-ModB` deprecated.
+fn index_with_mod_b_deprecated() -> Index {
+  let mut packages: Vec<serde_json::Value> =
+    serde_json::from_str(&index_json("http://mock")).unwrap();
+
+  for package in &mut packages {
+    if package["full_name"] == "Owner-ModB" {
+      package["is_deprecated"] = true.into();
+    }
+  }
+
+  let packages: Vec<Package> = serde_json::from_value(serde_json::Value::Array(packages)).unwrap();
+
+  PackageIndex::from(packages).into()
+}
+
+/// The packages of the next update sent.
+fn updated(sent: &mut futures::channel::mpsc::UnboundedReceiver<Command>) -> (u64, Vec<String>) {
+  std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::Update(update) => Some((update.operation, update.packages)),
+      _ => None,
+    })
+    .expect("an update was sent")
+}
+
+#[gpui_kit::test]
+fn the_installed_tab_badges_packages_and_updates_one_or_all(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let profile: Installed = [
+    package("Owner-ModB", &[]),
+    package("Owner-ModC", &["Owner-ModA"]),
+    package("Owner-ModD", &[]),
+  ]
+  .into();
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(index_with_mod_b_deprecated())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(profile.clone()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("update-badge-Owner-ModD").is_some());
+    assert!(window.try_find("update-badge-Owner-ModB").is_none());
+    assert!(window.try_find("deprecated-badge-Owner-ModB").is_some());
+    assert!(window.try_find("missing-badge-Owner-ModC").is_some());
+    assert!(window.try_find("update-Owner-ModC").is_none());
+
+    window.click("update-all", cx);
+  })
+  .unwrap();
+
+  assert_eq!(updated(&mut sent), (1, vec!["Owner-ModD".to_string()]));
+
+  answers
+    .unbounded_send(Msg::OperationFinished {
+      operation: 1,
+      outcome: Ok(Outcome {
+        changed: vec![],
+        failed: vec![],
+        cancelled: vec![],
+        profile: Ok(profile),
+      }),
+    })
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("update-Owner-ModD", cx);
+  })
+  .unwrap();
+
+  assert_eq!(updated(&mut sent), (2, vec!["Owner-ModD".to_string()]));
+}
+
 fn valheim_refresh(id: u64) -> Refresh {
   Refresh {
     community: "valheim".to_string(),
