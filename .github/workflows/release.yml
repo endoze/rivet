@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+# The release stays a draft until every build is attached. Rivet's updater
+# never offers a draft, so it never sees a release missing its build.
+jobs:
+  draft:
+    name: Check the version and draft the release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Refuse a tag that is not the workspace version
+        run: |
+          version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::the tag ${GITHUB_REF_NAME} is not v${version}, the workspace version in Cargo.toml"
+            exit 1
+          fi
+      - name: Draft the release
+        run: |
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+              --title "Rivet ${GITHUB_REF_NAME#v}" --generate-notes
+
+  linux:
+    name: Build for Linux
+    needs: draft
+    # The binary needs the glibc it was built against or newer. Ubuntu 22.04's
+    # glibc 2.35 lets it run on Ubuntu 22.04, Debian 12, and anything newer.
+    # GitHub retires this runner on 2027-04-17; build in an ubuntu:22.04
+    # container before then.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Built outside Nix, so the binary links the system's libraries rather
+      # than the Nix store's.
+      - name: Install the libraries gpui builds against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config cmake clang libfontconfig-dev libfreetype-dev \
+            libvulkan-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev \
+            libssl-dev libzstd-dev
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.100.0
+          rustflags: ""
+      - name: Build
+        run: cargo build --release --locked -p rivet-app
+      - name: Attach the build and its checksum
+        run: |
+          asset=rivet-linux-x86_64
+          cp target/release/rivet "$asset"
+          strip "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          gh release upload "$GITHUB_REF_NAME" "$asset" "$asset.sha256" --clobber
+
+  windows:
+    name: Build for Windows
+    needs: draft
+    runs-on: windows-latest
+    env:
+      # The runner image does not promise NASM, so use aws-lc-sys's prebuilt objects.
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+        with:
+          toolchain: 1.100.0
+          # The action's default RUSTFLAGS would replace the flags .cargo/config.toml sets for Windows.
+          rustflags: ""
+      - name: Build
+        run: cargo build --release --locked -p rivet-app
+      - name: Attach the build and its checksum
+        shell: bash
+        run: |
+          asset=rivet-windows-x86_64.exe
+          cp target/release/rivet.exe "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          gh release upload "$GITHUB_REF_NAME" "$asset" "$asset.sha256" --clobber
+
+  publish:
+    name: Publish the release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the draft
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest

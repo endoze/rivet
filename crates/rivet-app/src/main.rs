@@ -4,7 +4,7 @@ use gpui_kit::component::Theme;
 use gpui_kit::{AppContext as _, WindowOptions};
 use reqwest_client::ReqwestClient;
 use rivet_app::Shell;
-use rivet_core::State;
+use rivet_core::{Command, State};
 use std::sync::Arc;
 use thunderstore_engine::ecosystem::Ecosystem;
 
@@ -22,6 +22,10 @@ fn main() {
     r2modman: rivet_platform::r2modman::data_folders(),
     spawn: rivet_commands::spawn_detached,
     cancels: rivet_commands::Cancels::default(),
+    updater: rivet_commands::Updater {
+      executable: std::env::current_exe().ok(),
+      ..rivet_commands::Updater::default()
+    },
   };
 
   gpui_kit::application()
@@ -37,6 +41,12 @@ fn main() {
 
       let state = State::new(config.ecosystem.clone());
       let (commands, inbox) = rivet_commands::spawn(config);
+
+      commands
+        .unbounded_send(Command::SettleRivetUpdate {
+          running: rivet_core::self_update::RUNNING.to_string(),
+        })
+        .ok();
 
       gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
         Theme::sync_system_appearance(Some(window), cx);

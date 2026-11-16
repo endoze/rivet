@@ -2,6 +2,9 @@
 //! [`Msg`], so the UI thread never waits on disk or network.
 
 mod portability;
+mod self_update;
+
+pub use self_update::{GITHUB, Updater, start_watched};
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
@@ -64,6 +67,9 @@ pub struct Config {
   pub spawn: fn(std::process::Command) -> std::io::Result<()>,
   /// The cancel flags operations stop on.
   pub cancels: Cancels,
+  /// Where Rivet looks for a newer release of itself, and the program an
+  /// update replaces.
+  pub updater: Updater,
 }
 
 /// The cancel flags of operations, by operation id. Clones share the flags.
@@ -132,6 +138,21 @@ pub async fn run(
       config.cancels.cancel(operation);
 
       return None;
+    }
+    Command::CancelRivetDownload(download) => {
+      config.updater.cancels.cancel(download);
+
+      return None;
+    }
+    Command::FetchRivetReleases => Msg::RivetReleasesFetched(self_update::releases(config).await),
+    Command::DownloadRivet(download) => {
+      Msg::RivetDownloaded(self_update::download(config, download, progress).await)
+    }
+    Command::ReplaceRivet { file, to } => {
+      Msg::RivetReplaced(self_update::replace(config, file, to).await)
+    }
+    Command::SettleRivetUpdate { running } => {
+      Msg::RivetUpdateSettled(self_update::settle(config, running).await)
     }
     Command::LoadSettings => Msg::SettingsLoaded(load_settings(&config.settings).await),
     Command::SaveSettings(settings) => {
@@ -1317,6 +1338,7 @@ mod tests {
       r2modman: Vec::new(),
       spawn: |_| panic!("a test tried to start a game"),
       cancels: Cancels::default(),
+      updater: Updater::default(),
     }
   }
 

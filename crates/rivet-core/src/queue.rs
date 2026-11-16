@@ -127,6 +127,7 @@ impl State {
 
 /// Adds `action` on `game`'s `profile` to the end of the queue, carried out by
 /// the work `work` builds for its id, and starts it if nothing else runs.
+/// Nothing is queued while Rivet is [restarting](State::is_restarting).
 pub(crate) fn enqueue(
   state: &mut State,
   game: String,
@@ -134,6 +135,10 @@ pub(crate) fn enqueue(
   action: Action,
   work: impl FnOnce(u64) -> Work,
 ) -> Vec<Effect> {
+  if state.is_restarting() {
+    return Vec::new();
+  }
+
   state.queue.asked += 1;
 
   let id = state.queue.asked;

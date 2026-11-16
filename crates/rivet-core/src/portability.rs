@@ -1025,6 +1025,22 @@ mod tests {
   }
 
   #[test]
+  fn naming_the_import_while_rivet_restarts_queues_nothing() {
+    let (mut state, _) = reading_code(Ok(shared("Shared")));
+
+    state.self_update.stage = crate::self_update::Stage::Restarting {
+      version: "0.3.0".to_string(),
+      file: PathBuf::from("/opt/rivet/rivet.new"),
+      replacing: true,
+    };
+
+    let effects = import_named(&mut state, "Shared");
+
+    assert_eq!(effects, vec![]);
+    assert!(!state.is_busy());
+  }
+
+  #[test]
   fn naming_the_import_queues_it_with_the_packages_the_index_has() {
     let (mut state, _) = reading_code(Ok(shared("Shared")));
     let index = state.browse.as_ref().unwrap().index.clone().unwrap();

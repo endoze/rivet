@@ -14,6 +14,7 @@ pub mod portability;
 pub mod queue;
 pub mod r2modman;
 pub mod readme;
+pub mod self_update;
 pub mod settings;
 pub mod settings_screen;
 pub mod switcher;
@@ -30,6 +31,7 @@ use portability::{Export, Exported, Exporting, Importing, ReadFailure, Shared, S
 use queue::{CloseChoice, Closing, Queue};
 use r2modman::R2modman;
 use readme::Readme;
+use self_update::{Download, DownloadFailure, Release, SelfUpdate, Settled};
 use settings::{Appearance, GameSettings, PickerLayout, RuntimeChoice, Settings, ThemeFamily};
 use settings_screen::{SettingsScreen, Target};
 use std::collections::BTreeMap;
@@ -104,6 +106,8 @@ pub struct State {
   /// The open game's r2modman profiles and the offer to import them. `None`
   /// outside a game.
   pub r2modman: Option<R2modman>,
+  /// Keeping Rivet itself current.
+  pub self_update: SelfUpdate,
 }
 
 impl State {
@@ -138,6 +142,7 @@ impl State {
       exporting: None,
       importing: None,
       r2modman: None,
+      self_update: SelfUpdate::default(),
     }
   }
 }
@@ -429,6 +434,28 @@ pub enum Msg {
   R2modmanToggled(PathBuf),
   /// The offer to import r2modman's profiles was accepted.
   R2modmanAccepted,
+  /// Updating Rivet automatically was turned on or off in settings.
+  UpdateAutomaticallyChosen(bool),
+  /// Check for updates was pressed in settings.
+  CheckForUpdatesPressed,
+  /// GitHub's releases of Rivet were listed, or why they could not be.
+  RivetReleasesFetched(Result<Vec<Release>, String>),
+  /// A newer Rivet's download got `received` bytes of `total`.
+  RivetDownloadProgress {
+    received: u64,
+    total: Option<u64>,
+  },
+  /// Cancel was pressed on the download of a newer Rivet.
+  RivetDownloadCancelPressed,
+  /// A [`Download`] ended: the build, checked against its checksum, or why
+  /// there is none.
+  RivetDownloaded(Result<PathBuf, DownloadFailure>),
+  /// Restart to update was pressed.
+  RestartToUpdatePressed,
+  /// A [`Command::ReplaceRivet`] ended: the new Rivet started, or why not.
+  RivetReplaced(Result<(), String>),
+  /// A [`Command::SettleRivetUpdate`] ended.
+  RivetUpdateSettled(Settled),
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -568,6 +595,24 @@ pub enum Command {
   /// Find the profiles r2modman holds for `game`, which it files under each
   /// of `folders`, changing nothing. Answered with [`Msg::R2modmanFound`].
   FindR2modmanProfiles { game: String, folders: Vec<String> },
+  /// List Rivet's releases on GitHub. Answered with
+  /// [`Msg::RivetReleasesFetched`].
+  FetchRivetReleases,
+  /// Answered with any number of [`Msg::RivetDownloadProgress`], then
+  /// [`Msg::RivetDownloaded`].
+  DownloadRivet(Download),
+  /// Stop the download with this id. Not answered: the download's own answer
+  /// says it was cancelled.
+  CancelRivetDownload(u64),
+  /// Put the downloaded build in `file` in place of the running program,
+  /// keeping the old one aside, and start it. The update to version `to` is
+  /// recorded, so the next start can tell whether it worked. Answered with
+  /// [`Msg::RivetReplaced`].
+  ReplaceRivet { file: PathBuf, to: String },
+  /// Settle the update recorded before this start of Rivet at `running`:
+  /// delete the program it replaced once the new one runs, or report that
+  /// it did not. Answered with [`Msg::RivetUpdateSettled`].
+  SettleRivetUpdate { running: String },
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -610,12 +655,16 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::SettingsLoaded(Ok(settings)) => {
       state.settings = settings;
 
-      match state.settings.last_game.clone() {
+      let mut effects = match state.settings.last_game.clone() {
         Some(game) if offered(state, &game) && state.settings.folder(&game).is_some() => {
           show_game(state, game)
         }
         _ => picker::show(state),
-      }
+      };
+
+      effects.extend(self_update::started(state));
+
+      effects
     }
     Msg::SettingsLoaded(Err(detail)) => {
       state.settings_error = Some(SettingsError::Load(detail));
@@ -672,7 +721,11 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.settings_error = result.err().map(SettingsError::Save);
       state.saves = state.saves.saturating_sub(1);
 
-      queue::close_when_done(state)
+      let mut effects = self_update::saves_written(state);
+
+      effects.extend(queue::close_when_done(state));
+
+      effects
     }
     Msg::CachedIndexRead { community, index } => browse::cache_read(state, community, index),
     Msg::IndexRefreshed { refresh, index } => browse::refreshed(state, refresh, index),
@@ -809,6 +862,17 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::R2modmanDeclined => r2modman::declined(state),
     Msg::R2modmanToggled(folder) => r2modman::toggled(state, folder),
     Msg::R2modmanAccepted => r2modman::accepted(state),
+    Msg::UpdateAutomaticallyChosen(on) => self_update::automatically_chosen(state, on),
+    Msg::CheckForUpdatesPressed => self_update::check_pressed(state),
+    Msg::RivetReleasesFetched(releases) => self_update::releases_fetched(state, releases),
+    Msg::RivetDownloadProgress { received, total } => {
+      self_update::download_progress(state, received, total)
+    }
+    Msg::RivetDownloadCancelPressed => self_update::cancel_pressed(state),
+    Msg::RivetDownloaded(result) => self_update::downloaded(state, result),
+    Msg::RestartToUpdatePressed => self_update::restart_pressed(state),
+    Msg::RivetReplaced(result) => self_update::replaced(state, result),
+    Msg::RivetUpdateSettled(settled) => self_update::settled(settled),
   }
 }
 

@@ -40,6 +40,10 @@ pub struct Settings {
   pub picker_layout: PickerLayout,
   /// Per-game settings, keyed by community slug.
   pub games: BTreeMap<String, GameSettings>,
+  /// Whether Rivet checks GitHub for a newer release of itself on each start,
+  /// and downloads it.
+  #[serde(skip_serializing_if = "std::ops::Not::not")]
+  pub update_automatically: bool,
 }
 
 /// Settings for one game. Build one with [`GameSettings::new`], so a field
@@ -423,6 +427,26 @@ mod tests {
 
     assert_eq!(saved["picker_layout"], "grid");
     assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
+  }
+
+  #[test]
+  fn rivet_updates_itself_only_once_turned_on_and_saved() {
+    let older: Settings = serde_json::from_value(serde_json::json!({ "games": {} })).unwrap();
+    let on = Settings {
+      update_automatically: true,
+      ..Settings::default()
+    };
+    let saved = serde_json::to_value(&on).unwrap();
+
+    assert!(!older.update_automatically);
+    assert_eq!(
+      serde_json::to_value(Settings::default())
+        .unwrap()
+        .get("update_automatically"),
+      None
+    );
+    assert_eq!(saved["update_automatically"], true);
+    assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), on);
   }
 
   #[test]

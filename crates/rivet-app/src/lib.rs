@@ -7,6 +7,7 @@ mod icons;
 mod modal;
 pub mod palette;
 mod segmented;
+mod self_update;
 pub mod text;
 pub mod theme;
 
@@ -413,7 +414,8 @@ impl Shell {
   }
 
   /// `notice` as a toast: an icon and outline for its level, its headline,
-  /// and its detail. Errors stay until closed, and the rest go on their own.
+  /// its detail, and a button opening its link if it has one. Errors and
+  /// toasts with a link stay until closed, and the rest go on their own.
   /// Toasts rise in the bottom corner above the status bar, clear of the
   /// buttons along the top.
   fn toast(&self, notice: &Notice, cx: &mut Context<Self>) -> Notification {
@@ -427,8 +429,8 @@ impl Shell {
     };
     let told = text::notice(notice, |game| self.game_name(game).to_string());
     let detail = told.detail;
-
-    Notification::new()
+    let link = notice.link().map(str::to_string);
+    let toast = Notification::new()
       .placement(Anchor::BottomRight)
       .title(told.title)
       .icon(Icon::new(icon).text_color(accent))
@@ -443,7 +445,19 @@ impl Shell {
           .children(detail.iter().map(|line| div().child(line.clone())))
           .test_support()
           .into_any_element()
-      })
+      });
+
+    match link {
+      Some(url) => toast.action(move |_, _, _| {
+        let url = url.clone();
+
+        Button::new("notice-link")
+          .label(text::OPEN_RELEASE)
+          .small()
+          .on_click(move |_, _, cx| cx.open_url(&url))
+      }),
+      None => toast,
+    }
   }
 
   fn render_picker(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -777,6 +791,7 @@ impl Shell {
           .children(shown)
           .test_support(),
       )
+      .children(self.render_rivet_update_status(cx))
       .children(experimental)
       .into_any_element()
   }
@@ -1215,6 +1230,7 @@ impl Shell {
           .child(appearance)
           .child(interface_size),
       )
+      .child(self.render_rivet_settings(cx))
       .into_any_element()
   }
 

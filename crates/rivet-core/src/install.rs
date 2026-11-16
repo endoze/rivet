@@ -260,12 +260,14 @@ impl State {
 
   /// Whether a change to the open profile can be asked for: the profile has
   /// been read, no uninstall is being checked, no launch is being prepared,
-  /// no profile change is being made, and no export is reading it. A change
-  /// asked for while another runs waits its turn.
+  /// no profile change is being made, no export is reading it, and Rivet is
+  /// not [restarting](State::is_restarting). A change asked for while another
+  /// runs waits its turn.
   pub fn can_install(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
     ready
+      && !self.is_restarting()
       && !self.is_checking()
       && !self.is_launching()
       && !self.is_changing_profile()

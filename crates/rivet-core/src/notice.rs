@@ -5,6 +5,7 @@
 use crate::install::{Action, FailedPackage};
 use crate::launch::LaunchFailure;
 use crate::portability::{Destination, Exported, ReadFailure};
+use crate::self_update::DownloadFailure;
 use crate::switcher::ProfileChange;
 use std::path::PathBuf;
 use thunderstore_engine::profile::launch::LaunchMode;
@@ -118,9 +119,52 @@ pub enum Notice {
     profile: String,
     failure: ReadFailure,
   },
+  /// A newer Rivet, by version, is out, but Rivet cannot replace itself
+  /// where it is installed. The release's page is at `page`.
+  RivetUnwritable { version: String, page: String },
+  /// A newer Rivet, by version, could not be downloaded, and nothing of it
+  /// was kept.
+  RivetDownloadFailed {
+    version: String,
+    failure: DownloadFailure,
+  },
+  /// Restart to update was pressed while an operation was running or
+  /// waiting, or a game was being started.
+  RestartRefused,
+  /// The downloaded Rivet could not be put in place or started, with the
+  /// reason. The one running is left as it was.
+  RivetReplaceFailed(String),
+  /// Rivet restarted into this version.
+  RivetUpdated(String),
+  /// The update to this version did not start, so the version before it
+  /// runs.
+  RivetUpdateFailed { to: String },
 }
 
 impl Notice {
+  /// The web page the notice offers to open, if any.
+  ///
+  /// ```
+  /// use rivet_core::notice::Notice;
+  ///
+  /// let unwritable = Notice::RivetUnwritable {
+  ///   version: "0.3.0".to_string(),
+  ///   page: "https://github.com/endoze/rivet/releases/tag/v0.3.0".to_string(),
+  /// };
+  ///
+  /// assert_eq!(
+  ///   unwritable.link(),
+  ///   Some("https://github.com/endoze/rivet/releases/tag/v0.3.0")
+  /// );
+  /// assert_eq!(Notice::LaunchLineCopied.link(), None);
+  /// ```
+  pub fn link(&self) -> Option<&str> {
+    match self {
+      Notice::RivetUnwritable { page, .. } => Some(page),
+      _ => None,
+    }
+  }
+
   /// How the notice reads at a glance.
   ///
   /// ```
@@ -136,7 +180,13 @@ impl Notice {
       | Notice::ProfileChanged(_)
       | Notice::Launched { .. }
       | Notice::SteamOptionSet(_)
-      | Notice::ProfileExported { .. } => Level::Success,
+      | Notice::ProfileExported { .. }
+      | Notice::RivetUpdated(_) => Level::Success,
+      Notice::RivetDownloadFailed { .. }
+      | Notice::RivetReplaceFailed(_)
+      | Notice::RivetUpdateFailed { .. } => Level::Error,
+      Notice::RivetUnwritable { .. } => Level::Warning,
+      Notice::RestartRefused => Level::Info,
       Notice::OperationFailed { .. }
       | Notice::ProfileChangeFailed { .. }
       | Notice::LaunchFailed { .. }

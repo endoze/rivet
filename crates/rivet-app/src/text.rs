@@ -9,6 +9,7 @@ use rivet_core::manage::Removal;
 use rivet_core::notice::Notice;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal, STEAM_LIBRARY, Store};
 use rivet_core::portability::{Destination, Exported, ReadFailure};
+use rivet_core::self_update::{CheckFailure, DownloadFailure, Stage as UpdateStage};
 use rivet_core::switcher::{NameRefusal, Naming, ProfileChange};
 use std::path::{Path, PathBuf};
 use thunderstore_engine::ecosystem::LoaderKind;
@@ -1137,6 +1138,30 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
     },
     Notice::ImportIncomplete { profile, missing } => import_incomplete(profile, missing),
     Notice::R2modmanUnread { profile, failure } => r2modman_unread(profile, failure),
+    Notice::RivetUnwritable { version, .. } => Told {
+      title: format!("Rivet {version} is out"),
+      detail: vec![UNWRITABLE.to_string()],
+    },
+    Notice::RivetDownloadFailed { version, failure } => Told {
+      title: download_failed(version, failure),
+      detail: Vec::new(),
+    },
+    Notice::RestartRefused => Told {
+      title: RESTART_REFUSED.to_string(),
+      detail: Vec::new(),
+    },
+    Notice::RivetReplaceFailed(reason) => Told {
+      title: "Rivet could not update itself".to_string(),
+      detail: vec![reason.clone(), "This version keeps running.".to_string()],
+    },
+    Notice::RivetUpdated(version) => Told {
+      title: format!("Rivet updated to {version}"),
+      detail: Vec::new(),
+    },
+    Notice::RivetUpdateFailed { to } => Told {
+      title: format!("The update to Rivet {to} did not start"),
+      detail: vec!["The version before it is running instead.".to_string()],
+    },
   }
 }
 
@@ -1473,4 +1498,101 @@ pub fn readme_loading(full_name: &str) -> String {
 /// The readme could not be fetched, with the reason.
 pub fn readme_failed(reason: &str) -> String {
   format!("The readme could not be loaded: {reason}. Select the mod again to retry.")
+}
+
+pub const RIVET: &str = "Rivet";
+pub const UPDATE_AUTOMATICALLY: &str = "Update Rivet automatically";
+pub const UPDATE_AUTOMATICALLY_HINT: &str =
+  "Checks GitHub for a newer Rivet each time it starts, and downloads it.";
+pub const CHECK_FOR_UPDATES: &str = "Check for updates";
+pub const RESTART_TO_UPDATE: &str = "Restart to update";
+pub const OPEN_RELEASE: &str = "Open release";
+pub const RESTART_REFUSED: &str = "Rivet can't restart while operations are running or waiting. Restart to update once they finish.";
+pub const UNWRITABLE: &str = "Rivet can't replace itself where it is installed, so it was not downloaded. Get it from its release page.";
+
+/// The version of Rivet running, such as `Version 0.2.0`.
+pub fn rivet_version(version: &str) -> String {
+  format!("Version {version}")
+}
+
+/// Where keeping Rivet current has got, shown beside Check for updates, or
+/// `None` when there is nothing to say.
+///
+/// ```
+/// use rivet_app::text::update_stage;
+/// use rivet_core::self_update::{CheckFailure, Stage};
+///
+/// assert_eq!(update_stage(&Stage::Idle), None);
+/// assert_eq!(
+///   update_stage(&Stage::UpToDate).as_deref(),
+///   Some("Rivet is up to date.")
+/// );
+/// assert_eq!(
+///   update_stage(&Stage::CheckFailed(CheckFailure::Unreachable(
+///     "GitHub answered 403 Forbidden".to_string()
+///   )))
+///   .as_deref(),
+///   Some("Couldn't check for updates: GitHub answered 403 Forbidden.")
+/// );
+/// ```
+pub fn update_stage(stage: &UpdateStage) -> Option<String> {
+  let said = match stage {
+    UpdateStage::Idle => return None,
+    UpdateStage::Checking { .. } => "Checking GitHub for a newer Rivet.".to_string(),
+    UpdateStage::UpToDate => "Rivet is up to date.".to_string(),
+    UpdateStage::CheckFailed(CheckFailure::Unreachable(reason)) => {
+      format!("Couldn't check for updates: {reason}.")
+    }
+    UpdateStage::CheckFailed(CheckFailure::NoBuild(version)) => {
+      format!("Rivet {version} is out, but not for this computer.")
+    }
+    UpdateStage::Downloading { download, .. } => {
+      format!("Rivet {} found. Downloading it.", download.found.version)
+    }
+    UpdateStage::Ready { version, .. } => format!("Rivet {version} is ready."),
+    UpdateStage::Unwritable { version, .. } => format!("Rivet {version} is out. {UNWRITABLE}"),
+    UpdateStage::Restarting { version, .. } => format!("Restarting into Rivet {version}."),
+  };
+
+  Some(said)
+}
+
+/// A newer Rivet's download in the status bar, with how far it has got,
+/// such as `Downloading Rivet 0.3.0, 45%`.
+///
+/// ```
+/// use rivet_app::text::rivet_downloading;
+///
+/// assert_eq!(rivet_downloading("0.3.0", 450, Some(1000)), "Downloading Rivet 0.3.0, 45%");
+/// assert_eq!(rivet_downloading("0.3.0", 2_500_000, None), "Downloading Rivet 0.3.0, 2.5 MB");
+/// ```
+pub fn rivet_downloading(version: &str, received: u64, total: Option<u64>) -> String {
+  match total.filter(|total| *total > 0) {
+    Some(total) => format!(
+      "Downloading Rivet {version}, {}%",
+      received.saturating_mul(100) / total
+    ),
+    None => format!(
+      "Downloading Rivet {version}, {:.1} MB",
+      received as f64 / 1_000_000.
+    ),
+  }
+}
+
+/// A downloaded Rivet waiting in the status bar, such as `Rivet 0.3.0 is
+/// ready`.
+pub fn rivet_ready(version: &str) -> String {
+  format!("Rivet {version} is ready")
+}
+
+/// A newer Rivet's failed download in one line.
+fn download_failed(version: &str, failure: &DownloadFailure) -> String {
+  let why = match failure {
+    DownloadFailure::Unwritable => UNWRITABLE.to_string(),
+    DownloadFailure::Cancelled => "it was cancelled.".to_string(),
+    DownloadFailure::Mismatch => "it did not match its checksum, so it was deleted.".to_string(),
+    DownloadFailure::Failed(reason) => format!("{reason}."),
+  };
+
+  format!("Rivet {version} could not be downloaded: {why}")
 }

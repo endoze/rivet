@@ -4,6 +4,8 @@ Rivet is a free mod manager for games with mods on [Thunderstore](https://thunde
 
 If you've used r2modman, Rivet works the same way and can bring your r2modman profiles across.
 
+Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases): `rivet-windows-x86_64.exe` for Windows or `rivet-linux-x86_64` for Linux. Each comes with a `.sha256` file to check the download against.
+
 ## Your first mods
 
 1. **Choose your game.** Search the list and pick it. If it's a Steam game, Rivet finds where it's installed. If not, Rivet asks you to choose the game's folder.
@@ -51,6 +53,7 @@ Press **Settings** in the sidebar to:
 - choose whether the game runs natively or through Proton (Linux)
 - pick a light or dark look, a theme, and the interface size
 - remove the mod loader files Rivet copied into the game's folder, to put the game back the way it was
+- turn on **Update Rivet automatically**, or press **Check for updates**, to download the newest Rivet. Press **Restart to update** when it's ready.
 
 ## Where Rivet keeps its files
 
