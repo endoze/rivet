@@ -106,6 +106,18 @@ pub enum Notice {
   /// A profile's pin file could not be read, with the reason naming the
   /// file, so the profile shows no package pinned.
   PinsUnread(String),
+  /// A profile is imported without the packages, as `Owner-Name-Version`,
+  /// that the package list lacks.
+  ImportIncomplete {
+    profile: String,
+    missing: Vec<String>,
+  },
+  /// An r2modman profile, by name, could not be read, so it was not
+  /// imported.
+  R2modmanUnread {
+    profile: String,
+    failure: ReadFailure,
+  },
 }
 
 impl Notice {
@@ -130,11 +142,14 @@ impl Notice {
       | Notice::LaunchFailed { .. }
       | Notice::ExportFailed { .. }
       | Notice::ImportUnread(_)
-      | Notice::UnpinFailed { .. } => Level::Error,
+      | Notice::UnpinFailed { .. }
+      | Notice::R2modmanUnread { .. } => Level::Error,
       Notice::LoaderFilesRemoved { failed, .. } if !failed.is_empty() => Level::Error,
       Notice::LoaderFilesRemoved { changed, .. } if !changed.is_empty() => Level::Warning,
       Notice::LoaderFilesRemoved { .. } => Level::Success,
-      Notice::IndexStale(_) | Notice::PinsUnread(_) => Level::Warning,
+      Notice::IndexStale(_) | Notice::PinsUnread(_) | Notice::ImportIncomplete { .. } => {
+        Level::Warning
+      }
       Notice::OperationCancelled { .. } | Notice::LaunchLineCopied | Notice::PinnedSkipped(_) => {
         Level::Info
       }

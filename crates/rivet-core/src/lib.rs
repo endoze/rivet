@@ -11,6 +11,7 @@ pub mod picker;
 pub mod pins;
 pub mod portability;
 pub mod queue;
+pub mod r2modman;
 pub mod readme;
 pub mod settings;
 pub mod settings_screen;
@@ -26,6 +27,7 @@ use notice::Notice;
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use portability::{Export, Exported, Exporting, Importing, ReadFailure, Shared, Source};
 use queue::{CloseChoice, Closing, Queue};
+use r2modman::R2modman;
 use readme::Readme;
 use settings::{GameSettings, RuntimeChoice, Settings};
 use settings_screen::{SettingsScreen, Target};
@@ -92,6 +94,9 @@ pub struct State {
   pub exporting: Option<Exporting>,
   /// Importing a shared profile into the open game. `None` outside a game.
   pub importing: Option<Importing>,
+  /// The open game's r2modman profiles and the offer to import them. `None`
+  /// outside a game.
+  pub r2modman: Option<R2modman>,
 }
 
 impl State {
@@ -124,6 +129,7 @@ impl State {
       readmes: 0,
       exporting: None,
       importing: None,
+      r2modman: None,
     }
   }
 }
@@ -374,6 +380,20 @@ pub enum Msg {
     export: Export,
     result: Result<Exported, String>,
   },
+  /// The profiles r2modman holds for a game were found. None are found when
+  /// r2modman's data cannot be read.
+  R2modmanFound {
+    game: String,
+    profiles: Vec<r2modman::Found>,
+  },
+  /// Import from r2modman was pressed in the profile menu.
+  R2modmanPressed,
+  /// The offer to import r2modman's profiles was declined.
+  R2modmanDeclined,
+  /// A profile in the offer was chosen, or unchosen if it was, by folder.
+  R2modmanToggled(PathBuf),
+  /// The offer to import r2modman's profiles was accepted.
+  R2modmanAccepted,
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -499,6 +519,9 @@ pub enum Command {
   /// Answered with any number of [`Msg::OperationProgress`], then
   /// [`Msg::OperationFinished`].
   Import(portability::Import),
+  /// Find the profiles r2modman holds for `game`, which it files under
+  /// `folder`, changing nothing. Answered with [`Msg::R2modmanFound`].
+  FindR2modmanProfiles { game: String, folder: String },
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -579,6 +602,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.manage.pending = None;
       state.readme = None;
       state.importing = None;
+      state.r2modman = None;
 
       if state.exporting == Some(Exporting::ChoosingFile) {
         state.exporting = None;
@@ -711,6 +735,10 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::ImportCodeSubmitted(code) => portability::import_code_submitted(state, code),
     Msg::ImportFilePressed => portability::import_file_pressed(state),
     Msg::ImportFileChosen(path) => portability::import_file_chosen(state, path),
+    Msg::SharedRead {
+      source: Source::R2modman(folder),
+      shared,
+    } => r2modman::read(state, folder, shared),
     Msg::SharedRead { source, shared } => portability::shared_read(state, source, shared),
     Msg::ImportNameSubmitted(name) => portability::import_name_submitted(state, name),
     Msg::ImportDismissed => {
@@ -719,6 +747,11 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       Vec::new()
     }
     Msg::ProfileExported { export, result } => portability::exported(state, export, result),
+    Msg::R2modmanFound { game, profiles } => r2modman::found(state, game, profiles),
+    Msg::R2modmanPressed => r2modman::pressed(state),
+    Msg::R2modmanDeclined => r2modman::declined(state),
+    Msg::R2modmanToggled(folder) => r2modman::toggled(state, folder),
+    Msg::R2modmanAccepted => r2modman::accepted(state),
   }
 }
 
@@ -919,6 +952,7 @@ pub(crate) fn test_ecosystem() -> thunderstore_engine::ecosystem::Ecosystem {
             {
               "gameInstanceType": "game",
               "exeNames": ["valheim.exe", "valheim.x86_64"],
+              "settingsIdentifier": "Valheim",
               "packageIndex": "https://thunderstore.io/c/valheim/api/v1/package/"
             },
             { "gameInstanceType": "server", "exeNames": ["valheim_server.exe"] }
@@ -1027,6 +1061,17 @@ pub(crate) fn test_index(packages: Vec<serde_json::Value>) -> Index {
     serde_json::from_value(serde_json::Value::Array(packages)).unwrap();
 
   thunderstore_engine::models::PackageIndex::from(packages).into()
+}
+
+/// A package index with `Owner-ModA` and `Owner-ModB` at 1.0.0, and
+/// `Owner-ModC` at 1.0.0 and 2.0.0.
+#[cfg(test)]
+pub(crate) fn test_shared_index() -> Index {
+  test_index(vec![
+    test_listed("Owner-ModA", &["1.0.0"], false),
+    test_listed("Owner-ModB", &["1.0.0"], false),
+    test_listed("Owner-ModC", &["1.0.0", "2.0.0"], false),
+  ])
 }
 
 #[cfg(test)]

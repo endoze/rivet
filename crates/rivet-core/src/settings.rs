@@ -45,6 +45,10 @@ pub struct GameSettings {
   /// removed since, so they can be.
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub loader_files: Vec<LoaderFile>,
+  /// Whether the user answered the offer to import r2modman's profiles of
+  /// the game, so it is not made again on its own.
+  #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+  pub r2modman_answered: bool,
 }
 
 impl GameSettings {
@@ -67,6 +71,7 @@ impl GameSettings {
       launch_arguments: String::new(),
       runtime: RuntimeChoice::Detect,
       loader_files: Vec::new(),
+      r2modman_answered: false,
     }
   }
 }

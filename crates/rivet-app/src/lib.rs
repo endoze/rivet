@@ -988,6 +988,7 @@ impl Shell {
     let can_duplicate = state.can_duplicate_profile();
     let can_export = state.can_export_profile();
     let can_import = state.can_import_profile();
+    let can_offer_r2modman = state.can_offer_r2modman();
     let profiles: Vec<(String, Option<usize>)> = state
       .profile_names()
       .into_iter()
@@ -1029,6 +1030,12 @@ impl Shell {
                 .disabled(!can_import)
                 .on_click(send(&shell, Msg::ImportFilePressed)),
             )
+            .when(can_offer_r2modman, |menu| {
+              menu.item(
+                menu_item("import-r2modman", text::IMPORT_R2MODMAN, None)
+                  .on_click(send(&shell, Msg::R2modmanPressed)),
+              )
+            })
         }
       });
     let actions = Button::new("profile-actions")

@@ -273,10 +273,14 @@ pub(crate) fn listed(
       switcher.names = names;
       switcher.list_failure = None;
     }
-    Err(reason) => switcher.list_failure = Some(reason),
+    Err(reason) => {
+      switcher.list_failure = Some(reason);
+
+      return Vec::new();
+    }
   }
 
-  Vec::new()
+  crate::r2modman::listed(state, &game)
 }
 
 /// Selects `name`, a listed profile of the open game, and remembers it.

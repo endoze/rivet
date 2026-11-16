@@ -10,6 +10,7 @@ use rivet_core::install::{FailedPackage, Outcome};
 use rivet_core::portability::{
   Destination, Export, Exported, Import, ReadFailure, Shared, SharedPackage, Source,
 };
+use rivet_core::r2modman::Found;
 use std::path::Path;
 use thunderstore_engine::profile::modlist;
 use thunderstore_engine::profile::{self, layout, portability};
@@ -54,6 +55,7 @@ pub(crate) async fn read_shared(
       .await
       .map_err(|error| ReadFailure::Unreadable(crate::failure(path, error)))?,
     Source::Code(code) => fetch_code(config, community, code).await?,
+    Source::R2modman(folder) => r2modman_export(folder).await?,
   };
   let list =
     portability::read_export(&archive).map_err(|error| ReadFailure::Damaged(error.to_string()))?;
@@ -72,6 +74,41 @@ pub(crate) async fn read_shared(
     packages,
     archive,
   })
+}
+
+/// The profiles r2modman holds in each of its data folders for the game it
+/// files under `folder`.
+pub(crate) async fn find_r2modman_profiles(config: &Config, folder: &str) -> Vec<Found> {
+  let (data, folder) = (config.r2modman.clone(), folder.to_string());
+
+  tokio::task::spawn_blocking(move || rivet_platform::r2modman::profiles(&data, &folder))
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|folder| Found {
+      name: profile_name(&folder),
+      folder,
+    })
+    .collect()
+}
+
+/// The name of the r2modman profile in `folder`: the folder's own name.
+fn profile_name(folder: &Path) -> String {
+  folder
+    .file_name()
+    .map(|name| name.to_string_lossy().into_owned())
+    .unwrap_or_default()
+}
+
+/// An export of the r2modman profile in `folder`, built from its mod list
+/// and config files without writing anything there.
+async fn r2modman_export(folder: &Path) -> Result<Vec<u8>, ReadFailure> {
+  let folder = folder.to_path_buf();
+
+  tokio::task::spawn_blocking(move || portability::build_r2z_in(&folder, &profile_name(&folder)))
+    .await
+    .map_err(|error| ReadFailure::Unreadable(error.to_string()))?
+    .map_err(|error| ReadFailure::Unreadable(error.to_string()))
 }
 
 /// The text a profile code's body starts with, before the base64 of the
@@ -211,16 +248,19 @@ mod tests {
   use super::STANDARD;
   use crate::Config;
   use crate::tests::{
-    config_for, install_at, mock_index, mock_thunderstore, names, packages, profile_folder,
-    run_any, run_now, run_reporting, set_enabled, with_mod_c,
+    config_for, config_in, install_at, mock_index, mock_thunderstore, names, packages,
+    profile_folder, run_any, run_now, run_reporting, set_enabled, with_mod_c,
   };
   use base64::Engine as _;
   use rivet_core::install::{DEFAULT_PROFILE, Outcome, Stage};
   use rivet_core::portability::{
     Destination, Export, Exported, Import, ReadFailure, Shared, SharedPackage, Source,
   };
+  use rivet_core::r2modman::Found;
   use rivet_core::{Command, Msg};
+  use std::collections::BTreeMap;
   use std::io::Write as _;
+  use std::path::{Path, PathBuf};
   use tempfile::TempDir;
   use thunderstore_engine::profile::portability::read_export;
   use thunderstore_engine::test_support::MockThunderstore;
@@ -650,6 +690,217 @@ mods:
         .unwrap()
         .values()
         .all(|package| !package.pinned)
+    );
+  }
+
+  /// One entry of a `mods.yml` as r2modman writes it.
+  fn r2modman_entry(name: &str, enabled: bool) -> String {
+    format!(
+      "- manifestVersion: 1
+  name: {name}
+  authorName: Owner
+  websiteUrl: ''
+  displayName: {name}
+  description: ''
+  gameVersion: '0'
+  networkMode: both
+  packageType: other
+  installMode: managed
+  installedAtTime: 1794578613520
+  loaders: []
+  dependencies: []
+  incompatibilities: []
+  optionalDependencies: []
+  versionNumber:
+    major: 1
+    minor: 0
+    patch: 0
+  enabled: {enabled}
+  onlineSource: true
+"
+    )
+  }
+
+  /// Writes r2modman's valheim profile `name` in its data folder `data`,
+  /// holding `Owner-ModA` 1.0.0 enabled and `Owner-ModD` 1.0.0 disabled, with
+  /// a config file and the files r2modman installed.
+  fn r2modman_profile(data: &Path, name: &str) -> PathBuf {
+    let folder = data.join("Valheim").join("profiles").join(name);
+    let files = [
+      (
+        "mods.yml",
+        r2modman_entry("Owner-ModA", true) + &r2modman_entry("Owner-ModD", false),
+      ),
+      (
+        "BepInEx/config/Owner.ModA.cfg",
+        "[General]\nSpeed = 2\n".to_string(),
+      ),
+      ("BepInEx/plugins/Owner-ModA/ModA.dll", "MZ".to_string()),
+      ("BepInEx/plugins/Owner-ModD/ModD.dll.old", "MZ".to_string()),
+    ];
+
+    for (file, body) in files {
+      let path = folder.join(file);
+
+      std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+      std::fs::write(path, body).unwrap();
+    }
+
+    folder
+  }
+
+  /// Every file under `folder` with its bytes.
+  fn snapshot(folder: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+
+    for entry in std::fs::read_dir(folder).unwrap() {
+      let path = entry.unwrap().path();
+
+      if path.is_dir() {
+        files.extend(snapshot(&path));
+      } else {
+        files.insert(path.clone(), std::fs::read(&path).unwrap());
+      }
+    }
+
+    files
+  }
+
+  #[test]
+  fn r2modmans_profiles_of_a_game_are_found_in_its_data_folders() {
+    let dir = TempDir::new().unwrap();
+    let data = dir.path().join("r2modmanPlus-local");
+    let modded = r2modman_profile(&data, "Modded");
+    let config = Config {
+      r2modman: vec![dir.path().join("missing"), data],
+      ..config_in(&dir)
+    };
+
+    let answer = run_now(
+      Command::FindR2modmanProfiles {
+        game: "valheim".to_string(),
+        folder: "Valheim".to_string(),
+      },
+      &config,
+    );
+
+    assert_eq!(
+      answer,
+      Msg::R2modmanFound {
+        game: "valheim".to_string(),
+        profiles: vec![Found {
+          name: "Modded".to_string(),
+          folder: modded,
+        }],
+      }
+    );
+  }
+
+  #[test]
+  fn an_r2modman_profile_imports_with_its_packages_and_configs_and_is_left_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let data = dir.path().join("r2modmanPlus-local");
+    let config = Config {
+      r2modman: vec![data.clone()],
+      ..config_for(&dir, &mock)
+    };
+    let source = r2modman_profile(&data, "Modded");
+    let before = snapshot(&data);
+
+    let shared = shared(run_now(read(Source::R2modman(source)), &config)).unwrap();
+
+    assert_eq!(shared.name, "Modded");
+    assert_eq!(shared.packages, listed());
+
+    let answer = run_now(
+      Command::Import(Import {
+        operation: 3,
+        game: "valheim".to_string(),
+        community: "valheim".to_string(),
+        profile: "Modded".to_string(),
+        packages: shared.packages,
+        archive: shared.archive,
+        index: mock_index(&mut mock),
+      }),
+      &config,
+    );
+
+    let Msg::OperationFinished {
+      operation: 3,
+      outcome: Ok(outcome),
+    } = answer
+    else {
+      panic!("unexpected answer {answer:?}");
+    };
+
+    assert_eq!(outcome.failed, vec![]);
+    assert_eq!(
+      outcome.profile.as_ref().map(packages),
+      Ok(vec![
+        ("Owner-ModA".to_string(), "1.0.0".to_string(), true),
+        ("Owner-ModD".to_string(), "1.0.0".to_string(), false),
+      ])
+    );
+    assert_eq!(
+      std::fs::read_to_string(
+        profile_folder(&config, "Modded").join("BepInEx/config/Owner.ModA.cfg")
+      )
+      .unwrap(),
+      "[General]\nSpeed = 2\n"
+    );
+    assert_eq!(snapshot(&data), before);
+  }
+
+  #[test]
+  fn an_r2modman_profile_brings_nothing_from_a_rivet_folder_in_it() {
+    let dir = TempDir::new().unwrap();
+    let mut mock = mock_thunderstore();
+    let data = dir.path().join("r2modmanPlus-local");
+    let config = config_for(&dir, &mock);
+    let source = r2modman_profile(&data, "Modded");
+
+    std::fs::create_dir_all(source.join(".rivet")).unwrap();
+    std::fs::write(source.join(".rivet/pins.toml"), PINS).unwrap();
+    std::fs::write(source.join(".rivet/notes.json"), "{}").unwrap();
+
+    let shared = shared(run_now(read(Source::R2modman(source)), &config)).unwrap();
+    let outcome = imported_outcome(
+      Import {
+        operation: 3,
+        game: "valheim".to_string(),
+        community: "valheim".to_string(),
+        profile: "Modded".to_string(),
+        packages: shared.packages,
+        archive: shared.archive,
+        index: mock_index(&mut mock),
+      },
+      &config,
+    );
+
+    assert!(!profile_folder(&config, "Modded").join(".rivet").exists());
+    assert!(
+      outcome
+        .profile
+        .unwrap()
+        .values()
+        .all(|package| !package.pinned)
+    );
+  }
+
+  #[test]
+  fn an_r2modman_profile_whose_mod_list_is_damaged_cannot_be_read() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+    let source = r2modman_profile(dir.path(), "Broken");
+
+    std::fs::write(source.join("mods.yml"), "{ not: [a mod list").unwrap();
+
+    let answer = shared(run_now(read(Source::R2modman(source)), &config));
+
+    assert!(
+      matches!(answer, Err(ReadFailure::Unreadable(_))),
+      "{answer:?}"
     );
   }
 }

@@ -54,6 +54,8 @@ pub enum Source {
   Code(String),
   /// A `.r2z` export, or the bare `export.r2x` list inside one.
   File(PathBuf),
+  /// A profile folder in r2modman's data, which is only read.
+  R2modman(PathBuf),
 }
 
 /// One package a shared profile lists.
@@ -288,7 +290,7 @@ pub(crate) fn shared_read(
 
           Vec::new()
         }
-        Source::File(_) => {
+        Source::File(_) | Source::R2modman(_) => {
           state.importing = None;
 
           vec![Effect::Notify(Notice::ImportUnread(failure))]
@@ -328,6 +330,23 @@ pub(crate) fn import_name_submitted(state: &mut State, name: String) -> Vec<Effe
     return Vec::new();
   }
 
+  let ImportForm {
+    shared, missing, ..
+  } = form.clone();
+
+  state.importing = None;
+
+  queue_import(state, name, shared, &missing)
+}
+
+/// Queues importing `shared` into the open game as the profile `name`,
+/// leaving out the `missing` packages, as `Owner-Name-Version`.
+pub(crate) fn queue_import(
+  state: &mut State,
+  name: String,
+  shared: Shared,
+  missing: &[String],
+) -> Vec<Effect> {
   let Some(switcher) = state.switcher.as_ref() else {
     return Vec::new();
   };
@@ -338,26 +357,23 @@ pub(crate) fn import_name_submitted(state: &mut State, name: String) -> Vec<Effe
     return Vec::new();
   };
   let (game, community) = (switcher.game.clone(), browse.community.clone());
-  let packages: Vec<SharedPackage> = form
-    .shared
-    .packages
-    .iter()
+  let Shared {
+    packages, archive, ..
+  } = shared;
+  let packages: Vec<SharedPackage> = packages
+    .into_iter()
     .filter(|package| {
       let listed = format!("{}-{}", package.full_name, package.version);
 
-      !form.missing.contains(&listed)
+      !missing.contains(&listed)
     })
-    .cloned()
     .collect();
-  let archive = form.shared.archive.clone();
   let action = Action::Import(
     packages
       .iter()
       .map(|package| package.full_name.clone())
       .collect(),
   );
-
-  state.importing = None;
 
   queue::enqueue(state, game.clone(), name.clone(), action, |operation| {
     Work::Import(Import {
@@ -374,7 +390,7 @@ pub(crate) fn import_name_submitted(state: &mut State, name: String) -> Vec<Effe
 
 /// The packages of `packages` at a version `index` does not have, as
 /// `Owner-Name-Version`.
-fn missing(index: &PackageIndex, packages: &[SharedPackage]) -> Vec<String> {
+pub(crate) fn missing(index: &PackageIndex, packages: &[SharedPackage]) -> Vec<String> {
   packages
     .iter()
     .filter(|package| {
@@ -393,7 +409,7 @@ fn missing(index: &PackageIndex, packages: &[SharedPackage]) -> Vec<String> {
 
 /// `name` when no profile in `taken` has it, and otherwise the first of
 /// `name 2`, `name 3`, and on that is free.
-fn free_name(taken: &[String], name: &str) -> String {
+pub(crate) fn free_name(taken: &[String], name: &str) -> String {
   let is_free = |candidate: &String| {
     !matches!(
       check_name(taken, candidate, None),
@@ -482,34 +498,8 @@ mod tests {
   use crate::settings::{GameSettings, Settings};
   use crate::{Command, Msg, test_ecosystem, test_installed, update};
 
-  /// `Owner-ModA` and `Owner-ModB` at 1.0.0, and `Owner-ModC` at 1.0.0 and
-  /// 2.0.0.
   fn index() -> Index {
-    let package = |name: &str, versions: &[&str]| {
-      serde_json::json!({
-        "name": name,
-        "full_name": format!("Owner-{name}"),
-        "owner": "Owner",
-        "date_created": "2024-01-01T00:00:00Z",
-        "date_updated": "2024-01-01T00:00:00Z",
-        "categories": [],
-        "versions": versions.iter().map(|version| serde_json::json!({
-          "version_number": version,
-          "dependencies": [],
-          "download_url": format!("https://example.com/Owner-{name}-{version}.zip"),
-          "date_created": "2024-01-01T00:00:00Z"
-        })).collect::<Vec<_>>()
-      })
-    };
-    let packages: Vec<thunderstore_engine::models::Package> =
-      serde_json::from_value(serde_json::json!([
-        package("ModA", &["1.0.0"]),
-        package("ModB", &["1.0.0"]),
-        package("ModC", &["1.0.0", "2.0.0"]),
-      ]))
-      .unwrap();
-
-    thunderstore_engine::models::PackageIndex::from(packages).into()
+    crate::test_shared_index()
   }
 
   /// A state with valheim open on its Default profile, holding `Owner-ModA`,

@@ -54,6 +54,9 @@ pub struct Config {
   /// Every Steam install searched for a game's folder, in order, when the
   /// user chose none. Empty when none was found.
   pub steam_installs: Vec<PathBuf>,
+  /// r2modman's data folders, searched for its profiles in order and only
+  /// read. Empty when none was found.
+  pub r2modman: Vec<PathBuf>,
   /// Starts a prepared game, such as [`spawn_detached`].
   pub spawn: fn(std::process::Command) -> std::io::Result<()>,
   /// The cancel flags operations stop on.
@@ -305,6 +308,10 @@ pub async fn run(
 
       Msg::OperationFinished { operation, outcome }
     }
+    Command::FindR2modmanProfiles { game, folder } => Msg::R2modmanFound {
+      profiles: portability::find_r2modman_profiles(config, &folder).await,
+      game,
+    },
   };
 
   Some(answer)
@@ -1147,6 +1154,7 @@ mod tests {
       ecosystem: Ecosystem::bundled(),
       steam: None,
       steam_installs: Vec::new(),
+      r2modman: Vec::new(),
       spawn: |_| panic!("a test tried to start a game"),
       cancels: Cancels::default(),
     }

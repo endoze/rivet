@@ -988,6 +988,8 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       title: PINS_UNREAD.to_string(),
       detail: vec![reason.clone(), PINS_UNREAD_NEXT.to_string()],
     },
+    Notice::ImportIncomplete { profile, missing } => import_incomplete(profile, missing),
+    Notice::R2modmanUnread { profile, failure } => r2modman_unread(profile, failure),
   }
 }
 
@@ -1057,6 +1059,63 @@ pub fn loader_files_removed(game: &str, changed: &[PathBuf], failed: &[(PathBuf,
 }
 
 pub const TRY_AGAIN_AFTER_CLOSING: &str = "Close the game if it is running, then try again.";
+
+/// A profile imported without the mods Thunderstore does not have.
+///
+/// ```
+/// use rivet_app::text::import_incomplete;
+///
+/// let told = import_incomplete("Modded", &["Owner-Gone-1.0.0".to_string()]);
+///
+/// assert_eq!(told.title, "Modded is imported without some mods");
+/// assert_eq!(told.detail, ["Thunderstore does not have Owner-Gone-1.0.0."]);
+/// ```
+pub fn import_incomplete(profile: &str, missing: &[String]) -> Told {
+  Told {
+    title: format!("{profile} is imported without some mods"),
+    detail: vec![import_missing(missing).detail],
+  }
+}
+
+/// An r2modman profile that could not be read, so it was not imported.
+///
+/// ```
+/// use rivet_app::text::r2modman_unread;
+/// use rivet_core::portability::ReadFailure;
+///
+/// let told = r2modman_unread(
+///   "Modded",
+///   &ReadFailure::Unreadable("permission denied".to_string()),
+/// );
+///
+/// assert_eq!(told.title, "The r2modman profile Modded could not be read");
+/// assert_eq!(told.detail[0], "permission denied");
+/// ```
+pub fn r2modman_unread(profile: &str, failure: &ReadFailure) -> Told {
+  Told {
+    title: format!("The r2modman profile {profile} could not be read"),
+    detail: vec![
+      read_failure(failure).detail,
+      "Check that you can open its folder, then import it again from the profile menu.".to_string(),
+    ],
+  }
+}
+
+pub const IMPORT_R2MODMAN: &str = "Import from r2modman…";
+pub const R2MODMAN_PROMPT: &str = "Import your r2modman profiles?";
+pub const R2MODMAN_LATER: &str = "You can import them later from the profile menu.";
+pub const R2MODMAN_WAITING: &str = "Import can start once the mod list has loaded.";
+pub const NOT_NOW: &str = "Not now";
+
+/// What the offer to import r2modman's profiles does, such as `r2modman has
+/// profiles for Valheim. The ones you choose are copied in as new profiles,
+/// and r2modman's own files are left as they are.`.
+pub fn r2modman_lead(game: &str) -> String {
+  format!(
+    "r2modman has profiles for {game}. The ones you choose are copied in as new profiles, \
+     and r2modman's own files are left as they are."
+  )
+}
 
 pub const EXPORT_CODE: &str = "Export as code";
 pub const EXPORT_FILE: &str = "Export as file…";

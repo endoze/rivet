@@ -4,6 +4,7 @@
 use crate::palette::Palette;
 use crate::{Shell, failure, send, text};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -36,11 +37,14 @@ pub(crate) enum Modal {
   /// the packages that need it too, whether to delete folders no package
   /// records, or why it cannot go ahead.
   Pending,
+  /// Offers to import r2modman's profiles of the open game.
+  R2modman,
 }
 
 /// The modal `state` asks for, given the one `shown` now. When several are
 /// pending, closing comes first, then naming, deleting, importing,
-/// installing, and the Installed tab's question.
+/// installing, the Installed tab's question, and last the offer to import
+/// r2modman's profiles, which the user did not ask for.
 ///
 /// Checking an uninstall opens no modal, since the check usually ends before
 /// anyone could read it, but it keeps the Installed tab's question open while
@@ -71,6 +75,12 @@ pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal>
     Some(Modal::Installing)
   } else if pending {
     Some(Modal::Pending)
+  } else if state
+    .r2modman
+    .as_ref()
+    .is_some_and(|r2modman| r2modman.offer.is_some())
+  {
+    Some(Modal::R2modman)
   } else {
     None
   }
@@ -106,6 +116,7 @@ impl Shell {
         }
         Some(Modal::Installing) => window.open_dialog(cx, installing(shell)),
         Some(Modal::Pending) => window.open_dialog(cx, pending(shell)),
+        Some(Modal::R2modman) => window.open_dialog(cx, r2modman(shell)),
         None => {}
       }
     });
@@ -566,6 +577,70 @@ fn pending(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -
   }
 }
 
+/// The modal offering to import r2modman's profiles of the open game: each
+/// one to choose, and whether to import the chosen ones now.
+fn r2modman(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
+  move |dialog, _, cx| {
+    let Some(shell_entity) = shell.upgrade() else {
+      return dialog;
+    };
+    let state = &shell_entity.read(cx).state;
+    let Some(r2modman) = state.r2modman.clone() else {
+      return dialog;
+    };
+    let Some(chosen) = r2modman.offer.clone() else {
+      return dialog;
+    };
+    let game = state.ecosystem.game(&r2modman.game).map_or_else(
+      || r2modman.game.clone(),
+      |game| game.display_name().to_string(),
+    );
+    let can_import = state.can_import_r2modman();
+    let listed = state
+      .browse
+      .as_ref()
+      .is_some_and(|browse| browse.index.is_some());
+    let profiles = r2modman.found.into_iter().enumerate().map(|(at, found)| {
+      let shell = shell.clone();
+      let toggled = found.folder.clone();
+
+      Checkbox::new(SharedString::from(format!("r2modman-profile-{at}")))
+        .label(SharedString::from(found.name))
+        .checked(chosen.contains(&found.folder))
+        .on_click(move |_: &bool, _: &mut Window, cx: &mut App| {
+          shell
+            .update(cx, |this, cx| {
+              this.dispatch(Msg::R2modmanToggled(toggled.clone()), cx);
+            })
+            .ok();
+        })
+        .into_any_element()
+    });
+    let waiting = (!listed).then(|| text::R2MODMAN_WAITING.into_any_element());
+    let frame = Frame {
+      title: text::R2MODMAN_PROMPT.to_string(),
+      id: "r2modman-dialog",
+      body: std::iter::once(text::r2modman_lead(&game).into_any_element())
+        .chain(profiles)
+        .chain(waiting)
+        .chain([text::R2MODMAN_LATER.into_any_element()])
+        .collect(),
+      cancel: "decline-r2modman",
+      cancel_label: text::NOT_NOW,
+      dismissed: Msg::R2modmanDeclined,
+      actions: vec![
+        Button::new("import-r2modman")
+          .label(text::IMPORT)
+          .primary()
+          .disabled(!can_import)
+          .on_click(send(&shell, Msg::R2modmanAccepted)),
+      ],
+    };
+
+    frame.fill(dialog, &shell)
+  }
+}
+
 /// The modal shown when the window is asked to close while changes run:
 /// whether to wait for them or cancel them first, then, once chosen, that the
 /// window closes when they end.
@@ -610,6 +685,7 @@ fn closing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -
 mod tests {
   use super::*;
   use rivet_core::install::{Confirmation, Planned};
+  use rivet_core::r2modman::{Found, R2modman};
   use rivet_core::switcher::{NameForm, Naming, Switcher};
   use thunderstore_engine::ecosystem::Ecosystem;
 
@@ -786,6 +862,45 @@ mod tests {
     state.switcher.as_mut().unwrap().deleting = None;
 
     assert_eq!(wanted_modal(&state, None), Some(Modal::Importing));
+  }
+
+  /// [`pending`], with r2modman's Default profile offered.
+  fn offering(naming: bool, deleting: bool, installing: bool) -> State {
+    let mut state = pending(naming, deleting, installing);
+    let folder = std::path::PathBuf::from("/r2/Valheim/profiles/Default");
+
+    state.r2modman = Some(R2modman {
+      game: "valheim".to_string(),
+      found: vec![Found {
+        name: "Default".to_string(),
+        folder: folder.clone(),
+      }],
+      offer: Some(vec![folder]),
+      reading: vec![],
+    });
+
+    state
+  }
+
+  #[test]
+  fn the_r2modman_offer_wants_its_modal_after_every_other() {
+    assert_eq!(
+      wanted_modal(&offering(false, false, false), None),
+      Some(Modal::R2modman)
+    );
+    assert_eq!(
+      wanted_modal(&offering(false, false, true), None),
+      Some(Modal::Installing)
+    );
+
+    let mut asking = offering(false, false, false);
+
+    asking.manage.pending = Some(checking());
+
+    assert_eq!(
+      wanted_modal(&asking, Some(Modal::Pending)),
+      Some(Modal::Pending)
+    );
   }
 
   #[test]

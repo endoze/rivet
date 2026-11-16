@@ -18,6 +18,7 @@ fn main() {
     ecosystem: Ecosystem::bundled(),
     steam: rivet_platform::steam::root(),
     steam_installs: rivet_platform::steam::installs(),
+    r2modman: rivet_platform::r2modman::data_folders(),
     spawn: rivet_commands::spawn_detached,
     cancels: rivet_commands::Cancels::default(),
   };
