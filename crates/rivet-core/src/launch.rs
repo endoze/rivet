@@ -110,6 +110,8 @@ pub enum LaunchFailure {
 pub struct SteamOptionRead {
   /// The game, by its key in the game definitions.
   pub game: String,
+  /// How the game runs in the context the line was worked out for.
+  pub runtime: Runtime,
   /// The line the launch options must hold, or `None` when they need none.
   pub line: Option<String>,
   /// The launch options Steam holds, `None` when there are none, or why they
@@ -117,8 +119,9 @@ pub struct SteamOptionRead {
   pub current: Result<Option<String>, String>,
 }
 
-/// Sets up launching for `game`. On Linux its folder is listed first, to tell
-/// whether it runs under Proton.
+/// Sets up launching for `game`. On Linux it runs as its settings choose, or,
+/// when they leave it to be detected, its folder is listed first to tell
+/// whether it runs under Proton. Called again when either setting changes.
 pub(crate) fn open(state: &mut State, game: &str) -> Vec<Effect> {
   state.launcher = Some(Launcher {
     game: game.to_string(),
@@ -126,10 +129,12 @@ pub(crate) fn open(state: &mut State, game: &str) -> Vec<Effect> {
     steam: None,
   });
 
+  let forced = state.settings.runtime(game).forced();
   let folder = state.settings.folder(game).map(Path::to_path_buf);
 
-  match (state.host, folder) {
-    (Some(HostOs::Linux), Some(folder)) => vec![Effect::Run(Command::ListGameFolder {
+  match (state.host, forced, folder) {
+    (Some(HostOs::Linux), Some(runtime), _) => runtime_found(state, runtime),
+    (Some(HostOs::Linux), None, Some(folder)) => vec![Effect::Run(Command::ListGameFolder {
       game: game.to_string(),
       folder,
     })],
@@ -425,12 +430,13 @@ pub(crate) fn copy_line(state: &State) -> Vec<Effect> {
 /// is set when the options hold it anywhere, beside any of the user's own.
 ///
 /// A line found set after the last read found it missing, or could not tell,
-/// tells the user Steam is now set up.
+/// tells the user Steam is now set up. A read for a runtime the game no longer
+/// runs under is ignored.
 pub(crate) fn steam_option_read(state: &mut State, read: SteamOptionRead) -> Vec<Effect> {
   let Some(launcher) = state
     .launcher
     .as_mut()
-    .filter(|launcher| launcher.game == read.game)
+    .filter(|launcher| launcher.game == read.game && launcher.runtime == Some(read.runtime))
   else {
     return Vec::new();
   };
@@ -515,7 +521,7 @@ pub(crate) fn check_steam_option(state: &mut State) -> Vec<Effect> {
 mod tests {
   use super::*;
   use crate::install::{DEFAULT_PROFILE, Installed};
-  use crate::settings::{GameSettings, Settings};
+  use crate::settings::{GameSettings, RuntimeChoice, Settings};
   use crate::{Msg, update};
   use thunderstore_engine::ecosystem::Ecosystem;
   use thunderstore_engine::profile::launch::HostOs;
@@ -611,12 +617,20 @@ mod tests {
 
   /// As [`started`], on `host`.
   fn started_on(host: HostOs, game: &str) -> (State, Vec<Effect>) {
+    started_choosing(host, game, RuntimeChoice::Detect)
+  }
+
+  /// As [`started_on`], with the game set to run as `choice`.
+  fn started_choosing(host: HostOs, game: &str, choice: RuntimeChoice) -> (State, Vec<Effect>) {
     let mut state = State::new(ecosystem());
     let settings = Settings {
       last_game: Some(game.to_string()),
       games: [(
         game.to_string(),
-        GameSettings::new(PathBuf::from("/games").join(game)),
+        GameSettings {
+          runtime: choice,
+          ..GameSettings::new(PathBuf::from("/games").join(game))
+        },
       )]
       .into(),
       ..Settings::default()
@@ -773,6 +787,47 @@ mod tests {
     assert_eq!(steam_option(&state), None);
   }
 
+  fn lists_game_folder(effects: &[Effect]) -> bool {
+    effects
+      .iter()
+      .any(|effect| matches!(effect, Effect::Run(Command::ListGameFolder { .. })))
+  }
+
+  #[test]
+  fn a_game_set_to_proton_runs_under_proton_without_listing_its_folder() {
+    let (state, effects) = started_choosing(HostOs::Linux, "valheim", RuntimeChoice::Proton);
+
+    assert!(!lists_game_folder(&effects), "{effects:?}");
+    assert_eq!(runtime(&state), Some(Runtime::Proton));
+    assert!(
+      effects.contains(&read_steam_option_under(
+        "valheim",
+        VALHEIM,
+        Runtime::Proton
+      )),
+      "{effects:?}"
+    );
+  }
+
+  #[test]
+  fn a_windows_only_game_set_to_native_runs_natively_without_listing_its_folder() {
+    let (state, effects) = started_choosing(HostOs::Linux, "lethal", RuntimeChoice::Native);
+
+    assert!(!lists_game_folder(&effects), "{effects:?}");
+    assert_eq!(runtime(&state), Some(Runtime::Native));
+    assert!(
+      effects.contains(&read_steam_option_under("lethal", LETHAL, Runtime::Native)),
+      "{effects:?}"
+    );
+  }
+
+  #[test]
+  fn a_game_set_to_proton_runs_natively_off_linux() {
+    let (state, _) = started_choosing(HostOs::Windows, "lethal", RuntimeChoice::Proton);
+
+    assert_eq!(runtime(&state), Some(Runtime::Native));
+  }
+
   #[test]
   fn a_launch_waits_until_the_folder_shows_how_the_game_runs() {
     let (mut state, _) = started("lethal");
@@ -825,6 +880,7 @@ mod tests {
       &mut state,
       Msg::SteamOptionRead(SteamOptionRead {
         game: "valheim".to_string(),
+        runtime: Runtime::Native,
         line: None,
         current: Ok(None),
       }),
@@ -869,6 +925,7 @@ mod tests {
   fn read(game: &str, current: Result<Option<&str>, &str>) -> Msg {
     Msg::SteamOptionRead(SteamOptionRead {
       game: game.to_string(),
+      runtime: Runtime::Native,
       line: Some(LINE.to_string()),
       current: current
         .map(|options| options.map(str::to_string))
@@ -891,6 +948,46 @@ mod tests {
       found: Some(found),
       checking: false,
     })
+  }
+
+  #[test]
+  fn a_read_for_the_runtime_left_behind_landing_last_is_ignored() {
+    let proton = r#"WINEDLLOVERRIDES="winhttp=n,b" %command%"#;
+    let (mut state, _) = opened("valheim");
+
+    update(&mut state, Msg::SettingsPressed);
+
+    let effects = update(&mut state, Msg::RuntimeChosen(RuntimeChoice::Proton));
+
+    assert!(
+      effects.contains(&read_steam_option_under(
+        "valheim",
+        VALHEIM,
+        Runtime::Proton
+      )),
+      "{effects:?}"
+    );
+
+    update(
+      &mut state,
+      Msg::SteamOptionRead(SteamOptionRead {
+        game: "valheim".to_string(),
+        runtime: Runtime::Proton,
+        line: Some(proton.to_string()),
+        current: Ok(Some(proton.to_string())),
+      }),
+    );
+
+    assert_eq!(update(&mut state, read("valheim", Ok(None))), vec![]);
+    assert_eq!(runtime(&state), Some(Runtime::Proton));
+    assert_eq!(
+      steam_option(&state),
+      Some(SteamOption {
+        line: Some(proton.to_string()),
+        found: Some(OptionStatus::Set),
+        checking: false,
+      })
+    );
   }
 
   /// As [`shown`], with another read running.

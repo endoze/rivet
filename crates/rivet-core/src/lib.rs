@@ -24,7 +24,7 @@ use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use portability::{Export, Exported, Exporting, Importing, ReadFailure, Shared, Source};
 use queue::{CloseChoice, Closing, Queue};
 use readme::Readme;
-use settings::{GameSettings, Settings};
+use settings::{GameSettings, RuntimeChoice, Settings};
 use settings_screen::{SettingsScreen, Target};
 use std::path::PathBuf;
 use switcher::{Naming, ProfileChange, Switcher};
@@ -313,6 +313,8 @@ pub enum Msg {
   ChangeFolderPressed(Target),
   /// The launch arguments on the settings screen were edited.
   LaunchArgumentsChanged(String),
+  /// How the open game runs on Linux was chosen on the settings screen.
+  RuntimeChosen(RuntimeChoice),
   /// Export as code was pressed on the open profile.
   ExportCodePressed,
   /// Export as file was pressed on the open profile.
@@ -654,6 +656,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::SettingsClosed => settings_screen::closed(state),
     Msg::ChangeFolderPressed(target) => settings_screen::change_pressed(state, target),
     Msg::LaunchArgumentsChanged(arguments) => settings_screen::arguments_changed(state, arguments),
+    Msg::RuntimeChosen(choice) => settings_screen::runtime_chosen(state, choice),
     Msg::ExportCodePressed => portability::export_code_pressed(state),
     Msg::ExportFilePressed => portability::export_file_pressed(state),
     Msg::ExportFileChosen(path) => portability::export_file_chosen(state, path),

@@ -5,6 +5,7 @@ use crate::install::DEFAULT_PROFILE;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use thunderstore_engine::profile::launch::Runtime;
 
 /// The settings file's contents.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,25 +36,66 @@ pub struct GameSettings {
   /// on modded and vanilla launches. Split by [`split_arguments`].
   #[serde(default, skip_serializing_if = "String::is_empty")]
   pub launch_arguments: String,
+  /// Whether the game runs natively or under Proton on Linux, or
+  /// [`RuntimeChoice::Detect`] to tell from its folder.
+  #[serde(default, skip_serializing_if = "RuntimeChoice::is_detect")]
+  pub runtime: RuntimeChoice,
 }
 
 impl GameSettings {
   /// Settings for a game installed in `folder`, with everything else unset.
   ///
   /// ```
-  /// use rivet_core::settings::GameSettings;
+  /// use rivet_core::settings::{GameSettings, RuntimeChoice};
   ///
   /// let valheim = GameSettings::new("/games/valheim");
   ///
   /// assert_eq!(valheim.profile, None);
   /// assert_eq!(valheim.launch_arguments, "");
+  /// assert_eq!(valheim.runtime, RuntimeChoice::Detect);
   /// ```
   pub fn new(folder: impl Into<PathBuf>) -> Self {
     Self {
       folder: folder.into(),
       profile: None,
       launch_arguments: String::new(),
+      runtime: RuntimeChoice::Detect,
     }
+  }
+}
+
+/// How the user wants a game run on Linux. Other hosts run every game
+/// natively, whatever is chosen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuntimeChoice {
+  /// Tell from the game folder: Proton when it holds only the Windows build.
+  #[default]
+  Detect,
+  Native,
+  Proton,
+}
+
+impl RuntimeChoice {
+  /// The runtime this choice forces, or `None` when it is detected.
+  ///
+  /// ```
+  /// use rivet_core::settings::RuntimeChoice;
+  /// use thunderstore_engine::profile::launch::Runtime;
+  ///
+  /// assert_eq!(RuntimeChoice::Proton.forced(), Some(Runtime::Proton));
+  /// assert_eq!(RuntimeChoice::Detect.forced(), None);
+  /// ```
+  pub fn forced(self) -> Option<Runtime> {
+    match self {
+      Self::Detect => None,
+      Self::Native => Some(Runtime::Native),
+      Self::Proton => Some(Runtime::Proton),
+    }
+  }
+
+  fn is_detect(&self) -> bool {
+    *self == Self::Detect
   }
 }
 
@@ -96,6 +138,15 @@ impl Settings {
       .games
       .get(game)
       .map_or("", |settings| settings.launch_arguments.as_str())
+  }
+
+  /// How `game` is set to run on Linux, [`RuntimeChoice::Detect`] when no
+  /// choice is recorded.
+  pub fn runtime(&self, game: &str) -> RuntimeChoice {
+    self
+      .games
+      .get(game)
+      .map_or(RuntimeChoice::Detect, |settings| settings.runtime)
   }
 
   /// The install folder recorded for `game`, if any.

@@ -38,13 +38,14 @@ use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::portability::{Exporting, Importing};
 use rivet_core::readme::{Package, Readme, Status};
+use rivet_core::settings::RuntimeChoice;
 use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
 use std::path::PathBuf;
-use thunderstore_engine::profile::launch::LaunchMode;
+use thunderstore_engine::profile::launch::{HostOs, LaunchMode};
 use thunderstore_engine::query::PackageRow;
 
 /// The root view. It owns the state and is the only place `update` is called.
@@ -592,9 +593,9 @@ impl Shell {
       .into_any_element()
   }
 
-  /// The settings of `game`: its folder and launch arguments, then the
-  /// Steam folder every game shares. While a folder is being changed, no
-  /// other can be.
+  /// The settings of `game`: its folder, launch arguments, and on Linux
+  /// whether it runs natively or under Proton, then the Steam folder every
+  /// game shares. While a folder is being changed, no other can be.
   fn render_settings(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
     let state = &self.state;
@@ -663,6 +664,47 @@ impl Shell {
           .text_color(palette.muted_text)
           .child(text::LAUNCH_ARGUMENTS_HINT),
       );
+    let chosen = state.settings.runtime(game);
+    let runtime_button = |id: &'static str, title: &'static str, choice: RuntimeChoice| {
+      Button::new(id)
+        .label(title)
+        .small()
+        .when(chosen == choice, |button| button.primary())
+        .on_click(cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::RuntimeChosen(choice), cx);
+        }))
+    };
+    let runtime = (state.host == Some(HostOs::Linux)).then(|| {
+      v_flex()
+        .gap_1()
+        .child(
+          h_flex()
+            .gap_2()
+            .items_center()
+            .child(label(text::RUNS_WITH))
+            .child(runtime_button(
+              "runtime-detect",
+              text::RUNTIME_DETECT,
+              RuntimeChoice::Detect,
+            ))
+            .child(runtime_button(
+              "runtime-native",
+              text::RUNTIME_NATIVE,
+              RuntimeChoice::Native,
+            ))
+            .child(runtime_button(
+              "runtime-proton",
+              text::RUNTIME_PROTON,
+              RuntimeChoice::Proton,
+            )),
+        )
+        .child(
+          div()
+            .text_sm()
+            .text_color(palette.muted_text)
+            .child(text::RUNTIME_HINT),
+        )
+    });
 
     v_flex()
       .size_full()
@@ -700,7 +742,8 @@ impl Shell {
             game_folder,
             Target::GameFolder,
           ))
-          .child(launch_arguments),
+          .child(launch_arguments)
+          .children(runtime),
       )
       .child(section(text::EVERY_GAME.into()).child(folder_row(
         "steam-folder",

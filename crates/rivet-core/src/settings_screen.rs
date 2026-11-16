@@ -1,8 +1,9 @@
 //! The settings screen of the open game: changing its folder and the Steam
-//! folder, each checked as the picker checks a folder, and its launch
-//! arguments.
+//! folder, each checked as the picker checks a folder, its launch arguments,
+//! and whether it runs natively or under Proton on Linux.
 
 use crate::picker::{self, FolderRefusal, Refusal};
+use crate::settings::RuntimeChoice;
 use crate::{Command, Effect, Screen, State, launch};
 use std::path::PathBuf;
 
@@ -89,6 +90,30 @@ pub(crate) fn arguments_changed(state: &mut State, arguments: String) -> Vec<Eff
   }
 
   Vec::new()
+}
+
+/// Records how the open game runs on Linux, saves it, and works out launching
+/// for the game again, so the launch option line and launches follow at once.
+pub(crate) fn runtime_chosen(state: &mut State, choice: RuntimeChoice) -> Vec<Effect> {
+  let Screen::Settings(game) = state.screen.clone() else {
+    return Vec::new();
+  };
+  let Some(settings) = state.settings.games.get_mut(&game) else {
+    return Vec::new();
+  };
+
+  if settings.runtime == choice {
+    return Vec::new();
+  }
+
+  settings.runtime = choice;
+  state.settings_screen.unsaved = false;
+
+  let mut effects = vec![Effect::Run(Command::SaveSettings(state.settings.clone()))];
+
+  effects.extend(launch::open(state, &game));
+
+  effects
 }
 
 /// Asks for a new `target` folder, unless another change is under way.
@@ -199,7 +224,7 @@ pub(crate) fn folder_listed(
 mod tests {
   use super::*;
   use crate::picker::{FolderRefusal, Refusal};
-  use crate::settings::{GameSettings, Settings};
+  use crate::settings::{GameSettings, RuntimeChoice, Settings};
   use crate::{Command, Effect, Msg, Screen, State, test_ecosystem, update};
   use std::path::PathBuf;
   use thunderstore_engine::profile::launch::{
@@ -542,6 +567,96 @@ mod tests {
 
     assert_eq!(update(&mut state, Msg::SettingsClosed), vec![]);
     assert_eq!(state.screen, Screen::Game("valheim".to_string()));
+  }
+
+  fn runtime(state: &State) -> Option<Runtime> {
+    state
+      .launcher
+      .as_ref()
+      .and_then(|launcher| launcher.runtime)
+  }
+
+  #[test]
+  fn choosing_native_saves_it_and_drops_the_proton_launch_line_at_once() {
+    let mut state = on_settings(LETHAL);
+    let steam = |state: &State| {
+      state
+        .launcher
+        .as_ref()
+        .is_some_and(|launcher| launcher.steam.is_some())
+    };
+
+    assert!(steam(&state));
+
+    let effects = update(&mut state, Msg::RuntimeChosen(RuntimeChoice::Native));
+
+    assert_eq!(state.settings.runtime(LETHAL), RuntimeChoice::Native);
+    assert_eq!(runtime(&state), Some(Runtime::Native));
+    assert!(!steam(&state));
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+    );
+  }
+
+  #[test]
+  fn choosing_proton_reads_steams_launch_options_for_the_proton_line() {
+    let mut state = on_settings(LETHAL);
+
+    update(&mut state, Msg::RuntimeChosen(RuntimeChoice::Native));
+
+    let effects = update(&mut state, Msg::RuntimeChosen(RuntimeChoice::Proton));
+
+    assert_eq!(runtime(&state), Some(Runtime::Proton));
+    assert_eq!(
+      effects,
+      vec![
+        Effect::Run(Command::SaveSettings(state.settings.clone())),
+        Effect::Run(Command::ReadSteamOption {
+          game: LETHAL.to_string(),
+          app_id: 1966720,
+          context: LaunchContext::new(
+            HostOs::Linux,
+            StorePlatform::Steam,
+            Runtime::Proton,
+            LaunchMode::Vanilla,
+          ),
+          steam: None,
+        }),
+      ]
+    );
+  }
+
+  #[test]
+  fn choosing_detect_again_lists_the_game_folder_to_tell() {
+    let mut state = on_settings(LETHAL);
+
+    update(&mut state, Msg::RuntimeChosen(RuntimeChoice::Proton));
+
+    let effects = update(&mut state, Msg::RuntimeChosen(RuntimeChoice::Detect));
+
+    assert_eq!(state.settings.runtime(LETHAL), RuntimeChoice::Detect);
+    assert_eq!(runtime(&state), None);
+    assert_eq!(
+      effects,
+      vec![
+        Effect::Run(Command::SaveSettings(state.settings.clone())),
+        Effect::Run(Command::ListGameFolder {
+          game: LETHAL.to_string(),
+          folder: PathBuf::from("/games").join(LETHAL),
+        }),
+      ]
+    );
+  }
+
+  #[test]
+  fn choosing_the_runtime_already_set_changes_nothing() {
+    let mut state = on_settings(LETHAL);
+
+    let effects = update(&mut state, Msg::RuntimeChosen(RuntimeChoice::Detect));
+
+    assert_eq!(effects, vec![]);
+    assert_eq!(runtime(&state), Some(Runtime::Proton));
   }
 
   #[test]

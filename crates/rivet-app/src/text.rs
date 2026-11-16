@@ -119,6 +119,12 @@ pub const STEAM_FOLDER_FOUND: &str = "Found on this computer";
 pub const LAUNCH_ARGUMENTS: &str = "Launch arguments";
 pub const LAUNCH_ARGUMENTS_HINT: &str = "Added after the mod loader's own on modded and vanilla launches. Put double quotes around an argument with spaces. Saved when you leave settings or close Rivet.";
 pub const EVERY_GAME: &str = "Every game";
+pub const RUNS_WITH: &str = "Runs with";
+pub const RUNTIME_DETECT: &str = "Detect";
+pub const RUNTIME_NATIVE: &str = "Native";
+pub const RUNTIME_PROTON: &str = "Proton";
+pub const RUNTIME_HINT: &str =
+  "Detect picks Proton when the game folder holds only the Windows build. Takes effect at once.";
 
 pub fn settings_title(game: &str) -> String {
   format!("{game} settings")

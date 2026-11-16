@@ -8,11 +8,12 @@ use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
 use rivet_core::readme::{self, Request};
-use rivet_core::settings::{GameSettings, Settings};
+use rivet_core::settings::{GameSettings, RuntimeChoice, Settings};
 use rivet_core::{Command, Msg, Screen, State};
 use std::path::PathBuf;
 use thunderstore_engine::ecosystem::Ecosystem;
 use thunderstore_engine::models::{Package, PackageIndex};
+use thunderstore_engine::profile::launch::{HostOs, Runtime};
 use thunderstore_engine::test_support::index_json;
 
 /// The mock Thunderstore's five packages, `Owner-ModA` first.
@@ -1248,6 +1249,7 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
     },
     Msg::SteamOptionRead(SteamOptionRead {
       game: "valheim".to_string(),
+      runtime: Runtime::Native,
       line: Some(line.to_string()),
       current: Ok(None),
     }),
@@ -1343,6 +1345,7 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
   answers
     .unbounded_send(Msg::SteamOptionRead(SteamOptionRead {
       game: "valheim".to_string(),
+      runtime: Runtime::Native,
       line: Some(line.to_string()),
       current: Ok(Some(line.to_string())),
     }))
@@ -2027,4 +2030,51 @@ fn settings_change_the_game_folder_and_save_typed_launch_arguments(cx: &mut Test
     Screen::Game("valheim".to_string())
   );
   assert_eq!(last_saved(&drain()).launch_arguments, "-console -windowed");
+}
+
+#[gpui_kit::test]
+fn settings_force_a_linux_game_to_run_under_proton(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let mut state = State::new(one_game());
+
+  state.host = Some(HostOs::Linux);
+
+  let (window, shell) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let mut drain = move || std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>();
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(valheim_settings())))
+    .unwrap();
+  cx.run_until_parked();
+  drain();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("game-menu", cx);
+    window.render_frame(cx);
+    window.click("open-settings", cx);
+    window.render_frame(cx);
+    window.click("runtime-proton", cx);
+  })
+  .unwrap();
+  cx.run_until_parked();
+
+  assert_eq!(last_saved(&drain()).runtime, RuntimeChoice::Proton);
+  assert_eq!(
+    shell.read_with(cx, |shell, _| {
+      shell
+        .state()
+        .launcher
+        .as_ref()
+        .and_then(|launcher| launcher.runtime)
+    }),
+    Some(Runtime::Proton)
+  );
 }

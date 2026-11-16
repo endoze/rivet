@@ -255,6 +255,7 @@ pub async fn run(
 
       Msg::SteamOptionRead(SteamOptionRead {
         game,
+        runtime: context.runtime,
         line,
         current,
       })
@@ -866,7 +867,7 @@ mod tests {
   use rivet_core::install::{DEFAULT_PROFILE, Install, Installed, Outcome, Stage};
   use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
   use rivet_core::picker::NotFound;
-  use rivet_core::settings::GameSettings;
+  use rivet_core::settings::{GameSettings, RuntimeChoice};
   use tempfile::TempDir;
   use thunderstore_engine::ecosystem::LoaderKind;
   use thunderstore_engine::models::PackageIndex;
@@ -2184,6 +2185,7 @@ mod tests {
       answer,
       Msg::SteamOptionRead(SteamOptionRead {
         game: "valheim".to_string(),
+        runtime: Runtime::Proton,
         line: Some(line.to_string()),
         current: Ok(Some(line.to_string())),
       })
@@ -2230,6 +2232,7 @@ mod tests {
       answer,
       Msg::SteamOptionRead(SteamOptionRead {
         game: "valheim".to_string(),
+        runtime: Runtime::Native,
         line: Some(line.clone()),
         current: Ok(Some(format!("gamemoderun {line}"))),
       })
@@ -2615,6 +2618,29 @@ mod tests {
     assert_eq!(
       toml::from_str::<Settings>(&text).unwrap(),
       with_arguments(saves - 1)
+    );
+  }
+
+  #[test]
+  fn a_games_runtime_choice_loads_back_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+    let mut settings = valheim_settings();
+
+    if let Some(valheim) = settings.games.get_mut("valheim") {
+      valheim.runtime = RuntimeChoice::Proton;
+    }
+
+    run_now(Command::SaveSettings(settings.clone()), &config);
+
+    assert!(
+      std::fs::read_to_string(&config.settings)
+        .unwrap()
+        .contains("runtime = \"proton\"\n")
+    );
+    assert_eq!(
+      run_now(Command::LoadSettings, &config),
+      Msg::SettingsLoaded(Ok(settings))
     );
   }
 
