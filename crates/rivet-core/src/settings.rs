@@ -41,7 +41,7 @@ pub struct Settings {
   /// Per-game settings, keyed by community slug.
   pub games: BTreeMap<String, GameSettings>,
   /// Whether Rivet checks GitHub for a newer release of itself on each start,
-  /// and downloads it.
+  /// and offers to download it.
   #[serde(skip_serializing_if = "std::ops::Not::not")]
   pub update_automatically: bool,
 }

@@ -126,6 +126,8 @@ pub enum Stage {
   UpToDate,
   /// A check the user asked for failed.
   CheckFailed(CheckFailure),
+  /// A check found this newer release, and asks whether to download it.
+  Offered(Found),
   /// A newer release is downloading, `received` bytes of `total` so far.
   Downloading {
     download: Download,
@@ -174,7 +176,7 @@ impl Default for SelfUpdate {
 
 impl SelfUpdate {
   /// Whether a check for updates can start now: none is running and no newer
-  /// release is downloading or downloaded.
+  /// release is offered, downloading or downloaded.
   pub fn can_check(&self) -> bool {
     matches!(
       self.stage,
@@ -243,8 +245,8 @@ pub(crate) fn check_pressed(state: &mut State) -> Vec<Effect> {
 }
 
 /// Applies GitHub's releases: the newest published one, when newer than the
-/// one running, starts downloading. An automatic check that finds nothing or
-/// fails shows nothing.
+/// one running, is offered for download. An automatic check that finds
+/// nothing or fails shows nothing.
 pub(crate) fn releases_fetched(
   state: &mut State,
   releases: Result<Vec<Release>, String>,
@@ -285,6 +287,19 @@ pub(crate) fn releases_fetched(
     return Vec::new();
   };
 
+  update.stage = Stage::Offered(found);
+
+  Vec::new()
+}
+
+/// Downloads the release a check offered.
+pub(crate) fn confirmed(state: &mut State) -> Vec<Effect> {
+  let update = &mut state.self_update;
+  let Stage::Offered(found) = &update.stage else {
+    return Vec::new();
+  };
+  let found = found.clone();
+
   update.downloads += 1;
 
   let download = Download {
@@ -300,6 +315,16 @@ pub(crate) fn releases_fetched(
   };
 
   vec![Effect::Run(Command::DownloadRivet(download))]
+}
+
+/// Turns down the release a check offered: nothing downloads, and the next
+/// check offers it again.
+pub(crate) fn dismissed(state: &mut State) -> Vec<Effect> {
+  if matches!(state.self_update.stage, Stage::Offered(_)) {
+    state.self_update.stage = Stage::Idle;
+  }
+
+  Vec::new()
 }
 
 /// `tag` without its leading `v`.
@@ -597,13 +622,28 @@ mod tests {
   }
 
   #[test]
-  fn a_newer_release_downloads_its_build_for_this_platform() {
+  fn a_newer_release_found_on_start_asks_before_downloading() {
     let (mut state, _) = started(true);
 
     let effects = update(
       &mut state,
       Msg::RivetReleasesFetched(Ok(vec![release("v0.1.0"), release("v0.3.0")])),
     );
+
+    assert_eq!(effects, vec![]);
+    assert_eq!(state.self_update.stage, Stage::Offered(found("0.3.0")));
+  }
+
+  #[test]
+  fn going_ahead_with_the_offer_downloads_its_build_for_this_platform() {
+    let (mut state, _) = started(true);
+
+    update(
+      &mut state,
+      Msg::RivetReleasesFetched(Ok(vec![release("v0.3.0")])),
+    );
+
+    let effects = update(&mut state, Msg::UpdateRivetConfirmed);
 
     assert_eq!(effects, vec![download(1, "0.3.0")]);
     assert!(matches!(
@@ -663,7 +703,8 @@ mod tests {
       Msg::RivetReleasesFetched(Ok(vec![draft, prerelease, release("v0.3.0")])),
     );
 
-    assert_eq!(effects, vec![download(1, "0.3.0")]);
+    assert_eq!(effects, vec![]);
+    assert_eq!(state.self_update.stage, Stage::Offered(found("0.3.0")));
   }
 
   #[test]
@@ -698,7 +739,7 @@ mod tests {
   }
 
   #[test]
-  fn checking_by_hand_downloads_a_newer_release() {
+  fn checking_by_hand_asks_before_downloading_a_newer_release() {
     let (mut state, _) = started(false);
 
     update(&mut state, Msg::CheckForUpdatesPressed);
@@ -708,7 +749,51 @@ mod tests {
       Msg::RivetReleasesFetched(Ok(vec![release("v1.0.0")])),
     );
 
-    assert_eq!(effects, vec![download(1, "1.0.0")]);
+    assert_eq!(effects, vec![]);
+    assert_eq!(state.self_update.stage, Stage::Offered(found("1.0.0")));
+    assert_eq!(
+      update(&mut state, Msg::UpdateRivetConfirmed),
+      vec![download(1, "1.0.0")]
+    );
+  }
+
+  #[test]
+  fn turning_down_the_offer_downloads_nothing_and_the_next_check_offers_it_again() {
+    let (mut state, _) = started(true);
+
+    update(
+      &mut state,
+      Msg::RivetReleasesFetched(Ok(vec![release("v0.3.0")])),
+    );
+
+    let dismissed = update(&mut state, Msg::UpdateRivetDismissed);
+
+    assert_eq!(dismissed, vec![]);
+    assert_eq!(state.self_update.stage, Stage::Idle);
+    assert_eq!(
+      update(&mut state, Msg::CheckForUpdatesPressed),
+      vec![fetch()]
+    );
+
+    update(
+      &mut state,
+      Msg::RivetReleasesFetched(Ok(vec![release("v0.3.0")])),
+    );
+
+    assert_eq!(state.self_update.stage, Stage::Offered(found("0.3.0")));
+  }
+
+  #[test]
+  fn checking_by_hand_while_an_offer_is_open_asks_github_nothing() {
+    let (mut state, _) = started(true);
+
+    update(
+      &mut state,
+      Msg::RivetReleasesFetched(Ok(vec![release("v0.3.0")])),
+    );
+
+    assert_eq!(update(&mut state, Msg::CheckForUpdatesPressed), vec![]);
+    assert_eq!(state.self_update.stage, Stage::Offered(found("0.3.0")));
   }
 
   #[test]
@@ -761,7 +846,7 @@ mod tests {
     );
   }
 
-  /// A state downloading Rivet 0.3.0, found on start.
+  /// A state downloading Rivet 0.3.0, found on start and gone ahead with.
   fn downloading() -> State {
     let (mut state, _) = started(true);
 
@@ -769,6 +854,7 @@ mod tests {
       &mut state,
       Msg::RivetReleasesFetched(Ok(vec![release("v0.3.0")])),
     );
+    update(&mut state, Msg::UpdateRivetConfirmed);
 
     state
   }
