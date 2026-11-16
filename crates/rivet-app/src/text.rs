@@ -362,9 +362,6 @@ pub const INSTALLED_SEARCH_PLACEHOLDER: &str = "Search this profile";
 pub const SORT_NAME: &str = "Name";
 pub const SORT_AUTHOR: &str = "Author";
 pub const SORT_NEWEST: &str = "Newest";
-/// The menu of one mod's rarer actions: choosing its version and
-/// uninstalling it.
-pub const MOD_MENU: &str = "More for this mod";
 pub const UNINSTALL: &str = "Uninstall";
 pub const ENABLE_ALL: &str = "Enable all";
 pub const DISABLE_ALL: &str = "Disable all";
@@ -385,7 +382,7 @@ pub fn update_mods(count: usize) -> String {
 pub const DEPRECATED: &str = "Deprecated";
 pub const PINNED: &str = "Pinned";
 pub const UNPIN: &str = "Unpin";
-pub const CHOOSE_VERSION: &str = "Version…";
+pub const CHOOSE_VERSION: &str = "Choose version";
 pub const VERSION: &str = "Version";
 pub const PIN_HINT: &str =
   "A version you choose is pinned, so updates leave it alone until you unpin it.";
@@ -1309,8 +1306,78 @@ pub fn steam_set_up(game: &str) -> String {
   format!("Steam now starts {game} through Rivet, so modded launches load your mods.")
 }
 
-pub const NO_README_SELECTED: &str = "Select a mod to read its readme.";
+pub const NO_MOD_SHOWN: &str = "No mod to show.";
 pub const README_MISSING: &str = "This mod has no readme.";
+/// Reopens the detail pane.
+pub const DETAILS: &str = "Details";
+pub const HIDE_DETAILS: &str = "Hide details";
+pub const DOWNLOADS: &str = "Downloads";
+pub const UPDATED: &str = "Updated";
+pub const CATEGORIES: &str = "Categories";
+pub const NO_CATEGORIES: &str = "None";
+
+/// The detail pane's button updating a mod, such as `Update to 2.0.0`.
+pub fn update_to(version: &str) -> String {
+  format!("Update to {version}")
+}
+
+/// A mod's categories on one line, or [`NO_CATEGORIES`].
+///
+/// ```
+/// use rivet_app::text::categories;
+///
+/// assert_eq!(categories(&["Tools".to_string(), "Maps".to_string()]), "Tools, Maps");
+/// assert_eq!(categories(&[]), "None");
+/// ```
+pub fn categories(categories: &[String]) -> String {
+  match categories {
+    [] => NO_CATEGORIES.to_string(),
+    categories => categories.join(", "),
+  }
+}
+
+/// How long before `now` the moment `then` was, both in seconds since the
+/// Unix epoch, in its largest whole unit. A month is 30 days and a year 365.
+///
+/// ```
+/// use rivet_app::text::ago;
+///
+/// const DAY: i64 = 86_400;
+///
+/// assert_eq!(ago(1_000, 1_030), "just now");
+/// assert_eq!(ago(0, 60), "1 minute ago");
+/// assert_eq!(ago(0, 5 * 3_600), "5 hours ago");
+/// assert_eq!(ago(0, DAY), "1 day ago");
+/// assert_eq!(ago(0, 21 * DAY), "3 weeks ago");
+/// assert_eq!(ago(0, 29 * DAY), "4 weeks ago");
+/// assert_eq!(ago(0, 75 * DAY), "2 months ago");
+/// assert_eq!(ago(0, 800 * DAY), "2 years ago");
+/// assert_eq!(ago(100, 0), "just now");
+/// ```
+pub fn ago(then: i64, now: i64) -> String {
+  const MINUTE: i64 = 60;
+  const HOUR: i64 = 60 * MINUTE;
+  const DAY: i64 = 24 * HOUR;
+  const WEEK: i64 = 7 * DAY;
+  const MONTH: i64 = 30 * DAY;
+  const YEAR: i64 = 365 * DAY;
+
+  let elapsed = now - then;
+  let (count, unit) = match elapsed {
+    ..MINUTE => return "just now".to_string(),
+    MINUTE..HOUR => (elapsed / MINUTE, "minute"),
+    HOUR..DAY => (elapsed / HOUR, "hour"),
+    DAY..WEEK => (elapsed / DAY, "day"),
+    WEEK..MONTH => (elapsed / WEEK, "week"),
+    MONTH..YEAR => (elapsed / MONTH, "month"),
+    YEAR.. => (elapsed / YEAR, "year"),
+  };
+
+  match count {
+    1 => format!("1 {unit} ago"),
+    count => format!("{count} {unit}s ago"),
+  }
+}
 
 /// The readme of `full_name` is on its way, such as `Loading the readme
 /// of Owner-ModA`.

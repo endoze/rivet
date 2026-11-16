@@ -152,23 +152,26 @@ fn a_rows_main_action_shows_on_hover_and_on_the_selected_row_without_resizing_it
     window.render_frame(cx);
 
     let shown = |window: &mut Window, row: &str| window.find(format!("actions-{row}")).visible();
-    let row = window.find("Owner-Plain").bounds();
-    let actions = window.find("actions-Owner-Plain").bounds();
+    let row = window.find("Owner-Wordy").bounds();
+    let actions = window.find("actions-Owner-Wordy").bounds();
 
-    assert!(!shown(window, "Owner-Plain"), "an action shows at rest");
+    assert!(
+      shown(window, "Owner-Plain"),
+      "the row shown by default shows no action"
+    );
+    assert!(!shown(window, "Owner-Wordy"), "an action shows at rest");
 
-    window.hover("Owner-Plain", cx);
+    window.hover("Owner-Wordy", cx);
 
-    assert!(shown(window, "Owner-Plain"), "hovering shows no action");
-    assert!(!shown(window, "Owner-Wordy"));
-    assert!(window.try_find("install-Owner-Plain").is_some());
+    assert!(shown(window, "Owner-Wordy"), "hovering shows no action");
+    assert!(window.try_find("install-Owner-Wordy").is_some());
     assert_eq!(
-      window.find("Owner-Plain").bounds(),
+      window.find("Owner-Wordy").bounds(),
       row,
       "hovering resized the row"
     );
     assert_eq!(
-      window.find("actions-Owner-Plain").bounds(),
+      window.find("actions-Owner-Wordy").bounds(),
       actions,
       "hovering moved the action"
     );

@@ -13,9 +13,11 @@ use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use gpui_kit::component::avatar::Avatar;
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tab::{Tab as Segment, TabBar};
 use gpui_kit::component::tag::Tag;
@@ -28,14 +30,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
   Anchor, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, ElementId,
   Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-  PathPromptOptions, Render, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-  StyledImage as _, Subscription, Task, TestSupportExt as _, WeakEntity, Window, div, img, px,
-  uniform_list,
+  PathPromptOptions, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement as _,
+  Styled as _, StyledImage as _, Subscription, Task, TestSupportExt as _, WeakEntity, Window, div,
+  img, px, uniform_list,
 };
 use icons::IconCache;
 use modal::Modal;
 use palette::Palette;
 use rivet_core::browse::{Browse, Filters, SortKey, View};
+use rivet_core::details::{Action, Details};
 use rivet_core::install::{InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus};
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::manage::{Sort, Tab};
@@ -50,6 +53,7 @@ use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use theme::Typography as _;
 use thunderstore_engine::profile::launch::{HostOs, LaunchMode, Runtime};
 use thunderstore_engine::query::PackageRow;
@@ -81,6 +85,9 @@ pub struct Shell {
   modal: Option<Modal>,
   installed_search: Entity<InputState>,
   icons: Entity<IconCache>,
+  /// The widths of the list and the detail pane, kept while the app runs so
+  /// the pane reopens at the width it was given.
+  panes: Entity<ResizableState>,
   _subscriptions: Vec<Subscription>,
   _inbox: Task<()>,
 }
@@ -206,6 +213,7 @@ impl Shell {
       modal: None,
       installed_search,
       icons: cx.new(|_| IconCache::new()),
+      panes: cx.new(|_| ResizableState::default()),
       _subscriptions: vec![
         searched,
         package_searched,
@@ -244,10 +252,20 @@ impl Shell {
           cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
         Effect::Notify(notice) => self.notices.push(notice),
+        Effect::After { delay, msg } => self.send_after(delay, *msg, cx),
       }
     }
 
     cx.notify();
+  }
+
+  /// Dispatches `msg` once `delay` has passed, unless the shell is gone.
+  fn send_after(&mut self, delay: Duration, msg: Msg, cx: &mut Context<Self>) {
+    cx.spawn(async move |this, cx| {
+      cx.background_executor().timer(delay).await;
+      this.update(cx, |this, cx| this.dispatch(msg, cx)).ok();
+    })
+    .detach();
   }
 
   /// Empties the package search box to match a list whose search was reset.
@@ -567,9 +585,14 @@ impl Shell {
   }
 
   /// A game: the sidebar, and beside it the banners that need action, the
-  /// toolbar, the category chips over the list, and the readme.
-  fn render_game(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
+  /// toolbar, the category chips over the list, and the detail pane while it
+  /// is shown. The pane starts [`DETAILS_SHARE`] of the width beside the
+  /// sidebar, and keeps whatever width it is dragged to.
+  fn render_game(&self, game: &str, window: &Window, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
+    let shown = self.state.details_shown;
+    let content = window.viewport_size().width - px(SIDEBAR_WIDTH + 2. * MAIN_PADDING);
+    let pane_width = (content * DETAILS_SHARE).max(px(DETAILS_MIN_WIDTH));
     let content = match self.state.tab {
       Tab::Browse => self
         .state
@@ -582,6 +605,7 @@ impl Shell {
       .flex_1()
       .min_w_0()
       .gap_2()
+      .pr_3()
       .overflow_hidden()
       .children(self.render_chips(cx))
       .child(
@@ -593,11 +617,24 @@ impl Shell {
           .children(content)
           .test_support(),
       );
+    let details = resizable_panel()
+      .visible(shown)
+      .size(pane_width)
+      .size_range(px(DETAILS_MIN_WIDTH)..Pixels::MAX)
+      .when(shown, |pane| pane.child(self.render_details(cx)));
+    let panes = h_resizable("panes")
+      .with_state(&self.panes)
+      .child(
+        resizable_panel()
+          .size_range(px(LIST_MIN_WIDTH)..Pixels::MAX)
+          .child(list),
+      )
+      .child(details);
     let main = v_flex()
       .flex_1()
       .min_w_0()
       .h_full()
-      .p_4()
+      .p(px(MAIN_PADDING))
       .gap_3()
       .children(self.render_profile_notes(cx))
       .children(self.render_launch_notes(cx))
@@ -622,15 +659,7 @@ impl Shell {
           }),
       )
       .child(self.render_toolbar(cx))
-      .child(
-        div()
-          .flex()
-          .flex_1()
-          .gap_3()
-          .overflow_hidden()
-          .child(list)
-          .child(render_readme(self.state.readme.as_ref(), cx)),
-      );
+      .child(div().flex().flex_1().min_h_0().child(panes));
 
     div()
       .flex()
@@ -840,8 +869,10 @@ impl Shell {
 
   /// The bar over the list, [`TOOLBAR_HEIGHT`] tall whichever view it shows,
   /// so switching views leaves the list where it was: the segmented control
-  /// choosing the view, the search box of the view shown, and that view's
-  /// actions at the far end.
+  /// choosing the view, the search box of the view shown, that view's
+  /// actions, and at the far end Details while the detail pane is closed.
+  /// Details keeps its slot [`DETAILS_BUTTON_WIDTH`] wide while the pane is
+  /// open, so nothing moves when it comes and goes.
   fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
     let shell = cx.weak_entity();
     let (search_id, search) = match self.state.tab {
@@ -852,6 +883,14 @@ impl Shell {
       Tab::Installed => self.render_profile_tools(&shell),
       Tab::Browse => self.render_browse_tools(&shell),
     };
+    let open_details = (!self.state.details_shown).then(|| {
+      Button::new("open-details")
+        .label(text::DETAILS)
+        .icon(IconName::PanelRightOpen)
+        .ghost()
+        .small()
+        .on_click(send(&shell, Msg::ShowDetails(true)))
+    });
 
     h_flex()
       .id("toolbar")
@@ -875,6 +914,13 @@ impl Shell {
       )
       .child(div().flex_1())
       .children(tools)
+      .child(
+        h_flex()
+          .flex_none()
+          .w(px(DETAILS_BUTTON_WIDTH))
+          .justify_end()
+          .children(open_details),
+      )
       .test_support()
       .into_any_element()
   }
@@ -1123,6 +1169,167 @@ impl Shell {
           .test_support(),
       )
       .into_any_element()
+  }
+
+  /// The detail pane: the shown mod's icon, name, author and tags with
+  /// closing the pane, its facts, what can be done to it, then its readme.
+  /// While the list shows no mod it says so, keeping its place and width.
+  fn render_details(&self, cx: &mut Context<Self>) -> AnyElement {
+    let palette = Palette::new(cx);
+    let close = Button::new("close-details")
+      .icon(IconName::Close)
+      .ghost()
+      .small()
+      .flex_none()
+      .tooltip(text::HIDE_DETAILS)
+      .accessibility_label(text::HIDE_DETAILS)
+      .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::ShowDetails(false), cx)));
+    let pane = v_flex()
+      .id("details")
+      .size_full()
+      .min_w_0()
+      .overflow_hidden()
+      .bg(palette.panel)
+      .border_1()
+      .border_color(palette.border)
+      .rounded(px(PANE_RADIUS));
+    let (Some(details), Some(readme)) = (self.state.details(), self.state.readme.as_ref()) else {
+      let empty = div()
+        .id("details-empty")
+        .flex_1()
+        .text_color(palette.muted_text)
+        .child(text::NO_MOD_SHOWN)
+        .test_support();
+
+      return pane
+        .child(
+          h_flex()
+            .items_start()
+            .gap_2()
+            .p_4()
+            .child(empty)
+            .child(close),
+        )
+        .test_support()
+        .into_any_element();
+    };
+    let head = v_flex()
+      .flex_none()
+      .px_5()
+      .pt(px(18.))
+      .pb(px(14.))
+      .gap(px(14.))
+      .border_b_1()
+      .border_color(palette.border)
+      .child(self.render_details_header(&details, close, cx))
+      .child(render_facts(&details))
+      .child(self.render_details_actions(&details, cx));
+
+    pane
+      .child(head)
+      .child(
+        v_flex()
+          .flex_1()
+          .min_h_0()
+          .px_5()
+          .pt_4()
+          .child(render_readme(readme, cx)),
+      )
+      .test_support()
+      .into_any_element()
+  }
+
+  /// The top of the detail pane: the mod's icon, its name, author and tags,
+  /// and `close`.
+  fn render_details_header(
+    &self,
+    details: &Details,
+    close: Button,
+    cx: &mut Context<Self>,
+  ) -> impl IntoElement + use<> {
+    let palette = Palette::new(cx);
+    let state = &self.state;
+    let full_name = details.full_name.as_str();
+    let listing = details.listing.as_ref();
+    let tags = if state.is_installed(full_name) {
+      mod_tags(
+        state,
+        full_name,
+        state.badges().get(full_name),
+        "details-",
+        cx,
+      )
+    } else {
+      listing
+        .filter(|listing| listing.deprecated)
+        .map(|_| {
+          state_tag(
+            format!("details-deprecated-badge-{full_name}"),
+            palette.tag_deprecated,
+            text::DEPRECATED.to_string(),
+          )
+        })
+        .into_iter()
+        .collect()
+    };
+    let icon = listing.and_then(|listing| listing.icon.as_deref());
+    let name = div()
+      .id("details-name")
+      .truncate()
+      .text_size(px(DETAILS_NAME_SIZE))
+      .font_weight(FontWeight::BOLD)
+      .aria_label(details.name.clone())
+      .child(details.name.clone())
+      .test_support();
+
+    h_flex()
+      .items_start()
+      .gap(px(14.))
+      .child(mod_icon(&details.name, icon, DETAILS_ICON_SIZE))
+      .child(
+        v_flex()
+          .flex_1()
+          .min_w_0()
+          .child(name)
+          .child(
+            div()
+              .truncate()
+              .text_small()
+              .text_color(palette.muted_text)
+              .child(text::author(&details.owner)),
+          )
+          .child(h_flex().flex_wrap().gap_1p5().mt_2().children(tags)),
+      )
+      .child(close)
+  }
+
+  /// A button for each thing the detail pane offers to do to its mod, the
+  /// rarer ones quieter, each enabled while [`State::can_take`] it.
+  fn render_details_actions(&self, details: &Details, cx: &mut Context<Self>) -> impl IntoElement {
+    let state = &self.state;
+    let buttons: Vec<Button> = details
+      .actions
+      .iter()
+      .map(|action| {
+        let (id, label, quiet) = match action {
+          Action::Install => ("details-install", text::INSTALL.to_string(), false),
+          Action::Update(version) => ("details-update", text::update_to(version), false),
+          Action::Unpin => ("details-unpin", text::UNPIN.to_string(), false),
+          Action::ChooseVersion => ("details-version", text::CHOOSE_VERSION.to_string(), true),
+          Action::Uninstall => ("details-uninstall", text::UNINSTALL.to_string(), true),
+        };
+        let msg = action.msg(&details.full_name);
+
+        Button::new(id)
+          .label(label)
+          .small()
+          .when(quiet, |button| button.ghost())
+          .disabled(!state.can_take(action))
+          .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
+      })
+      .collect();
+
+    h_flex().flex_wrap().gap_2().children(buttons)
   }
 
   /// The column along the left of a game, [`SIDEBAR_WIDTH`] wide whatever
@@ -1679,32 +1886,20 @@ fn render_running(
     .into_any_element()
 }
 
-/// One mod of the open profile: its icon, name, author and version with its
-/// state tags, its main action, its menu of rarer actions, and its switch.
-/// The mod loader has no switch and is tagged as the loader, and a disabled
-/// mod is dimmed. Clicking the row selects it.
-fn installed_row(
+/// A mod of the open profile's tags, each found in tests by
+/// `{scope}{kind}-badge-{full_name}`: the mod loader's, then a newer
+/// version, its pin, its deprecation, and the mods it misses.
+fn mod_tags(
   state: &State,
   full_name: &str,
-  package: &InstalledPackage,
   badges: Option<&Badges>,
-  cx: &mut Context<Shell>,
-) -> AnyElement {
+  scope: &str,
+  cx: &App,
+) -> Vec<AnyElement> {
   let palette = Palette::new(cx);
-  let on = cx.theme().success;
-  let can_change = state.can_manage();
   let loader = !state.can_toggle(full_name);
-  let selected = is_selected(state.readme.as_ref(), full_name);
-  let selection = Package::installed(full_name, package);
-  let name = package.name(full_name);
-  let icon = state
-    .browse
-    .as_ref()
-    .and_then(|browse| browse.index.as_ref())
-    .and_then(|index| index.package(full_name))
-    .and_then(|row| row.icon());
   let tag = |kind: &str, color: Hsla, label: String| {
-    state_tag(format!("{kind}-badge-{full_name}"), color, label)
+    state_tag(format!("{scope}{kind}-badge-{full_name}"), color, label)
   };
   let state_tags = badges.into_iter().flat_map(|badges| {
     [
@@ -1734,11 +1929,39 @@ fn installed_row(
       }),
     ]
   });
-  let tags: Vec<_> = loader
+
+  loader
     .then(|| tag("loader", palette.tag_loader, text::MOD_LOADER.to_string()))
     .into_iter()
     .chain(state_tags.flatten())
-    .collect();
+    .collect()
+}
+
+/// One mod of the open profile: its icon, name, author and version with its
+/// state tags, its main action, and its switch. The mod loader has no switch
+/// and is tagged as the loader, and a disabled mod is dimmed. Clicking the
+/// row selects it, showing the rest of its actions in the detail pane.
+fn installed_row(
+  state: &State,
+  full_name: &str,
+  package: &InstalledPackage,
+  badges: Option<&Badges>,
+  cx: &mut Context<Shell>,
+) -> AnyElement {
+  let palette = Palette::new(cx);
+  let on = cx.theme().success;
+  let can_change = state.can_manage();
+  let loader = !state.can_toggle(full_name);
+  let selected = is_selected(state.readme.as_ref(), full_name);
+  let selection = Package::installed(full_name, package);
+  let name = package.name(full_name);
+  let icon = state
+    .browse
+    .as_ref()
+    .and_then(|browse| browse.index.as_ref())
+    .and_then(|index| index.package(full_name))
+    .and_then(|row| row.icon());
+  let tags = mod_tags(state, full_name, badges, "", cx);
   let pinned = badges.is_some_and(|badges| badges.pinned);
   let outdated = badges.is_some_and(|badges| badges.update.is_some());
   let main = match (pinned, outdated) {
@@ -1762,10 +1985,7 @@ fn installed_row(
       .on_click(cx.listener(move |this, _, _, cx| this.dispatch(msg.clone(), cx)))
       .into_any_element()
   });
-  let actions = main
-    .into_iter()
-    .chain([mod_menu(full_name, can_change, palette, cx)])
-    .collect();
+  let actions = main.into_iter().collect();
   let switch = (!loader).then(|| {
     let toggled = full_name.to_string();
 
@@ -1804,7 +2024,7 @@ fn installed_row(
       this.dispatch(Msg::PackageSelected(selection.clone()), cx);
     }))
     .child(
-      row_lead(mod_icon(name, icon), name_label(name), byline)
+      row_lead(mod_icon(name, icon, ICON_SIZE), name_label(name), byline)
         .when(!package.enabled, |lead| lead.opacity(DIMMED)),
     )
     .child(actions_slot(full_name, selected, actions))
@@ -1812,40 +2032,6 @@ fn installed_row(
     .test_support();
 
   row_slot(item).into_any_element()
-}
-
-/// The ⋯ menu of a profile's mod: choosing its version, and uninstalling it.
-fn mod_menu(
-  full_name: &str,
-  can_change: bool,
-  palette: Palette,
-  cx: &mut Context<Shell>,
-) -> AnyElement {
-  let shell = cx.weak_entity();
-  let package = full_name.to_string();
-  let danger = can_change.then_some(palette.danger_text);
-
-  Button::new(SharedString::from(format!("mod-menu-{full_name}")))
-    .icon(IconName::Ellipsis)
-    .ghost()
-    .small()
-    .accessibility_label(text::MOD_MENU)
-    .dropdown_menu(move |menu, _, _| {
-      let id = |action: &str| SharedString::from(format!("{action}-{package}"));
-
-      menu
-        .item(
-          menu_item(id("version"), text::CHOOSE_VERSION, None)
-            .disabled(!can_change)
-            .on_click(send(&shell, Msg::InstallPressed(package.clone()))),
-        )
-        .item(
-          menu_item(id("uninstall"), text::UNINSTALL, danger)
-            .disabled(!can_change)
-            .on_click(send(&shell, Msg::UninstallPressed(package.clone()))),
-        )
-    })
-    .into_any_element()
 }
 
 /// A row of either list, found in tests by `id`, painted for whether it is
@@ -1876,9 +2062,9 @@ fn row_lead(icon: impl IntoElement, first: impl IntoElement, second: impl IntoEl
   )
 }
 
-/// A mod's icon, [`ICON_SIZE`] square, from `url`, or the initials of `name`
+/// A mod's icon, `size` pixels square, from `url`, or the initials of `name`
 /// when there is none or it fails to load.
-fn mod_icon(name: &str, url: Option<&str>) -> AnyElement {
+fn mod_icon(name: &str, url: Option<&str>, size: f32) -> AnyElement {
   let name = SharedString::from(name.to_string());
   let initials = move || {
     div()
@@ -1886,7 +2072,7 @@ fn mod_icon(name: &str, url: Option<&str>) -> AnyElement {
       .child(
         Avatar::new()
           .name(name.clone())
-          .with_size(px(ICON_SIZE))
+          .with_size(px(size))
           .rounded(px(ICON_RADIUS)),
       )
       .test_support()
@@ -1894,7 +2080,7 @@ fn mod_icon(name: &str, url: Option<&str>) -> AnyElement {
   };
   let icon = match url {
     Some(url) => img(SharedString::from(url.to_string()))
-      .size(px(ICON_SIZE))
+      .size(px(size))
       .rounded(px(ICON_RADIUS))
       .with_fallback(initials)
       .into_any_element(),
@@ -1904,7 +2090,7 @@ fn mod_icon(name: &str, url: Option<&str>) -> AnyElement {
   div()
     .id("icon")
     .flex_none()
-    .size(px(ICON_SIZE))
+    .size(px(size))
     .child(icon)
     .test_support()
     .into_any_element()
@@ -2029,8 +2215,8 @@ const ROW_RADIUS: f32 = 6.0;
 const ROW_GROUP: &str = "row";
 const ICON_SIZE: f32 = 40.0;
 const ICON_RADIUS: f32 = 6.0;
-/// Wide enough for the widest main action and the ⋯ button beside it.
-const ACTIONS_WIDTH: f32 = 112.0;
+/// Wide enough for the widest main action.
+const ACTIONS_WIDTH: f32 = 84.0;
 /// Wide enough for a small switch. The mod loader's row keeps it empty, so
 /// the columns line up.
 const SWITCH_WIDTH: f32 = 28.0;
@@ -2058,6 +2244,21 @@ const CHIP_GAP: f32 = 6.0;
 const CHIP_RADIUS: f32 = 999.0;
 /// How much of the primary color fills a chosen chip.
 const CHIP_TINT: f32 = 0.14;
+/// The padding around a game's main column, beside the sidebar.
+const MAIN_PADDING: f32 = 16.0;
+/// How much of the width beside the sidebar the detail pane starts with.
+const DETAILS_SHARE: f32 = 0.42;
+const DETAILS_MIN_WIDTH: f32 = 320.0;
+/// Room for a row's icon, its name, and its main action.
+const LIST_MIN_WIDTH: f32 = 300.0;
+/// Wide enough for a small ghost button reading [`text::DETAILS`] with its
+/// icon.
+const DETAILS_BUTTON_WIDTH: f32 = 96.0;
+const DETAILS_ICON_SIZE: f32 = 64.0;
+const DETAILS_NAME_SIZE: f32 = 20.0;
+const PANE_RADIUS: f32 = 8.0;
+/// Wide enough for the longest label of the detail pane's facts.
+const FACT_LABEL_WIDTH: f32 = 96.0;
 
 /// Whether the readme shown is `full_name`'s.
 fn is_selected(readme: Option<&Readme>, full_name: &str) -> bool {
@@ -2079,15 +2280,55 @@ fn paint_row(row: Stateful<Div>, selected: bool, palette: Palette) -> Stateful<D
     .hover(move |row| row.bg(hovered))
 }
 
-/// The readme of the selected package, or why it is not shown.
-fn render_readme(readme: Option<&Readme>, cx: &mut Context<Shell>) -> AnyElement {
+/// The detail pane's facts: the mod's version, then what Thunderstore lists
+/// about it when the index has it, each found in tests by its `fact-` id.
+fn render_facts(details: &Details) -> impl IntoElement + use<> {
+  let fact = |id: &'static str, value: String| {
+    div()
+      .id(id)
+      .tabular()
+      .aria_label(value.clone())
+      .child(value)
+      .test_support()
+      .into_any_element()
+  };
+  let now = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .map_or(0, |elapsed| {
+      i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+    });
+  let listed = details.listing.iter().flat_map(|listing| {
+    [
+      (
+        text::DOWNLOADS,
+        fact("fact-downloads", text::downloads(listing.downloads)),
+      ),
+      (
+        text::UPDATED,
+        fact("fact-updated", text::ago(listing.updated, now)),
+      ),
+      (
+        text::CATEGORIES,
+        fact("fact-categories", text::categories(&listing.categories)),
+      ),
+    ]
+  });
+
+  std::iter::once((text::VERSION, fact("fact-version", details.version.clone())))
+    .chain(listed)
+    .fold(
+      DescriptionList::horizontal()
+        .columns(1)
+        .bordered(false)
+        .label_width(px(FACT_LABEL_WIDTH))
+        .small(),
+      |facts, (label, value)| facts.item(label, value, 1),
+    )
+}
+
+/// The readme of the mod the detail pane shows, or why it is not shown.
+fn render_readme(readme: &Readme, cx: &mut Context<Shell>) -> AnyElement {
   let palette = Palette::new(cx);
-  let panel = v_flex()
-    .flex_1()
-    .overflow_hidden()
-    .p_3()
-    .border_1()
-    .border_color(palette.border);
   let message = |id: &'static str, message: String| {
     div()
       .id(id)
@@ -2096,12 +2337,8 @@ fn render_readme(readme: Option<&Readme>, cx: &mut Context<Shell>) -> AnyElement
       .test_support()
       .into_any_element()
   };
-  let Some(readme) = readme else {
-    return panel
-      .child(message("readme-none", text::NO_README_SELECTED.to_string()))
-      .into_any_element();
-  };
-  let content = match &readme.status {
+
+  match &readme.status {
     Status::Loading => message(
       "readme-loading",
       text::readme_loading(&readme.package.full_name()),
@@ -2131,9 +2368,7 @@ fn render_readme(readme: Option<&Readme>, cx: &mut Context<Shell>) -> AnyElement
         .test_support()
         .into_any_element()
     }
-  };
-
-  panel.child(content).into_any_element()
+  }
 }
 
 /// Thunderstore's packages the search and filters keep, or why there are
@@ -2238,7 +2473,11 @@ fn package_row(
         this.dispatch(Msg::PackageSelected(selection.clone()), cx);
       }))
     })
-    .child(row_lead(mod_icon(name, row.icon()), author, description))
+    .child(row_lead(
+      mod_icon(name, row.icon(), ICON_SIZE),
+      author,
+      description,
+    ))
     .child(downloads)
     .child(actions_slot(full_name, selected || installed, vec![action]))
     .test_support();
@@ -2296,7 +2535,7 @@ impl Render for Shell {
         .child(text::LOADING)
         .into_any_element(),
       Screen::Picker => self.render_picker(cx),
-      Screen::Game(game) => self.render_game(&game, cx),
+      Screen::Game(game) => self.render_game(&game, window, cx),
       Screen::Settings(game) => self.render_settings(&game, cx),
     };
     let status_bar = (self.state.screen != Screen::Starting).then(|| self.render_status_bar(cx));

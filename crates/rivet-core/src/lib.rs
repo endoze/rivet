@@ -2,6 +2,7 @@
 //! the effects the shell must run. Nothing here does IO.
 
 pub mod browse;
+pub mod details;
 pub mod install;
 pub mod launch;
 pub mod loader_files;
@@ -32,6 +33,7 @@ use readme::Readme;
 use settings::{GameSettings, RuntimeChoice, Settings};
 use settings_screen::{SettingsScreen, Target};
 use std::path::PathBuf;
+use std::time::Duration;
 use switcher::{Naming, ProfileChange, Switcher};
 use thunderstore_engine::ecosystem::Ecosystem;
 use thunderstore_engine::profile::launch::{HostOs, LaunchContext, LaunchMode};
@@ -85,9 +87,13 @@ pub struct State {
   pub tab: Tab,
   /// The Installed tab.
   pub manage: Manage,
-  /// The readme of the package selected in the shown tab. `None` when no
-  /// package is selected.
+  /// The readme of the package the detail pane shows: the one selected in
+  /// the shown tab, or else the first that tab lists. `None` when it lists
+  /// none.
   pub readme: Option<Readme>,
+  /// Whether the detail pane is shown beside the list. It stays as the user
+  /// left it while the app runs.
+  pub details_shown: bool,
   /// How many readme fetches have been started, so each gets its own id.
   pub readmes: u64,
   /// Exporting the open profile. One running outlives leaving its game.
@@ -126,6 +132,7 @@ impl State {
       tab: Tab::default(),
       manage: Manage::default(),
       readme: None,
+      details_shown: true,
       readmes: 0,
       exporting: None,
       importing: None,
@@ -290,6 +297,10 @@ pub enum Msg {
   },
   /// A link in a readme was clicked, by its target.
   LinkClicked(String),
+  /// The detail pane was opened, or closed.
+  ShowDetails(bool),
+  /// Typing in a search paused, by the id of the readme waiting for it.
+  ReadmeDue(u64),
   /// A launch button was pressed.
   LaunchPressed(LaunchMode),
   /// A [`Launch`] ended, by its id: the game started, or why it did not.
@@ -427,6 +438,9 @@ pub enum Effect {
   /// Tell the user this in passing, over the window. Needs the window, so
   /// the shell runs it. Not answered.
   Notify(Notice),
+  /// Send `msg` back after `delay`. The shell keeps the time, so the core
+  /// stays free of clocks. Answered with `msg`.
+  After { delay: Duration, msg: Box<Msg> },
   /// Work for the commands thread.
   Run(Command),
 }
@@ -537,7 +551,12 @@ pub enum Command {
 /// assert_eq!(effects, vec![Effect::Run(Command::LoadSettings)]);
 /// ```
 pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
-  let effects = apply(state, msg);
+  let follows = readme::follows(&msg);
+  let mut effects = apply(state, msg);
+
+  if let Some(when) = follows {
+    effects.extend(readme::follow_list(state, when));
+  }
 
   state.saves += effects
     .iter()
@@ -700,6 +719,8 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::PackageSelected(package) => readme::selected(state, package),
     Msg::ReadmeFetched { request, readme } => readme::fetched(state, request, readme),
     Msg::LinkClicked(url) => readme::link_clicked(url),
+    Msg::ShowDetails(shown) => details::show(state, shown),
+    Msg::ReadmeDue(id) => readme::due(state, id),
     Msg::LaunchPressed(mode) => launch::launch_pressed(state, mode),
     Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
     Msg::LoaderFilesCopied(copied) => loader_files::copied(state, copied),

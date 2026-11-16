@@ -3,7 +3,7 @@
 
 use crate::notice::Notice;
 use crate::{Command, Effect, State};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use thunderstore_engine::models::PackageIndex;
 use thunderstore_engine::query::{self, BrowseQuery, PackageRow};
@@ -79,6 +79,8 @@ pub struct Browse {
   pub index: Option<Index>,
   /// The packages to show, as positions in `index`, in display order.
   pub rows: Vec<usize>,
+  /// The positions `rows` holds, to tell cheaply whether a package is listed.
+  listed: HashSet<usize>,
   pub status: Status,
   /// What the user narrowed and ordered the list by.
   pub filters: Filters,
@@ -257,10 +259,16 @@ impl Browse {
       community,
       index: None,
       rows: Vec::new(),
+      listed: HashSet::new(),
       status: Status::ReadingCache,
       filters: Filters::default(),
       categories: Vec::new(),
     }
+  }
+
+  /// Whether the list shows the package at `position` in `index`.
+  pub fn lists(&self, position: usize) -> bool {
+    self.listed.contains(&position)
   }
 
   /// What the package list area shows.
@@ -304,6 +312,8 @@ impl Browse {
         .full_name_at(row)
         .is_none_or(|full_name| !HIDDEN_PACKAGES.contains(&full_name))
     });
+
+    self.listed = self.rows.iter().copied().collect();
   }
 
   /// Starts a fetch, numbered from `refreshes`, the count of fetches started
@@ -540,6 +550,14 @@ mod tests {
     })
   }
 
+  /// `effects` without the readme fetch of the package a list shows first.
+  fn index_effects(effects: Vec<Effect>) -> Vec<Effect> {
+    effects
+      .into_iter()
+      .filter(|effect| !matches!(effect, Effect::Run(Command::FetchReadme(_))))
+      .collect()
+  }
+
   #[test]
   fn an_unchanged_index_keeps_the_cached_list() {
     let mut state = opened("valheim");
@@ -575,7 +593,7 @@ mod tests {
 
     let effects = update(&mut state, cache_read("valheim", Ok(Some(two_packages()))));
 
-    assert_eq!(effects, vec![refresh_if_stale("valheim", 2)]);
+    assert_eq!(index_effects(effects), vec![refresh_if_stale("valheim", 2)]);
 
     let earlier = update(&mut state, refreshed("valheim", 1, Err("offline")));
 
@@ -602,7 +620,7 @@ mod tests {
 
     assert_eq!(listed(&state), ["Owner-Newer", "Owner-Older"]);
     assert_eq!(view(&state), Some(View::List { refreshing: true }));
-    assert_eq!(effects, vec![refresh_if_stale("valheim", 1)]);
+    assert_eq!(index_effects(effects), vec![refresh_if_stale("valheim", 1)]);
   }
 
   #[test]
@@ -618,7 +636,7 @@ mod tests {
 
     assert_eq!(listed(&state), ["Owner-Newer", "Owner-Older"]);
     assert_eq!(view(&state), Some(View::List { refreshing: false }));
-    assert_eq!(effects, vec![]);
+    assert_eq!(index_effects(effects), vec![]);
   }
 
   #[test]

@@ -150,7 +150,7 @@ pub fn rows<'a>(
   let mut rows: Vec<(&str, &InstalledPackage)> = installed
     .iter()
     .map(|(full_name, package)| (full_name.as_str(), package))
-    .filter(|(full_name, _)| full_name.to_lowercase().contains(&query))
+    .filter(|(full_name, _)| found_by(full_name, &query))
     .collect();
   let name =
     |(full_name, package): &(&str, &InstalledPackage)| package.name(full_name).to_lowercase();
@@ -162,6 +162,12 @@ pub fn rows<'a>(
   }
 
   rows
+}
+
+/// Whether the Installed tab's search finds `full_name`, the search already
+/// trimmed and lowercased.
+fn found_by(full_name: &str, query: &str) -> bool {
+  full_name.to_lowercase().contains(query)
 }
 
 /// Every package of `installed` that requires `full_name`, directly or
@@ -226,25 +232,43 @@ impl State {
       return Vec::new();
     };
     let mut rows = rows(installed, &self.manage.query, self.manage.sort);
-    let chosen = self
-      .browse
-      .as_ref()
-      .map(|browse| &browse.filters.categories);
 
-    if let Some(chosen) = chosen.filter(|chosen| !chosen.is_empty()) {
-      let index = self
-        .browse
-        .as_ref()
-        .and_then(|browse| browse.index.as_ref());
-
-      rows.retain(|(full_name, _)| {
-        index
-          .and_then(|index| index.package(full_name))
-          .is_some_and(|row| row.categories().any(|category| chosen.contains(category)))
-      });
-    }
+    rows.retain(|(full_name, _)| self.in_chosen_category(full_name));
 
     rows
+  }
+
+  /// The open profile's `full_name` (`Owner-Name`) when the Installed tab
+  /// lists it, without listing and sorting the whole profile as
+  /// [`State::installed_rows`] does.
+  pub(crate) fn installed_listing(&self, full_name: &str) -> Option<&InstalledPackage> {
+    let package = self
+      .profile
+      .as_ref()
+      .and_then(Profile::installed)?
+      .get(full_name)?;
+    let query = self.manage.query.trim().to_lowercase();
+
+    (found_by(full_name, &query) && self.in_chosen_category(full_name)).then_some(package)
+  }
+
+  /// Whether the package list puts `full_name` in a chosen category, or
+  /// none is chosen. A package the list lacks is in none.
+  fn in_chosen_category(&self, full_name: &str) -> bool {
+    let Some(browse) = self.browse.as_ref() else {
+      return true;
+    };
+    let chosen = &browse.filters.categories;
+
+    if chosen.is_empty() {
+      return true;
+    }
+
+    browse
+      .index
+      .as_ref()
+      .and_then(|index| index.package(full_name))
+      .is_some_and(|row| row.categories().any(|category| chosen.contains(category)))
   }
 
   /// Whether an uninstall is being checked, so no other change can start.

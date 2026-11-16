@@ -94,6 +94,13 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
       fetch: Fetch::IfStale,
     })
   );
+  assert!(
+    matches!(
+      sent.try_recv().ok(),
+      Some(Command::FetchReadme(request)) if request.package.full_name() == "Owner-ModA"
+    ),
+    "the readme of the package shown first was not fetched"
+  );
 
   answers
     .unbounded_send(Msg::IndexRefreshed {
@@ -225,6 +232,16 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
       ..Filters::default()
     }
   );
+}
+
+/// Presses the button `id` in the detail pane.
+fn press_in_details(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.within("details").click(id, cx);
+  })
+  .unwrap();
+  settle(cx, window);
 }
 
 /// Opens the menu of the button `menu` and clicks its item `item`.
@@ -1368,7 +1385,7 @@ fn a_pinned_package_is_marked_until_it_is_unpinned(cx: &mut TestAppContext) {
     assert!(window.try_find("update-badge-Owner-ModD").is_some());
   })
   .unwrap();
-  choose(cx, window, "mod-menu-Owner-ModD", "version-Owner-ModD");
+  press_in_details(cx, window, "details-version");
 
   assert!(dialog_open(cx, window), "choosing a version asked nothing");
 }
@@ -2261,7 +2278,7 @@ fn the_installed_tab_asks_about_an_uninstall_in_the_modal_without_moving_the_lis
     })
     .unwrap();
 
-  choose(cx, window, "mod-menu-Owner-ModA", "uninstall-Owner-ModA");
+  press_in_details(cx, window, "details-uninstall");
 
   assert!(
     dialog_open(cx, window),
@@ -2391,7 +2408,7 @@ fn a_refused_uninstall_shows_in_the_modal_and_dismissing_it_clears_it(cx: &mut T
     })
     .unwrap();
 
-  choose(cx, window, "mod-menu-Owner-ModA", "uninstall-Owner-ModA");
+  press_in_details(cx, window, "details-uninstall");
 
   assert!(
     !dialog_open(cx, window),
