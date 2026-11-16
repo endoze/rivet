@@ -28,16 +28,34 @@ pub const REFRESH: &str = "Refresh";
 pub const REFRESHING: &str = "Checking Thunderstore for new mods";
 pub const LOADING_PACKAGES: &str = "Loading mods";
 pub const NO_PACKAGES: &str = "No mods to show.";
-pub const PACKAGE_SEARCH_PLACEHOLDER: &str = "Search mods by name, author, or description";
+pub const PACKAGE_SEARCH_PLACEHOLDER: &str = "Search Thunderstore";
 pub const NO_PACKAGE_MATCHES: &str = "No mods match your search and filters.";
 pub const SORT_BY: &str = "Sort by";
-pub const SHOW_NSFW: &str = "Show NSFW";
-pub const SHOW_DEPRECATED: &str = "Show deprecated";
-pub const CLEAR_FILTERS: &str = "Clear";
+/// The menu of what Thunderstore's list leaves out.
+pub const SHOW: &str = "Show";
+pub const SHOW_NSFW: &str = "NSFW mods";
+pub const SHOW_DEPRECATED: &str = "Deprecated mods";
+pub const CLEAR_FILTERS: &str = "Clear filters";
 
-/// A sort button's label, with an arrow for its direction when it is the
-/// current sort, such as `Downloads ↓`. Best match has no arrow, as it only
-/// sorts one way.
+/// The label of the menu choosing Thunderstore's sort, naming the current
+/// one, such as `Sort: Downloads ↓`.
+///
+/// ```
+/// use rivet_app::text::sort_menu;
+/// use rivet_core::browse::{SortDirection, SortKey};
+///
+/// assert_eq!(
+///   sort_menu(SortKey::Name, SortDirection::Ascending),
+///   "Sort: Name ↑"
+/// );
+/// ```
+pub fn sort_menu(key: SortKey, direction: SortDirection) -> String {
+  format!("Sort: {}", sort(key, Some(direction)))
+}
+
+/// A sort's label, with an arrow for its direction when it is the current
+/// sort, such as `Downloads ↓`. Best match has no arrow, as it only sorts one
+/// way.
 pub fn sort(key: SortKey, current: Option<SortDirection>) -> String {
   let name = match key {
     SortKey::BestMatch => return "Best match".to_string(),
@@ -298,9 +316,11 @@ pub fn install_failed(package: &str, failed: &[FailedPackage], installed: &[Stri
   }
 }
 
-pub const TAB_BROWSE: &str = "Browse";
-pub const TAB_INSTALLED: &str = "Installed";
-pub const INSTALLED_SEARCH_PLACEHOLDER: &str = "Search installed mods";
+pub const TAB_BROWSE: &str = "Find mods";
+pub const TAB_INSTALLED: &str = "In this profile";
+/// The menu of the profile's list: its sort, and turning every mod on or off.
+pub const PROFILE_MENU: &str = "More";
+pub const INSTALLED_SEARCH_PLACEHOLDER: &str = "Search this profile";
 pub const SORT_NAME: &str = "Name";
 pub const SORT_AUTHOR: &str = "Author";
 pub const SORT_NEWEST: &str = "Newest";
@@ -310,7 +330,19 @@ pub const UNINSTALL: &str = "Uninstall";
 pub const ENABLE_ALL: &str = "Enable all";
 pub const DISABLE_ALL: &str = "Disable all";
 pub const UPDATE: &str = "Update";
-pub const UPDATE_ALL: &str = "Update all";
+
+/// The button updating every mod an update would change.
+///
+/// ```
+/// use rivet_app::text::update_mods;
+///
+/// assert_eq!(update_mods(1), "Update 1 mod");
+/// assert_eq!(update_mods(2), "Update 2 mods");
+/// ```
+pub fn update_mods(count: usize) -> String {
+  format!("Update {}", mod_count(count))
+}
+
 pub const DEPRECATED: &str = "Deprecated";
 pub const PINNED: &str = "Pinned";
 pub const UNPIN: &str = "Unpin";
@@ -377,7 +409,7 @@ pub const ENABLED: &str = "Enabled";
 pub const DISABLED: &str = "Disabled";
 pub const MOD_LOADER: &str = "Mod loader";
 pub const NO_INSTALLED: &str = "No mods are installed in this profile.";
-pub const NO_INSTALLED_MATCHES: &str = "No installed mod matches your search.";
+pub const NO_INSTALLED_MATCHES: &str = "No mod in this profile matches your search and categories.";
 pub const PACKAGE_ONLY: &str = "This mod only";
 pub const WITH_DEPENDANTS: &str = "Including the mods that need it";
 pub const CHECKING_UNINSTALL: &str = "Checking what uninstalling removes";

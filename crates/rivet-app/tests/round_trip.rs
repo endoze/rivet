@@ -168,9 +168,16 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
   cx.run_until_parked();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+    window.click("browse-sort", cx);
+    window.render_frame(cx);
 
     assert!(window.try_find("sort-best-match").is_none());
 
+    window.press("escape", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
     window.click("package-search", cx);
     window.input("modc", cx);
   })
@@ -181,31 +188,311 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
 
     assert!(window.try_find("Owner-ModC").is_some());
     assert!(window.try_find("Owner-ModA").is_none());
+
+    window.click("browse-sort", cx);
+    window.render_frame(cx);
+
     assert!(window.try_find("sort-best-match").is_some());
 
     window.click("sort-name", cx);
-    window.click("show-deprecated", cx);
-    window.render_frame(cx);
-    window.click("clear-filters", cx);
-    window.render_frame(cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  choose(cx, window, "show-menu", "show-deprecated");
 
+  let filters = |cx: &mut TestAppContext| {
+    shell.read_with(cx, |shell, _| {
+      shell.state().browse.as_ref().unwrap().filters.clone()
+    })
+  };
+
+  assert!(
+    filters(cx).show_deprecated,
+    "Show deprecated was not turned on"
+  );
+
+  choose(cx, window, "show-menu", "clear-filters");
+  cx.update_window(window, |_, window, _| {
     assert!(window.try_find("Owner-ModA").is_some());
-    assert!(window.try_find("sort-best-match").is_none());
   })
   .unwrap();
 
-  let filters = shell.read_with(cx, |shell, _| {
-    shell.state().browse.as_ref().unwrap().filters.clone()
-  });
-
   assert_eq!(
-    filters,
+    filters(cx),
     Filters {
       sort: SortKey::Name,
       direction: SortDirection::Ascending,
       ..Filters::default()
     }
   );
+}
+
+/// Opens the menu of the button `menu` and clicks its item `item`.
+fn choose(
+  cx: &mut TestAppContext,
+  window: AnyWindowHandle,
+  menu: &'static str,
+  item: &'static str,
+) {
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click(menu, cx);
+    window.render_frame(cx);
+    window.click(item, cx);
+  })
+  .unwrap();
+  settle(cx, window);
+}
+
+#[gpui_kit::test]
+fn the_toolbar_switches_views_without_moving_the_list(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(
+        [
+          package("Owner-ModA", &[]),
+          package("Owner-ModC", &["Owner-ModA"]),
+        ]
+        .into(),
+      ),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+
+  let list = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+
+      assert_eq!(
+        window.within("toolbar").find("view-mod-count").label(),
+        Some("2 mods"),
+        "the profile's view does not say how many mods it holds"
+      );
+
+      let list = window.find("mod-list").bounds();
+
+      window.click("tab-installed", cx);
+      window.render_frame(cx);
+
+      assert!(
+        window.try_find("profile-Owner-ModA").is_some(),
+        "the segmented control did not show the profile"
+      );
+      assert_eq!(
+        window.find("mod-list").bounds(),
+        list,
+        "switching to the profile moved the list"
+      );
+
+      window.click("installed-search", cx);
+      window.input("nothing matches this", cx);
+
+      list
+    })
+    .unwrap();
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-Owner-ModA").is_none());
+    assert_eq!(
+      window.find("mod-list").bounds(),
+      list,
+      "searching the profile moved the list"
+    );
+
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
+
+    assert!(
+      window.try_find("Owner-ModC").is_some(),
+      "the segmented control did not show Thunderstore"
+    );
+    assert_eq!(
+      window.find("mod-list").bounds(),
+      list,
+      "switching to Thunderstore moved the list"
+    );
+
+    window.click("package-search", cx);
+    window.input("nothing matches this", cx);
+  })
+  .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(window.try_find("Owner-ModC").is_none());
+    assert_eq!(
+      window.find("mod-list").bounds(),
+      list,
+      "searching Thunderstore moved the list"
+    );
+  })
+  .unwrap();
+}
+
+/// The mock's package index with `Owner-ModA` in Tools and `Owner-ModC` in
+/// Maps.
+fn index_with_categories() -> Index {
+  let mut packages: Vec<serde_json::Value> =
+    serde_json::from_str(&index_json("http://mock")).unwrap();
+
+  for package in &mut packages {
+    let categories = match package["full_name"].as_str() {
+      Some("Owner-ModA") => ["Tools"],
+      Some("Owner-ModC") => ["Maps"],
+      _ => continue,
+    };
+
+    package["categories"] = categories.as_slice().into();
+  }
+
+  let packages: Vec<Package> = serde_json::from_value(serde_json::Value::Array(packages)).unwrap();
+
+  PackageIndex::from(packages).into()
+}
+
+#[gpui_kit::test]
+fn category_chips_filter_both_views(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(index_with_categories())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(
+        [
+          package("Owner-ModA", &[]),
+          package("Owner-ModC", &["Owner-ModA"]),
+        ]
+        .into(),
+      ),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("category-Maps", cx);
+    window.render_frame(cx);
+
+    assert_eq!(window.find("category-Maps").checked(), Some(true));
+    assert_ne!(window.find("category-Tools").checked(), Some(true));
+    assert!(window.try_find("Owner-ModC").is_some());
+    assert!(
+      window.try_find("Owner-ModA").is_none(),
+      "a chip left Thunderstore unfiltered"
+    );
+
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-Owner-ModC").is_some());
+    assert!(
+      window.try_find("profile-Owner-ModA").is_none(),
+      "a chip left the profile unfiltered"
+    );
+
+    window.click("category-Maps", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("profile-Owner-ModA").is_some());
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_profile_menu_sorts_and_turns_every_mod_on(cx: &mut TestAppContext) {
+  use rivet_core::manage::Sort;
+
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, shell) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let (name, mut off) = package("Owner-ModC", &[]);
+
+  off.enabled = false;
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[]), (name, off)].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+  })
+  .unwrap();
+  choose(cx, window, "profile-menu", "installed-sort-author");
+
+  assert_eq!(
+    shell.read_with(cx, |shell, _| shell.state().manage.sort),
+    Sort::Author
+  );
+
+  choose(cx, window, "profile-menu", "enable-all");
+
+  let set = std::iter::from_fn(|| sent.try_recv().ok())
+    .find_map(|command| match command {
+      Command::SetEnabled(set) => Some(set),
+      _ => None,
+    })
+    .expect("enabling every mod was sent");
+
+  assert_eq!(set.packages, ["Owner-ModC"]);
+  assert!(set.enabled);
 }
 
 fn open_default_profile() -> Command {
@@ -927,6 +1214,7 @@ fn the_installed_tab_badges_packages_and_updates_one_or_all(cx: &mut TestAppCont
     assert!(window.try_find("deprecated-badge-Owner-ModB").is_some());
     assert!(window.try_find("missing-badge-Owner-ModC").is_some());
     assert!(window.try_find("update-Owner-ModC").is_none());
+    assert_eq!(window.find("update-all").label(), Some("Update 1 mod"));
 
     window.click("update-all", cx);
   })
@@ -2261,7 +2549,7 @@ fn game_screen_on(cx: &mut TestAppContext, host: HostOs) -> AnyWindowHandle {
 }
 
 #[gpui_kit::test]
-fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_tabs(
+fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_toolbar(
   cx: &mut TestAppContext,
 ) {
   cx.update(gpui_kit::init);
@@ -2272,7 +2560,7 @@ fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_tabs(
     window.render_frame(cx);
 
     let sidebar = window.find("sidebar").bounds();
-    let tabs = window.find("tab-browse").bounds();
+    let toolbar = window.find("toolbar").bounds();
 
     assert_eq!(
       sidebar.size.width,
@@ -2284,12 +2572,12 @@ fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_tabs(
       "the header row is back"
     );
     assert!(
-      tabs.left() >= sidebar.right(),
-      "the tabs are not beside the sidebar: {sidebar:?} then {tabs:?}"
+      toolbar.left() >= sidebar.right(),
+      "the toolbar is not beside the sidebar: {sidebar:?} then {toolbar:?}"
     );
     assert!(
-      tabs.top() - sidebar.top() <= px(16.),
-      "something sits above the tabs: {sidebar:?} then {tabs:?}"
+      toolbar.top() - sidebar.top() <= px(16.),
+      "something sits above the toolbar: {sidebar:?} then {toolbar:?}"
     );
 
     let within = window.within("sidebar");

@@ -11,11 +11,11 @@ pub mod theme;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
-use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
+use gpui_kit::component::tab::{Tab as Segment, TabBar};
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
@@ -32,7 +32,7 @@ use gpui_kit::{
 use icons::IconCache;
 use modal::Modal;
 use palette::Palette;
-use rivet_core::browse::{Browse, SortKey, View};
+use rivet_core::browse::{Browse, Filters, SortKey, View};
 use rivet_core::install::{InstalledPackage, Operation, OperationStatus, Profile, ProfileStatus};
 use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::manage::{Sort, Tab};
@@ -564,9 +564,32 @@ impl Shell {
   }
 
   /// A game: the sidebar, and beside it the banners that need action, the
-  /// tabs, the list, and the readme.
+  /// toolbar, the category chips over the list, and the readme.
   fn render_game(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
+    let content = match self.state.tab {
+      Tab::Browse => self
+        .state
+        .browse
+        .as_ref()
+        .map(|browse| render_browse(browse, &self.icons, cx)),
+      Tab::Installed => Some(self.render_installed(cx)),
+    };
+    let list = v_flex()
+      .flex_1()
+      .min_w_0()
+      .gap_2()
+      .overflow_hidden()
+      .children(self.render_chips(cx))
+      .child(
+        v_flex()
+          .id("mod-list")
+          .flex_1()
+          .min_h_0()
+          .overflow_hidden()
+          .children(content)
+          .test_support(),
+      );
     let main = v_flex()
       .flex_1()
       .min_w_0()
@@ -595,21 +618,14 @@ impl Shell {
             _ => None,
           }),
       )
-      .child(render_tabs(self.state.tab, cx))
+      .child(self.render_toolbar(cx))
       .child(
         div()
           .flex()
           .flex_1()
           .gap_3()
           .overflow_hidden()
-          .children(match self.state.tab {
-            Tab::Browse => self
-              .state
-              .browse
-              .as_ref()
-              .map(|browse| render_browse(browse, &self.package_search, &self.icons, cx)),
-            Tab::Installed => Some(self.render_installed(cx)),
-          })
+          .child(list)
           .child(render_readme(self.state.readme.as_ref(), cx)),
       );
 
@@ -819,66 +835,254 @@ impl Shell {
       .into_any_element()
   }
 
-  /// The open profile's packages with their badges, with search, sort,
-  /// updating every outdated one, and the bulk toggles.
+  /// The bar over the list, [`TOOLBAR_HEIGHT`] tall whichever view it shows,
+  /// so switching views leaves the list where it was: the segmented control
+  /// choosing the view, the search box of the view shown, and that view's
+  /// actions at the far end.
+  fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+    let shell = cx.weak_entity();
+    let (search_id, search) = match self.state.tab {
+      Tab::Installed => ("installed-search", &self.installed_search),
+      Tab::Browse => ("package-search", &self.package_search),
+    };
+    let tools = match self.state.tab {
+      Tab::Installed => self.render_profile_tools(&shell),
+      Tab::Browse => self.render_browse_tools(&shell),
+    };
+
+    h_flex()
+      .id("toolbar")
+      .flex_none()
+      .h(px(TOOLBAR_HEIGHT))
+      .gap_3()
+      .child(self.render_views(&shell, cx))
+      .child(
+        div()
+          .id(search_id)
+          .flex_shrink(1.)
+          .min_w(px(SEARCH_MIN_WIDTH))
+          .w(px(SEARCH_WIDTH))
+          .child(
+            Input::new(search)
+              .small()
+              .prefix(Icon::new(IconName::Search))
+              .cleanable(true),
+          )
+          .test_support(),
+      )
+      .child(div().flex_1())
+      .children(tools)
+      .test_support()
+      .into_any_element()
+  }
+
+  /// The segmented control choosing between the open profile's mods, with
+  /// their count once known, and Thunderstore's. The count keeps
+  /// [`VIEW_COUNT_WIDTH`] while unknown and whatever its digits, so the
+  /// controls after it stay put when profiles switch or mods are added.
+  fn render_views(&self, shell: &WeakEntity<Self>, cx: &mut Context<Self>) -> TabBar {
+    let palette = Palette::new(cx);
+    let state = &self.state;
+    let count = state
+      .profile
+      .as_ref()
+      .and_then(|profile| state.mod_count(&profile.name))
+      .map(|count| {
+        div()
+          .id("view-mod-count")
+          .aria_label(text::mod_count(count))
+          .child(count.to_string())
+          .test_support()
+      });
+    let count = div()
+      .w(px(VIEW_COUNT_WIDTH))
+      .tabular()
+      .text_color(palette.muted_text)
+      .children(count);
+    let selected = match state.tab {
+      Tab::Installed => 0,
+      Tab::Browse => 1,
+    };
+    let shell = shell.clone();
+
+    TabBar::new("views")
+      .segmented()
+      .small()
+      .flex_none()
+      .selected_index(selected)
+      .child(
+        Segment::new().child(
+          h_flex()
+            .id("tab-installed")
+            .gap_1p5()
+            .child(text::TAB_INSTALLED)
+            .child(count)
+            .test_support(),
+        ),
+      )
+      .child(
+        Segment::new().child(
+          div()
+            .id("tab-browse")
+            .child(text::TAB_BROWSE)
+            .test_support(),
+        ),
+      )
+      .on_click(move |index, _, cx| {
+        let tab = if *index == 0 {
+          Tab::Installed
+        } else {
+          Tab::Browse
+        };
+
+        shell
+          .update(cx, |this, cx| this.dispatch(Msg::TabChosen(tab), cx))
+          .ok();
+      })
+  }
+
+  /// The profile view's actions: updating every mod an update would change,
+  /// and a menu with the list's sort and turning every mod on or off.
+  fn render_profile_tools(&self, shell: &WeakEntity<Self>) -> Vec<AnyElement> {
+    let state = &self.state;
+    let can_change = state.can_manage();
+    let sort = state.manage.sort;
+    let updatable = state
+      .badges()
+      .values()
+      .filter(|badges| badges.updatable())
+      .count();
+    let update = Button::new("update-all")
+      .label(text::update_mods(updatable))
+      .small()
+      .disabled(!can_change || updatable == 0)
+      .on_click(send(shell, Msg::UpdateAllPressed));
+    let shell = shell.clone();
+    let menu = Button::new("profile-menu")
+      .icon(IconName::Ellipsis)
+      .ghost()
+      .small()
+      .accessibility_label(text::PROFILE_MENU)
+      .dropdown_menu(move |menu, _, _| {
+        let sort_item = |id: &'static str, label: &'static str, choice: Sort| {
+          menu_item(id, label, None)
+            .checked(sort == choice)
+            .on_click(send(&shell, Msg::InstalledSortChosen(choice)))
+        };
+
+        menu
+          .label(text::SORT_BY)
+          .item(sort_item(
+            "installed-sort-name",
+            text::SORT_NAME,
+            Sort::Name,
+          ))
+          .item(sort_item(
+            "installed-sort-author",
+            text::SORT_AUTHOR,
+            Sort::Author,
+          ))
+          .item(sort_item(
+            "installed-sort-newest",
+            text::SORT_NEWEST,
+            Sort::Newest,
+          ))
+          .separator()
+          .item(
+            menu_item("enable-all", text::ENABLE_ALL, None)
+              .disabled(!can_change)
+              .on_click(send(&shell, Msg::EnableAllPressed)),
+          )
+          .item(
+            menu_item("disable-all", text::DISABLE_ALL, None)
+              .disabled(!can_change)
+              .on_click(send(&shell, Msg::DisableAllPressed)),
+          )
+      });
+
+    vec![update.into_any_element(), menu.into_any_element()]
+  }
+
+  /// Thunderstore's actions: its sort, a menu of what the list leaves out
+  /// with clearing every filter, and refreshing it. None until the game's
+  /// list exists.
+  fn render_browse_tools(&self, shell: &WeakEntity<Self>) -> Vec<AnyElement> {
+    let Some(browse) = self.state.browse.as_ref() else {
+      return Vec::new();
+    };
+    let filters = &browse.filters;
+    let sort = Button::new("browse-sort")
+      .label(text::sort_menu(filters.sort, filters.direction))
+      .ghost()
+      .small()
+      .dropdown_caret(true)
+      .dropdown_menu({
+        let shell = shell.clone();
+        let filters = filters.clone();
+
+        move |menu, _, _| sort_menu(menu, &filters, &shell)
+      });
+    let show = Button::new("show-menu")
+      .label(text::SHOW)
+      .ghost()
+      .small()
+      .dropdown_caret(true)
+      .dropdown_menu({
+        let shell = shell.clone();
+        let filters = filters.clone();
+
+        move |menu, _, _| show_menu(menu, &filters, &shell)
+      });
+    let refresh = Button::new("refresh")
+      .icon(IconName::RefreshCw)
+      .ghost()
+      .small()
+      .tooltip(text::REFRESH)
+      .accessibility_label(text::REFRESH)
+      .on_click(send(shell, Msg::RefreshPressed));
+
+    vec![
+      sort.into_any_element(),
+      show.into_any_element(),
+      refresh.into_any_element(),
+    ]
+  }
+
+  /// The game's categories as one wrapping row of chips, shared by both
+  /// views, or `None` until the package list names any.
+  fn render_chips(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    let browse = self
+      .state
+      .browse
+      .as_ref()
+      .filter(|browse| !browse.categories.is_empty())?;
+    let chips: Vec<Button> = browse
+      .categories
+      .iter()
+      .map(|category| chip(category, browse.filters.categories.contains(category), cx))
+      .collect();
+
+    Some(
+      h_flex()
+        .id("categories")
+        .flex_none()
+        .flex_wrap()
+        .gap(px(CHIP_GAP))
+        .children(chips)
+        .test_support()
+        .into_any_element(),
+    )
+  }
+
+  /// The open profile's packages the search and chosen categories keep, with
+  /// their badges, or why there are none.
   fn render_installed(&self, cx: &mut Context<Self>) -> AnyElement {
     let state = &self.state;
     let can_change = state.can_manage();
-    let manage = &state.manage;
     let badges = state.badges();
-    let any_outdated = badges.values().any(|badge| badge.update.is_some());
-    let sort_button = |id: &'static str, label: &'static str, sort: Sort| {
-      Button::new(id)
-        .label(label)
-        .small()
-        .when(manage.sort == sort, |button| button.primary())
-        .on_click(cx.listener(move |this, _, _, cx| {
-          this.dispatch(Msg::InstalledSortChosen(sort), cx);
-        }))
-    };
-    let controls = h_flex()
-      .gap_2()
-      .child(div().flex_1().child(Input::new(&self.installed_search)))
-      .child(sort_button(
-        "installed-sort-name",
-        text::SORT_NAME,
-        Sort::Name,
-      ))
-      .child(sort_button(
-        "installed-sort-author",
-        text::SORT_AUTHOR,
-        Sort::Author,
-      ))
-      .child(sort_button(
-        "installed-sort-newest",
-        text::SORT_NEWEST,
-        Sort::Newest,
-      ))
-      .child(
-        Button::new("update-all")
-          .label(text::UPDATE_ALL)
-          .small()
-          .disabled(!can_change || !any_outdated)
-          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::UpdateAllPressed, cx))),
-      )
-      .child(
-        Button::new("enable-all")
-          .label(text::ENABLE_ALL)
-          .small()
-          .disabled(!can_change)
-          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::EnableAllPressed, cx))),
-      )
-      .child(
-        Button::new("disable-all")
-          .label(text::DISABLE_ALL)
-          .small()
-          .disabled(!can_change)
-          .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::DisableAllPressed, cx))),
-      );
     let installed = state.profile.as_ref().and_then(Profile::installed);
-    let rows: Vec<AnyElement> = installed
-      .map(|installed| rivet_core::manage::rows(installed, &manage.query, manage.sort))
-      .unwrap_or_default()
+    let rows: Vec<AnyElement> = state
+      .installed_rows()
       .into_iter()
       .map(|(full_name, package)| {
         let toggle = state.can_toggle(full_name);
@@ -896,9 +1100,8 @@ impl Shell {
 
     v_flex()
       .flex_1()
+      .min_h_0()
       .gap_2()
-      .overflow_hidden()
-      .child(controls)
       .children(empty)
       .child(
         v_flex()
@@ -1204,14 +1407,119 @@ fn send(
 
 /// A menu item reading `label`, found in tests by `id`, in `color` when
 /// given and the theme's text color otherwise.
-fn menu_item(id: &'static str, label: &'static str, color: Option<Hsla>) -> PopupMenuItem {
+fn menu_item(
+  id: &'static str,
+  label: impl Into<SharedString>,
+  color: Option<Hsla>,
+) -> PopupMenuItem {
+  let label = label.into();
+
   PopupMenuItem::element(move |_, _| {
     div()
       .id(id)
       .when_some(color, |item, color| item.text_color(color))
-      .child(label)
+      .child(label.clone())
       .test_support()
   })
+}
+
+/// `menu` with Thunderstore's sorts, the current one checked with an arrow
+/// for its direction. Choosing it again reverses it. Best match is offered
+/// only while searching.
+fn sort_menu(menu: PopupMenu, filters: &Filters, shell: &WeakEntity<Shell>) -> PopupMenu {
+  let best_match = (!filters.search.is_empty()).then_some(SortKey::BestMatch);
+  let keys = best_match.into_iter().chain([
+    SortKey::LastUpdated,
+    SortKey::Name,
+    SortKey::Downloads,
+    SortKey::Rating,
+  ]);
+
+  keys.fold(menu, |menu, key| {
+    let current = (filters.sort == key).then_some(filters.direction);
+    let id = match key {
+      SortKey::BestMatch => "sort-best-match",
+      SortKey::LastUpdated => "sort-last-updated",
+      SortKey::Name => "sort-name",
+      SortKey::Downloads => "sort-downloads",
+      SortKey::Rating => "sort-rating",
+    };
+
+    menu.item(
+      menu_item(id, text::sort(key, current), None)
+        .checked(current.is_some())
+        .on_click(send(shell, Msg::SortPressed(key))),
+    )
+  })
+}
+
+/// `menu` with what Thunderstore's list leaves out, each checked while
+/// shown, and clearing the search and every filter.
+fn show_menu(menu: PopupMenu, filters: &Filters, shell: &WeakEntity<Shell>) -> PopupMenu {
+  let clear = shell.clone();
+
+  menu
+    .item(
+      menu_item("show-deprecated", text::SHOW_DEPRECATED, None)
+        .checked(filters.show_deprecated)
+        .on_click(send(shell, Msg::ShowDeprecated(!filters.show_deprecated))),
+    )
+    .item(
+      menu_item("show-nsfw", text::SHOW_NSFW, None)
+        .checked(filters.show_nsfw)
+        .on_click(send(shell, Msg::ShowNsfw(!filters.show_nsfw))),
+    )
+    .separator()
+    .item(
+      menu_item("clear-filters", text::CLEAR_FILTERS, None)
+        .disabled(!filters.is_filtering())
+        .on_click(move |_, window, cx| {
+          clear
+            .update(cx, |this, cx| {
+              this.dispatch(Msg::FiltersCleared, cx);
+              this.empty_package_search(window, cx);
+            })
+            .ok();
+        }),
+    )
+}
+
+/// The chip of `category`, an outline at rest and tinted with the primary
+/// color while `chosen`. Pressing it adds the category to the filter both
+/// views share, or takes it out.
+fn chip(category: &str, chosen: bool, cx: &mut Context<Shell>) -> Button {
+  let palette = Palette::new(cx);
+  let theme = cx.theme();
+  let (fill, outline, ink, hover) = if chosen {
+    let tint = theme.primary.opacity(CHIP_TINT);
+
+    (tint, theme.primary, palette.text, tint)
+  } else {
+    (
+      theme.transparent,
+      palette.border,
+      palette.muted_text,
+      palette.row_hover,
+    )
+  };
+  let variant = ButtonCustomVariant::new(cx)
+    .color(fill)
+    .foreground(ink)
+    .hover(hover)
+    .active(fill);
+  let toggled = category.to_string();
+
+  Button::new(SharedString::from(format!("category-{category}")))
+    .label(SharedString::from(category.to_string()))
+    .xsmall()
+    .custom(variant)
+    .rounded(px(CHIP_RADIUS))
+    .border_1()
+    .border_color(outline)
+    .toggled(chosen)
+    .on_click(cx.listener(move |this, _, _, cx| {
+      this.dispatch(Msg::CategoryToggled(toggled.clone()), cx);
+    }))
 }
 
 /// A full-width row of the sidebar reading `label` from its left edge.
@@ -1356,34 +1664,6 @@ fn render_running(
     .children(waiting)
     .children(cancel)
     .test_support()
-    .into_any_element()
-}
-
-/// The Browse and Installed tabs, with refreshing the package list at the
-/// far end.
-fn render_tabs(tab: Tab, cx: &mut Context<Shell>) -> AnyElement {
-  let tab_button = |id: &'static str, label: &'static str, this_tab: Tab| {
-    Button::new(id)
-      .label(label)
-      .when(tab == this_tab, |button| button.primary())
-      .on_click(cx.listener(move |this, _, _, cx| this.dispatch(Msg::TabChosen(this_tab), cx)))
-  };
-
-  h_flex()
-    .gap_2()
-    .child(tab_button("tab-browse", text::TAB_BROWSE, Tab::Browse))
-    .child(tab_button(
-      "tab-installed",
-      text::TAB_INSTALLED,
-      Tab::Installed,
-    ))
-    .child(div().flex_1())
-    .child(
-      Button::new("refresh")
-        .label(text::REFRESH)
-        .ghost()
-        .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::RefreshPressed, cx))),
-    )
     .into_any_element()
 }
 
@@ -1617,6 +1897,18 @@ const SETTINGS_LABEL_WIDTH: f32 = 140.0;
 const SIDEBAR_WIDTH: f32 = 248.0;
 const GAME_NAME_SIZE: f32 = 22.0;
 const PROFILE_DOT_SIZE: f32 = 7.0;
+/// Tall enough for a small input or button, so the bar is one height on both
+/// views.
+const TOOLBAR_HEIGHT: f32 = 36.0;
+/// Wide enough for a three-digit mod count.
+const VIEW_COUNT_WIDTH: f32 = 28.0;
+const SEARCH_WIDTH: f32 = 340.0;
+const SEARCH_MIN_WIDTH: f32 = 160.0;
+const CHIP_GAP: f32 = 6.0;
+/// Rounds a chip's ends fully at any height.
+const CHIP_RADIUS: f32 = 999.0;
+/// How much of the primary color fills a chosen chip.
+const CHIP_TINT: f32 = 0.14;
 
 /// Whether the readme shown is `full_name`'s.
 fn is_selected(readme: Option<&Readme>, full_name: &str) -> bool {
@@ -1695,108 +1987,10 @@ fn render_readme(readme: Option<&Readme>, cx: &mut Context<Shell>) -> AnyElement
   panel.child(content).into_any_element()
 }
 
-/// The search box, sort buttons, and filters above the package list.
-fn render_filters(
-  browse: &Browse,
-  search: &Entity<InputState>,
-  cx: &mut Context<Shell>,
-) -> AnyElement {
-  let filters = &browse.filters;
-  let best_match = (!filters.search.is_empty()).then_some(SortKey::BestMatch);
-  let sorts: Vec<_> = best_match
-    .into_iter()
-    .chain([
-      SortKey::LastUpdated,
-      SortKey::Name,
-      SortKey::Downloads,
-      SortKey::Rating,
-    ])
-    .map(|key| {
-      let current = (filters.sort == key).then_some(filters.direction);
-      let id = match key {
-        SortKey::BestMatch => "sort-best-match",
-        SortKey::LastUpdated => "sort-last-updated",
-        SortKey::Name => "sort-name",
-        SortKey::Downloads => "sort-downloads",
-        SortKey::Rating => "sort-rating",
-      };
-
-      Button::new(id)
-        .label(text::sort(key, current))
-        .small()
-        .selected(current.is_some())
-        .on_click(cx.listener(move |this, _, _, cx| this.dispatch(Msg::SortPressed(key), cx)))
-    })
-    .collect();
-  let categories: Vec<_> = browse
-    .categories
-    .iter()
-    .map(|category| {
-      let toggled = category.clone();
-
-      Button::new(SharedString::from(format!("category-{category}")))
-        .label(SharedString::from(category.clone()))
-        .xsmall()
-        .selected(filters.categories.contains(category))
-        .on_click(cx.listener(move |this, _, _, cx| {
-          this.dispatch(Msg::CategoryToggled(toggled.clone()), cx);
-        }))
-    })
-    .collect();
-
-  v_flex()
-    .gap_2()
-    .child(
-      h_flex()
-        .gap_2()
-        .child(
-          div()
-            .id("package-search")
-            .flex_1()
-            .child(Input::new(search))
-            .test_support(),
-        )
-        .child(
-          Button::new("clear-filters")
-            .label(text::CLEAR_FILTERS)
-            .disabled(!filters.is_filtering())
-            .on_click(cx.listener(|this, _, window, cx| {
-              this.dispatch(Msg::FiltersCleared, cx);
-              this.empty_package_search(window, cx);
-            })),
-        ),
-    )
-    .child(
-      h_flex()
-        .flex_wrap()
-        .gap_2()
-        .child(div().text_small().child(text::SORT_BY))
-        .children(sorts)
-        .child(div().flex_1())
-        .child(
-          Checkbox::new("show-nsfw")
-            .label(text::SHOW_NSFW)
-            .checked(filters.show_nsfw)
-            .on_click(cx.listener(|this, show: &bool, _, cx| {
-              this.dispatch(Msg::ShowNsfw(*show), cx);
-            })),
-        )
-        .child(
-          Checkbox::new("show-deprecated")
-            .label(text::SHOW_DEPRECATED)
-            .checked(filters.show_deprecated)
-            .on_click(cx.listener(|this, show: &bool, _, cx| {
-              this.dispatch(Msg::ShowDeprecated(*show), cx);
-            })),
-        ),
-    )
-    .child(h_flex().flex_wrap().gap_1().children(categories))
-    .into_any_element()
-}
-
+/// Thunderstore's packages the search and filters keep, or why there are
+/// none, or that they are still loading.
 fn render_browse(
   browse: &Browse,
-  search: &Entity<InputState>,
   icons: &Entity<IconCache>,
   cx: &mut Context<Shell>,
 ) -> AnyElement {
@@ -1844,14 +2038,12 @@ fn render_browse(
       } else {
         text::NO_PACKAGES
       };
-      let filters = render_filters(browse, search, cx);
 
       v_flex()
         .flex_1()
+        .min_h_0()
         .gap_2()
-        .overflow_hidden()
         .image_cache(icons.clone())
-        .child(filters)
         .when(count == 0, |list| list.child(empty))
         .child(rows)
         .into_any_element()

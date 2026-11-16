@@ -106,7 +106,7 @@ impl State {
 
 impl Badges {
   /// The package is outdated and not pinned, so an update would change it.
-  fn updatable(&self) -> bool {
+  pub fn updatable(&self) -> bool {
     self.update.is_some() && !self.pinned
   }
 }

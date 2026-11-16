@@ -217,6 +217,36 @@ impl State {
     self.ecosystem.modloader_package(full_name).is_none()
   }
 
+  /// The open profile's packages the Installed tab lists: [`rows`] for its
+  /// search and order, kept to those the package list puts in a chosen
+  /// category when any is chosen. A package the list lacks is in none. Empty
+  /// until the profile is read.
+  pub fn installed_rows(&self) -> Vec<(&str, &InstalledPackage)> {
+    let Some(installed) = self.profile.as_ref().and_then(Profile::installed) else {
+      return Vec::new();
+    };
+    let mut rows = rows(installed, &self.manage.query, self.manage.sort);
+    let chosen = self
+      .browse
+      .as_ref()
+      .map(|browse| &browse.filters.categories);
+
+    if let Some(chosen) = chosen.filter(|chosen| !chosen.is_empty()) {
+      let index = self
+        .browse
+        .as_ref()
+        .and_then(|browse| browse.index.as_ref());
+
+      rows.retain(|(full_name, _)| {
+        index
+          .and_then(|index| index.package(full_name))
+          .is_some_and(|row| row.categories().any(|category| chosen.contains(category)))
+      });
+    }
+
+    rows
+  }
+
   /// Whether an uninstall is being checked, so no other change can start.
   pub fn is_checking(&self) -> bool {
     matches!(self.manage.pending, Some(Pending::Checking { .. }))
@@ -589,12 +619,58 @@ mod tests {
   }
 
   fn listed(state: &State) -> Vec<&str> {
-    let installed = state.profile.as_ref().and_then(Profile::installed).unwrap();
-
-    rows(installed, &state.manage.query, state.manage.sort)
+    state
+      .installed_rows()
       .into_iter()
       .map(|(full_name, _)| full_name)
       .collect()
+  }
+
+  /// `full_name` as the package list has it, in `categories`.
+  fn in_categories(full_name: &str, categories: &[&str]) -> serde_json::Value {
+    let mut package = crate::test_listed(full_name, &["1.0.0"], false);
+
+    package["categories"] = categories.into();
+
+    package
+  }
+
+  #[test]
+  fn choosing_categories_narrows_the_profile_list_to_mods_in_any_of_them() {
+    let mut state = ready(
+      [
+        package("Owner-Map", &[]),
+        package("Owner-Boat", &[]),
+        package("Owner-Unlisted", &[]),
+      ]
+      .into(),
+    );
+    let index = crate::test_index(vec![
+      in_categories("Owner-Map", &["Maps"]),
+      in_categories("Owner-Boat", &["Mods", "Tools"]),
+    ]);
+
+    update(
+      &mut state,
+      Msg::CachedIndexRead {
+        community: "valheim".to_string(),
+        index: Ok(Some(index)),
+      },
+    );
+
+    assert_eq!(
+      listed(&state),
+      ["Owner-Boat", "Owner-Map", "Owner-Unlisted"]
+    );
+
+    update(&mut state, Msg::CategoryToggled("Tools".to_string()));
+
+    assert_eq!(listed(&state), ["Owner-Boat"]);
+
+    update(&mut state, Msg::CategoryToggled("Maps".to_string()));
+    update(&mut state, Msg::InstalledSearchChanged("map".to_string()));
+
+    assert_eq!(listed(&state), ["Owner-Map"]);
   }
 
   #[test]
