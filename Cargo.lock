@@ -6314,6 +6314,7 @@ dependencies = [
 name = "rivet-commands"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures",
  "rivet-core",
  "rivet-platform",
@@ -6322,6 +6323,7 @@ dependencies = [
  "thunderstore-engine",
  "tokio",
  "toml 1.2.1+spec-1.1.0",
+ "zip",
 ]
 
 [[package]]

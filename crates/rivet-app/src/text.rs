@@ -8,6 +8,7 @@ use rivet_core::launch::LaunchFailure;
 use rivet_core::manage::Removal;
 use rivet_core::notice::Notice;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal, STEAM_LIBRARY};
+use rivet_core::portability::{Destination, Exported, ReadFailure};
 use rivet_core::switcher::{NameRefusal, Naming, ProfileChange};
 use std::path::Path;
 use thunderstore_engine::ecosystem::LoaderKind;
@@ -359,6 +360,7 @@ fn action_verbs(action: &Action) -> (&'static str, &'static str, &'static str) {
     Action::Uninstall(_) => ("Uninstalling", "Uninstalled", "uninstalled"),
     Action::SetEnabled { enabled: true, .. } => ("Enabling", "Enabled", "enabled"),
     Action::SetEnabled { enabled: false, .. } => ("Disabling", "Disabled", "disabled"),
+    Action::Import(_) => ("Importing", "Imported", "imported"),
   }
 }
 
@@ -445,7 +447,45 @@ pub fn finished(action: &Action, changed: &[String]) -> String {
 pub fn operation_failed(action: &Action, failed: &[FailedPackage], changed: &[String]) -> Failure {
   match action {
     Action::Install(package) => install_failed(package, failed, changed),
+    Action::Import(_) => import_failed(failed, changed),
     action => change_failed(action, failed, changed),
+  }
+}
+
+/// An import that did not finish, naming what failed and what it installed.
+///
+/// ```
+/// use rivet_app::text::import_failed;
+/// use rivet_core::install::FailedPackage;
+///
+/// let failed = [FailedPackage {
+///   package: "Owner-Gone-1.0.0".to_string(),
+///   reason: "not on Thunderstore".to_string(),
+/// }];
+/// let failure = import_failed(&failed, &["Owner-Lib".to_string()]);
+///
+/// assert_eq!(failure.headline, "The import did not finish");
+/// assert_eq!(failure.detail, "Owner-Gone-1.0.0: not on Thunderstore");
+/// assert_eq!(
+///   failure.next,
+///   "These were installed: Owner-Lib. Config files are restored only once every mod installs."
+/// );
+/// ```
+pub fn import_failed(failed: &[FailedPackage], installed: &[String]) -> Failure {
+  let detail = failed
+    .iter()
+    .map(|failure| format!("{}: {}", failure.package, failure.reason))
+    .collect::<Vec<_>>()
+    .join("\n");
+  let next = match installed {
+    [] => "Nothing was installed.".to_string(),
+    installed => format!("These were installed: {}.", installed.join(", ")),
+  };
+
+  Failure {
+    headline: "The import did not finish".to_string(),
+    detail,
+    next: format!("{next} Config files are restored only once every mod installs."),
   }
 }
 
@@ -851,6 +891,141 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       title: STEAM_SET_UP.to_string(),
       detail: vec![steam_set_up(&game_name(game))],
     },
+    Notice::ProfileExported { profile, exported } => profile_exported(profile, exported),
+    Notice::ExportFailed {
+      profile,
+      to,
+      reason,
+    } => {
+      let failure = export_failed(profile, to, reason);
+
+      Told {
+        title: failure.headline,
+        detail: vec![failure.detail, failure.next],
+      }
+    }
+    Notice::ImportUnread(failure) => {
+      let failure = read_failure(failure);
+
+      Told {
+        title: failure.headline,
+        detail: vec![failure.detail, failure.next],
+      }
+    }
+  }
+}
+
+pub const EXPORT_CODE: &str = "Export as code";
+pub const EXPORT_FILE: &str = "Export as file…";
+pub const IMPORT_CODE: &str = "Import from code…";
+pub const IMPORT_FILE: &str = "Import from file…";
+pub const IMPORT: &str = "Import";
+pub const READ_CODE: &str = "Continue";
+pub const IMPORT_CODE_PROMPT: &str = "Import a profile from its code";
+pub const IMPORT_CODE_LEAD: &str =
+  "Paste the code someone shared from Rivet or r2modman. The profile is imported as a new one.";
+pub const READING_SHARED: &str = "Reading the shared profile";
+
+/// An export being made, such as `Exporting the Default profile`.
+pub fn exporting(profile: &str) -> String {
+  format!("Exporting the {profile} profile")
+}
+
+/// A finished export: the code that was copied, or the file written.
+///
+/// ```
+/// use rivet_app::text::profile_exported;
+/// use rivet_core::portability::Exported;
+///
+/// let told = profile_exported("Default", &Exported::Code("0193e2b5".to_string()));
+///
+/// assert_eq!(told.title, "Profile code copied: 0193e2b5");
+/// assert_eq!(
+///   told.detail,
+///   ["Anyone can import the Default profile with it in Rivet or r2modman."]
+/// );
+/// ```
+pub fn profile_exported(profile: &str, exported: &Exported) -> Told {
+  match exported {
+    Exported::Code(code) => Told {
+      title: format!("Profile code copied: {code}"),
+      detail: vec![format!(
+        "Anyone can import the {profile} profile with it in Rivet or r2modman."
+      )],
+    },
+    Exported::File(path) => Told {
+      title: format!("Exported the {profile} profile"),
+      detail: vec![path.display().to_string()],
+    },
+  }
+}
+
+/// An export that could not be made.
+pub fn export_failed(profile: &str, to: &Destination, reason: &str) -> Failure {
+  let next = match to {
+    Destination::Code => {
+      "Check your connection, then try again. Thunderstore takes only a few codes a minute."
+    }
+    Destination::File(_) => "Choose a folder you can save to, then try again.",
+  };
+
+  Failure {
+    headline: format!("The {profile} profile could not be exported"),
+    detail: reason.to_string(),
+    next: next.to_string(),
+  }
+}
+
+/// A shared profile that could not be read, with what to do next.
+pub fn read_failure(failure: &ReadFailure) -> Failure {
+  match failure {
+    ReadFailure::UnknownCode => Failure {
+      headline: "No profile has this code".to_string(),
+      detail: "Thunderstore does not know it. It may be mistyped, or it may have expired."
+        .to_string(),
+      next: "Check the code with whoever shared it, or ask them for a new one.".to_string(),
+    },
+    ReadFailure::Damaged(reason) => Failure {
+      headline: "This is not a profile export".to_string(),
+      detail: reason.clone(),
+      next: "Choose a .r2z file exported from Rivet or r2modman, or ask for the profile again."
+        .to_string(),
+    },
+    ReadFailure::Unreachable(reason) => Failure {
+      headline: "Thunderstore could not be reached".to_string(),
+      detail: reason.clone(),
+      next: "Check your connection, then try again.".to_string(),
+    },
+    ReadFailure::Unreadable(reason) => Failure {
+      headline: "The file could not be read".to_string(),
+      detail: reason.clone(),
+      next: "Check that the file exists and that you can open it, then try again.".to_string(),
+    },
+  }
+}
+
+/// The question asked before importing a shared profile, such as `Import
+/// Modded as a new profile`.
+pub fn import_prompt(shared: &str) -> String {
+  format!("Import {shared} as a new profile")
+}
+
+/// What an import brings, such as `It installs 12 mods at the versions it
+/// lists, with their config files.`.
+pub fn import_lead(count: usize) -> String {
+  format!(
+    "It installs {} at the versions it lists, with their config files.",
+    mod_count(count)
+  )
+}
+
+/// Packages a shared profile lists that Thunderstore does not have.
+pub fn import_missing(missing: &[String]) -> Failure {
+  Failure {
+    headline: "Some mods are left out".to_string(),
+    detail: format!("Thunderstore does not have {}.", missing.join(", ")),
+    next: "The rest can still be imported. Press Refresh first in case they were added since."
+      .to_string(),
   }
 }
 

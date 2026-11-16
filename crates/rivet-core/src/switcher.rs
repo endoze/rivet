@@ -136,6 +136,24 @@ impl State {
     }
   }
 
+  /// The names a new profile of the open game cannot have: its profiles, and
+  /// those its imports waiting or running will create.
+  pub fn taken_profile_names(&self) -> Vec<String> {
+    let Some(switcher) = self.switcher.as_ref() else {
+      return Vec::new();
+    };
+    let importing = self
+      .queue
+      .operations
+      .iter()
+      .filter(|operation| {
+        operation.game == switcher.game && matches!(operation.action, install::Action::Import(_))
+      })
+      .map(|operation| operation.profile.clone());
+
+    switcher.names.iter().cloned().chain(importing).collect()
+  }
+
   /// How many packages the open game's profile `name` holds, when known: the
   /// open profile once read, or one read earlier while the game stayed open.
   pub fn mod_count(&self, name: &str) -> Option<usize> {
@@ -182,15 +200,15 @@ impl State {
   }
 
   /// Whether the selected profile can be renamed or deleted: as for
-  /// [`State::can_duplicate_profile`], and it is not the default profile,
-  /// which every game keeps.
+  /// [`State::can_duplicate_profile`], it is not the default profile, which
+  /// every game keeps, and no export is reading it.
   pub fn can_rename_or_delete_profile(&self) -> bool {
     let default = self
       .profile
       .as_ref()
       .is_some_and(|profile| profile.name == DEFAULT_PROFILE);
 
-    self.can_duplicate_profile() && !default
+    self.can_duplicate_profile() && !default && self.exporting.is_none()
   }
 
   fn can_start(&self, naming: Naming) -> bool {
@@ -352,6 +370,7 @@ pub(crate) fn name_submitted(state: &mut State, name: String) -> Vec<Effect> {
     return Vec::new();
   }
 
+  let taken = state.taken_profile_names();
   let Some(switcher) = state.switcher.as_mut() else {
     return Vec::new();
   };
@@ -364,7 +383,7 @@ pub(crate) fn name_submitted(state: &mut State, name: String) -> Vec<Effect> {
 
   let except = (form.naming == Naming::Rename).then_some(form.from.as_str());
 
-  if let Err(refusal) = check_name(&switcher.names, &name, except) {
+  if let Err(refusal) = check_name(&taken, &name, except) {
     switcher.form = Some(NameForm {
       refusal: Some(refusal),
       ..form
@@ -546,6 +565,27 @@ pub(crate) fn changed(
   }
 
   effects
+}
+
+/// Lists `name`, a profile an import created in `game`, while `game` is
+/// open, selecting it when the import was `complete` and no profile change
+/// is being made.
+pub(crate) fn imported(state: &mut State, game: &str, name: String, complete: bool) -> Vec<Effect> {
+  let Some(switcher) = state
+    .switcher
+    .as_mut()
+    .filter(|switcher| switcher.game == game)
+  else {
+    return Vec::new();
+  };
+
+  insert(&mut switcher.names, name.clone());
+
+  if !complete || !state.can_switch_profile() {
+    return Vec::new();
+  }
+
+  select(state, name)
 }
 
 fn insert(names: &mut Vec<String>, name: String) {

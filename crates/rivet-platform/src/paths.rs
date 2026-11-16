@@ -25,3 +25,9 @@ pub fn cache_folder() -> Option<PathBuf> {
 pub fn data_folder() -> Option<PathBuf> {
   dirs::data_dir().map(|data| data.join(APP_FOLDER))
 }
+
+/// The folder a save dialog opens in: the user's documents folder, or the
+/// home folder when the platform reports none. `None` when there is neither.
+pub fn save_folder() -> Option<PathBuf> {
+  dirs::document_dir().or_else(dirs::home_dir)
+}

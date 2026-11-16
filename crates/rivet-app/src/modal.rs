@@ -6,12 +6,13 @@ use crate::{Shell, failure, send, text};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::Dialog;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::component::{Disableable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
   AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
   ParentElement as _, SharedString, Styled as _, TestSupportExt as _, WeakEntity, Window, div,
 };
 use rivet_core::manage::{Folders, Pending, Scope};
+use rivet_core::portability::{Importing, Source};
 use rivet_core::queue::{CloseChoice, Closing};
 use rivet_core::{Msg, State};
 
@@ -25,6 +26,8 @@ pub(crate) enum Modal {
   Naming,
   /// Asks to confirm deleting the selected profile.
   Deleting,
+  /// Asks for a profile code to import, then the name to import it as.
+  Importing,
   /// Asks to confirm an install, listing what comes with it.
   Installing,
   /// Asks about an uninstall or disable in the Installed tab: whether to take
@@ -34,18 +37,24 @@ pub(crate) enum Modal {
 }
 
 /// The modal `state` asks for, given the one `shown` now. When several are
-/// pending, closing comes first, then naming, deleting, installing, and the
-/// Installed tab's question.
+/// pending, closing comes first, then naming, deleting, importing,
+/// installing, and the Installed tab's question.
 ///
 /// Checking an uninstall opens no modal, since the check usually ends before
 /// anyone could read it, but it keeps the Installed tab's question open while
-/// it runs after one.
+/// it runs after one. Reading a profile code keeps the import's modal open
+/// the same way.
 pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal> {
   let switcher = state.switcher.as_ref();
   let pending = match &state.manage.pending {
     Some(Pending::Checking { .. }) => shown == Some(Modal::Pending),
     Some(_) => true,
     None => false,
+  };
+  let importing = match &state.importing {
+    Some(Importing::AskingCode(_) | Importing::Naming(_)) => true,
+    Some(Importing::Reading(Source::Code(_))) => shown == Some(Modal::Importing),
+    _ => false,
   };
 
   if state.closing.is_some() {
@@ -54,6 +63,8 @@ pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal>
     Some(Modal::Naming)
   } else if switcher.is_some_and(|switcher| switcher.deleting.is_some()) {
     Some(Modal::Deleting)
+  } else if importing {
+    Some(Modal::Importing)
   } else if state.confirmation.is_some() {
     Some(Modal::Installing)
   } else if pending {
@@ -76,6 +87,7 @@ impl Shell {
     let shown = std::mem::replace(&mut self.modal, wanted);
     let shell = cx.weak_entity();
     let input = self.profile_name.clone();
+    let code = self.import_code.clone();
 
     window.defer(cx, move |window, cx| {
       if shown.is_some() && window.has_active_dialog(cx) {
@@ -86,6 +98,10 @@ impl Shell {
         Some(Modal::Closing) => window.open_dialog(cx, closing(shell)),
         Some(Modal::Naming) => window.open_dialog(cx, naming(shell, input)),
         Some(Modal::Deleting) => window.open_dialog(cx, deleting(shell)),
+        Some(Modal::Importing) => {
+          code.update(cx, |code, cx| code.set_value("", window, cx));
+          window.open_dialog(cx, importing(shell, code, input));
+        }
         Some(Modal::Installing) => window.open_dialog(cx, installing(shell)),
         Some(Modal::Pending) => window.open_dialog(cx, pending(shell)),
         None => {}
@@ -192,6 +208,114 @@ fn naming(
           .primary()
           .on_click(submit),
       ],
+    };
+
+    frame.fill(dialog, &shell)
+  }
+}
+
+/// The modal importing a shared profile: it asks for the code, with why the
+/// last one could not be read, then the name to import it as, with what it
+/// brings and leaves out. It focuses the field each step asks to fill.
+fn importing(
+  shell: WeakEntity<Shell>,
+  code: Entity<InputState>,
+  name: Entity<InputState>,
+) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
+  let focused = std::cell::Cell::new(None);
+
+  move |dialog, window, cx| {
+    let importing = shell
+      .upgrade()
+      .and_then(|shell| shell.read(cx).state.importing.clone());
+    let Some(importing) = importing else {
+      return dialog;
+    };
+    let palette = Palette::new(cx);
+    let naming = matches!(importing, Importing::Naming(_));
+
+    if focused.replace(Some(naming)) != Some(naming) {
+      let field = if naming { &name } else { &code };
+
+      field.update(cx, |field, cx| field.focus(window, cx));
+    }
+
+    let submit = |submit: fn(&mut Shell, &mut Context<Shell>)| {
+      let shell = shell.clone();
+
+      move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+        shell.update(cx, submit).ok();
+      }
+    };
+    let failure = |id: &'static str, told: text::Failure| {
+      div()
+        .id(id)
+        .child(crate::failure(palette, told))
+        .test_support()
+        .into_any_element()
+    };
+    let (title, body, action) = match importing {
+      Importing::Naming(form) => {
+        let missing = (!form.missing.is_empty())
+          .then(|| failure("import-missing", text::import_missing(&form.missing)));
+        let refusal = form
+          .refusal
+          .as_ref()
+          .map(|refusal| failure("import-name-refused", text::name_refused(refusal)));
+        let count = form.shared.packages.len() - form.missing.len();
+
+        (
+          text::import_prompt(&form.shared.name),
+          [
+            Some(text::import_lead(count).into_any_element()),
+            Some(Input::new(&name).into_any_element()),
+            missing,
+            refusal,
+          ]
+          .into_iter()
+          .flatten()
+          .collect(),
+          Button::new("confirm-import")
+            .label(text::IMPORT)
+            .primary()
+            .on_click(submit(Shell::submit_profile_name)),
+        )
+      }
+      asking => {
+        let reading = matches!(asking, Importing::Reading(_));
+        let unread = match asking {
+          Importing::AskingCode(Some(unread)) => {
+            Some(failure("import-code-unread", text::read_failure(&unread)))
+          }
+          _ => None,
+        };
+
+        (
+          text::IMPORT_CODE_PROMPT.to_string(),
+          [
+            Some(text::IMPORT_CODE_LEAD.into_any_element()),
+            Some(Input::new(&code).into_any_element()),
+            unread,
+          ]
+          .into_iter()
+          .flatten()
+          .collect(),
+          Button::new("read-import-code")
+            .label(text::READ_CODE)
+            .primary()
+            .disabled(reading)
+            .on_click(submit(Shell::submit_import_code)),
+        )
+      }
+    };
+    let frame = Frame {
+      title,
+      id: "import-dialog",
+      body,
+      cancel: "dismiss-import",
+      cancel_label: text::CANCEL,
+      dismissed: Msg::ImportDismissed,
+      actions: vec![action],
     };
 
     frame.fill(dialog, &shell)
@@ -560,6 +684,37 @@ mod tests {
       wanted_modal(&asking(checking()), Some(Modal::Pending)),
       Some(Modal::Pending)
     );
+  }
+
+  #[test]
+  fn importing_by_code_wants_its_modal_and_keeps_it_while_the_code_is_read() {
+    let mut state = pending(false, false, false);
+    let reading = Importing::Reading(Source::Code("abc".to_string()));
+
+    state.importing = Some(Importing::AskingCode(None));
+
+    assert_eq!(wanted_modal(&state, None), Some(Modal::Importing));
+
+    state.importing = Some(reading);
+
+    assert_eq!(wanted_modal(&state, None), None);
+    assert_eq!(
+      wanted_modal(&state, Some(Modal::Importing)),
+      Some(Modal::Importing)
+    );
+  }
+
+  #[test]
+  fn importing_comes_after_deleting_and_before_installing() {
+    let mut state = pending(false, true, true);
+
+    state.importing = Some(Importing::AskingCode(None));
+
+    assert_eq!(wanted_modal(&state, None), Some(Modal::Deleting));
+
+    state.switcher.as_mut().unwrap().deleting = None;
+
+    assert_eq!(wanted_modal(&state, None), Some(Modal::Importing));
   }
 
   #[test]

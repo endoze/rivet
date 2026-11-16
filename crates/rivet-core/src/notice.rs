@@ -4,6 +4,7 @@
 
 use crate::install::{Action, FailedPackage};
 use crate::launch::LaunchFailure;
+use crate::portability::{Destination, Exported, ReadFailure};
 use crate::switcher::ProfileChange;
 use thunderstore_engine::profile::launch::LaunchMode;
 
@@ -78,6 +79,16 @@ pub enum Notice {
   /// Steam's launch options for a game, by its key in the game definitions,
   /// were found to hold the line after being found without it.
   SteamOptionSet(String),
+  /// A profile was exported. A code is on the clipboard too.
+  ProfileExported { profile: String, exported: Exported },
+  /// A profile could not be exported, with the reason.
+  ExportFailed {
+    profile: String,
+    to: Destination,
+    reason: String,
+  },
+  /// A file to import could not be read, so nothing was imported.
+  ImportUnread(ReadFailure),
 }
 
 impl Notice {
@@ -95,10 +106,13 @@ impl Notice {
       Notice::OperationFinished { .. }
       | Notice::ProfileChanged(_)
       | Notice::Launched { .. }
-      | Notice::SteamOptionSet(_) => Level::Success,
+      | Notice::SteamOptionSet(_)
+      | Notice::ProfileExported { .. } => Level::Success,
       Notice::OperationFailed { .. }
       | Notice::ProfileChangeFailed { .. }
-      | Notice::LaunchFailed { .. } => Level::Error,
+      | Notice::LaunchFailed { .. }
+      | Notice::ExportFailed { .. }
+      | Notice::ImportUnread(_) => Level::Error,
       Notice::IndexStale(_) => Level::Warning,
       Notice::OperationCancelled { .. } | Notice::LaunchLineCopied => Level::Info,
     }

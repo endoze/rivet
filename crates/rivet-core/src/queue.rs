@@ -7,6 +7,7 @@ use crate::install::{
 };
 use crate::manage::{SetEnabled, Uninstall};
 use crate::notice::Notice;
+use crate::portability::Import;
 use crate::updates::Update;
 use crate::{Command, Effect, State, settings_screen};
 
@@ -47,6 +48,7 @@ pub enum Work {
   Update(Update),
   Uninstall(Uninstall),
   SetEnabled(SetEnabled),
+  Import(Import),
 }
 
 impl Work {
@@ -56,6 +58,7 @@ impl Work {
       Work::Update(update) => Command::Update(update),
       Work::Uninstall(uninstall) => Command::Uninstall(uninstall),
       Work::SetEnabled(set) => Command::SetEnabled(set),
+      Work::Import(import) => Command::Import(import),
     }
   }
 }
@@ -233,10 +236,11 @@ pub(crate) fn finished(
   } = match outcome {
     Ok(outcome) => outcome,
     Err(reason) => {
-      let failed = vec![FailedPackage {
-        package: action.packages().join(", "),
-        reason,
-      }];
+      let package = match &action {
+        Action::Import(_) => name.clone(),
+        action => action.packages().join(", "),
+      };
+      let failed = vec![FailedPackage { package, reason }];
       let mut effects = vec![Effect::Notify(Notice::OperationFailed {
         game,
         profile: name,
@@ -266,6 +270,14 @@ pub(crate) fn finished(
     };
   }
 
+  let listing = match &action {
+    Action::Import(_) => {
+      let complete = failed.is_empty() && cancelled.is_empty();
+
+      crate::switcher::imported(state, &game, name.clone(), complete)
+    }
+    _ => Vec::new(),
+  };
   let notice = if !failed.is_empty() {
     Notice::OperationFailed {
       game,
@@ -291,6 +303,7 @@ pub(crate) fn finished(
   };
   let mut effects = vec![Effect::Notify(notice)];
 
+  effects.extend(listing);
   effects.extend(advance(state));
 
   effects

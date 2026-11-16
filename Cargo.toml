@@ -9,6 +9,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+base64 = "0.22"
 rivet-core = { path = "crates/rivet-core" }
 rivet-commands = { path = "crates/rivet-commands" }
 rivet-platform = { path = "crates/rivet-platform" }
@@ -24,6 +25,7 @@ tempfile = "3"
 thunderstore-engine = { version = "0.4.1", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync"] }
 toml = "1"
+zip = "8.6"
 
 # Full debug info for gpui makes each test binary near 1 GB. Line tables
 # keep file:line backtraces for Rivet's own code at a fraction of the size.

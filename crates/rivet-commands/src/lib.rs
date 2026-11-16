@@ -1,6 +1,8 @@
 //! Runs [`Command`]s on a Tokio thread of their own and answers each with a
 //! [`Msg`], so the UI thread never waits on disk or network.
 
+mod portability;
+
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use rivet_core::browse::{Fetch, Index};
@@ -275,6 +277,22 @@ pub async fn run(
       request: request.id,
       readme: fetch_readme(config, &request).await,
     },
+    Command::Export(export) => Msg::ProfileExported {
+      result: portability::export(config, &export).await,
+      export,
+    },
+    Command::ReadShared { community, source } => Msg::SharedRead {
+      shared: portability::read_shared(config, &community, &source).await,
+      source,
+    },
+    Command::Import(import) => {
+      let operation = import.operation;
+      let outcome = portability::import(config, import, progress.clone()).await;
+
+      config.cancels.forget(operation);
+
+      Msg::OperationFinished { operation, outcome }
+    }
   };
 
   Some(answer)
@@ -858,7 +876,7 @@ mod tests {
   use thunderstore_engine::test_support::{MockThunderstore, index_json, readme, readme_path};
 
   /// A config whose files sit in `dir`, against the public Thunderstore.
-  fn config_in(dir: &TempDir) -> Config {
+  pub(crate) fn config_in(dir: &TempDir) -> Config {
     Config {
       settings: dir.path().join("config").join("settings.toml"),
       cache: dir.path().join("cache"),
@@ -875,7 +893,7 @@ mod tests {
   /// A mock Thunderstore serving its package index, and its Last-Modified to a
   /// HEAD, as the valheim community's,
   /// and answering `404` for the `gone` community.
-  fn mock_thunderstore() -> MockThunderstore {
+  pub(crate) fn mock_thunderstore() -> MockThunderstore {
     let mut mock = MockThunderstore::start();
     let url = mock.url();
     let server = mock.server_mut();
@@ -900,20 +918,20 @@ mod tests {
     mock
   }
 
-  fn config_for(dir: &TempDir, mock: &MockThunderstore) -> Config {
+  pub(crate) fn config_for(dir: &TempDir, mock: &MockThunderstore) -> Config {
     Config {
       thunderstore: mock.url(),
       ..config_in(dir)
     }
   }
 
-  fn run_now(command: Command, config: &Config) -> Msg {
+  pub(crate) fn run_now(command: Command, config: &Config) -> Msg {
     run_reporting(command, config).1
   }
 
   /// Runs `command`, returning the messages it sent along the way and its
   /// answer.
-  fn run_reporting(command: Command, config: &Config) -> (Vec<Msg>, Msg) {
+  pub(crate) fn run_reporting(command: Command, config: &Config) -> (Vec<Msg>, Msg) {
     let (along_the_way, answer) = run_any(command, config);
 
     (along_the_way, answer.expect("the command is answered"))
@@ -921,7 +939,7 @@ mod tests {
 
   /// Runs `command`, returning the messages it sent along the way and its
   /// answer, if it has one.
-  fn run_any(command: Command, config: &Config) -> (Vec<Msg>, Option<Msg>) {
+  pub(crate) fn run_any(command: Command, config: &Config) -> (Vec<Msg>, Option<Msg>) {
     let (progress, mut sent) = unbounded();
     let answer = tokio::runtime::Builder::new_current_thread()
       .enable_all()
@@ -1152,7 +1170,7 @@ mod tests {
 
   /// Each package of `profile` as its `Owner-Name`, version, and whether it
   /// is enabled.
-  fn packages(profile: &Installed) -> Vec<(String, String, bool)> {
+  pub(crate) fn packages(profile: &Installed) -> Vec<(String, String, bool)> {
     profile
       .iter()
       .map(|(name, package)| (name.clone(), package.version.clone(), package.enabled))
@@ -1167,13 +1185,13 @@ mod tests {
     (name.to_string(), "1.0.0".to_string(), false)
   }
 
-  fn names(names: &[&str]) -> Vec<String> {
+  pub(crate) fn names(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| name.to_string()).collect()
   }
 
   /// The mock's package index, plus `Owner-ModE`, which needs `Owner-ModA` and
   /// whose archive the mock answers with `404`.
-  fn mock_index(mock: &mut MockThunderstore) -> Index {
+  pub(crate) fn mock_index(mock: &mut MockThunderstore) -> Index {
     let url = mock.url();
     let mut packages: Vec<serde_json::Value> = serde_json::from_str(&index_json(&url)).unwrap();
     let mut broken = packages
@@ -1211,7 +1229,7 @@ mod tests {
     })
   }
 
-  fn default_profile(config: &Config) -> PathBuf {
+  pub(crate) fn default_profile(config: &Config) -> PathBuf {
     config
       .data
       .join("valheim")
@@ -1416,7 +1434,7 @@ mod tests {
     }
   }
 
-  fn profile_folder(config: &Config, name: &str) -> PathBuf {
+  pub(crate) fn profile_folder(config: &Config, name: &str) -> PathBuf {
     config.data.join("valheim").join("profiles").join(name)
   }
 
@@ -1601,7 +1619,7 @@ mod tests {
 
   /// A config against a mock Thunderstore whose Default profile holds
   /// `Owner-ModC` and the `Owner-ModA` it needs.
-  fn with_mod_c(dir: &TempDir, mock: &mut MockThunderstore) -> Config {
+  pub(crate) fn with_mod_c(dir: &TempDir, mock: &mut MockThunderstore) -> Config {
     let config = config_for(dir, mock);
     let index = mock_index(mock);
 
@@ -1611,7 +1629,7 @@ mod tests {
     config
   }
 
-  fn set_enabled(packages: &[&str], enabled: bool) -> Command {
+  pub(crate) fn set_enabled(packages: &[&str], enabled: bool) -> Command {
     Command::SetEnabled(SetEnabled {
       operation: 5,
       game: "valheim".to_string(),

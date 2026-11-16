@@ -7,6 +7,7 @@ pub mod launch;
 pub mod manage;
 pub mod notice;
 pub mod picker;
+pub mod portability;
 pub mod queue;
 pub mod readme;
 pub mod settings;
@@ -20,6 +21,7 @@ use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
 use notice::Notice;
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
+use portability::{Export, Exported, Exporting, Importing, ReadFailure, Shared, Source};
 use queue::{CloseChoice, Closing, Queue};
 use readme::Readme;
 use settings::{GameSettings, Settings};
@@ -80,6 +82,10 @@ pub struct State {
   pub readme: Option<Readme>,
   /// How many readme fetches have been started, so each gets its own id.
   pub readmes: u64,
+  /// Exporting the open profile. One running outlives leaving its game.
+  pub exporting: Option<Exporting>,
+  /// Importing a shared profile into the open game. `None` outside a game.
+  pub importing: Option<Importing>,
 }
 
 impl State {
@@ -109,6 +115,8 @@ impl State {
       manage: Manage::default(),
       readme: None,
       readmes: 0,
+      exporting: None,
+      importing: None,
     }
   }
 }
@@ -305,6 +313,34 @@ pub enum Msg {
   ChangeFolderPressed(Target),
   /// The launch arguments on the settings screen were edited.
   LaunchArgumentsChanged(String),
+  /// Export as code was pressed on the open profile.
+  ExportCodePressed,
+  /// Export as file was pressed on the open profile.
+  ExportFilePressed,
+  /// The save dialog closed, with `None` if it was cancelled.
+  ExportFileChosen(Option<PathBuf>),
+  /// Import from code was pressed.
+  ImportCodePressed,
+  /// A profile code was entered.
+  ImportCodeSubmitted(String),
+  /// Import from file was pressed.
+  ImportFilePressed,
+  /// The file dialog closed, with `None` if it was cancelled.
+  ImportFileChosen(Option<PathBuf>),
+  /// What `source` shares was read, or why it could not be.
+  SharedRead {
+    source: Source,
+    shared: Result<Shared, ReadFailure>,
+  },
+  /// A name for the profile to import as was entered.
+  ImportNameSubmitted(String),
+  /// The import was closed before it started.
+  ImportDismissed,
+  /// An [`Export`] ended: where the profile went, or why it did not.
+  ProfileExported {
+    export: Export,
+    result: Result<Exported, String>,
+  },
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -325,6 +361,13 @@ pub enum Effect {
   OpenUrl(String),
   /// Close the window. Needs the window, so the shell runs it. Not answered.
   CloseWindow,
+  /// Ask the user where to save an export, suggesting this file name. Needs
+  /// the window, so the shell runs it. Answered with
+  /// [`Msg::ExportFileChosen`].
+  ChooseExportFile(String),
+  /// Ask the user for a profile export to import. Needs the window, so the
+  /// shell runs it. Answered with [`Msg::ImportFileChosen`].
+  ChooseImportFile,
   /// Put this text on the clipboard. Needs the platform's clipboard, which
   /// the shell holds. Not answered.
   CopyToClipboard(String),
@@ -405,6 +448,15 @@ pub enum Command {
   ChangeProfile { game: String, change: ProfileChange },
   /// Answered with [`Msg::ReadmeFetched`].
   FetchReadme(readme::Request),
+  /// Export a profile as r2modman does. Answered with
+  /// [`Msg::ProfileExported`].
+  Export(Export),
+  /// Read the profile a code or file shares, changing nothing. Answered with
+  /// [`Msg::SharedRead`].
+  ReadShared { community: String, source: Source },
+  /// Answered with any number of [`Msg::OperationProgress`], then
+  /// [`Msg::OperationFinished`].
+  Import(portability::Import),
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -484,6 +536,11 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.switcher = None;
       state.manage.pending = None;
       state.readme = None;
+      state.importing = None;
+
+      if state.exporting == Some(Exporting::ChoosingFile) {
+        state.exporting = None;
+      }
 
       if !state.is_launching() {
         state.launch = None;
@@ -597,6 +654,21 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::SettingsClosed => settings_screen::closed(state),
     Msg::ChangeFolderPressed(target) => settings_screen::change_pressed(state, target),
     Msg::LaunchArgumentsChanged(arguments) => settings_screen::arguments_changed(state, arguments),
+    Msg::ExportCodePressed => portability::export_code_pressed(state),
+    Msg::ExportFilePressed => portability::export_file_pressed(state),
+    Msg::ExportFileChosen(path) => portability::export_file_chosen(state, path),
+    Msg::ImportCodePressed => portability::import_code_pressed(state),
+    Msg::ImportCodeSubmitted(code) => portability::import_code_submitted(state, code),
+    Msg::ImportFilePressed => portability::import_file_pressed(state),
+    Msg::ImportFileChosen(path) => portability::import_file_chosen(state, path),
+    Msg::SharedRead { source, shared } => portability::shared_read(state, source, shared),
+    Msg::ImportNameSubmitted(name) => portability::import_name_submitted(state, name),
+    Msg::ImportDismissed => {
+      state.importing = None;
+
+      Vec::new()
+    }
+    Msg::ProfileExported { export, result } => portability::exported(state, export, result),
   }
 }
 

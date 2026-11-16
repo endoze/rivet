@@ -139,6 +139,8 @@ pub enum Action {
     packages: Vec<String>,
     enabled: bool,
   },
+  /// Create the profile from a shared one, installing these packages.
+  Import(Vec<String>),
 }
 
 impl Action {
@@ -149,7 +151,8 @@ impl Action {
       Action::Install(package) => std::slice::from_ref(package),
       Action::Update(packages)
       | Action::Uninstall(packages)
-      | Action::SetEnabled { packages, .. } => packages,
+      | Action::SetEnabled { packages, .. }
+      | Action::Import(packages) => packages,
     }
   }
 }
@@ -193,7 +196,8 @@ pub enum Stage {
 /// A package an operation could not change, with the reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailedPackage {
-  /// The package as `Owner-Name`, or a folder an uninstall could not delete.
+  /// The package as `Owner-Name`, a folder an uninstall could not delete, or
+  /// the profile an import could not create or restore config files into.
   pub package: String,
   pub reason: String,
 }
@@ -243,12 +247,16 @@ impl State {
 
   /// Whether a change to the open profile can be asked for: the profile has
   /// been read, no uninstall is being checked, no launch is being prepared,
-  /// and no profile change is being made. A change asked for while another
-  /// runs waits its turn.
+  /// no profile change is being made, and no export is reading it. A change
+  /// asked for while another runs waits its turn.
   pub fn can_install(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
 
-    ready && !self.is_checking() && !self.is_launching() && !self.is_changing_profile()
+    ready
+      && !self.is_checking()
+      && !self.is_launching()
+      && !self.is_changing_profile()
+      && !self.is_profile_exporting()
   }
 }
 

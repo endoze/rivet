@@ -36,12 +36,14 @@ use rivet_core::launch::{AttemptStatus, OptionStatus, SteamOption};
 use rivet_core::manage::{Sort, Tab};
 use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
+use rivet_core::portability::{Exporting, Importing};
 use rivet_core::readme::{Package, Readme, Status};
 use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
+use std::path::PathBuf;
 use thunderstore_engine::profile::launch::LaunchMode;
 use thunderstore_engine::query::PackageRow;
 
@@ -52,6 +54,8 @@ pub struct Shell {
   search: Entity<InputState>,
   package_search: Entity<InputState>,
   profile_name: Entity<InputState>,
+  /// The field a profile code to import is entered in.
+  import_code: Entity<InputState>,
   /// Text for the profile name field, put there and focused on the next
   /// render, since setting it needs the window.
   fill_profile_name: Option<String>,
@@ -119,6 +123,16 @@ impl Shell {
         }
       },
     );
+    let import_code = cx.new(|cx| InputState::new(window, cx));
+    let coded = cx.subscribe_in(
+      &import_code,
+      window,
+      |this: &mut Self, _, event: &InputEvent, _, cx| {
+        if let InputEvent::PressEnter { .. } = event {
+          this.submit_import_code(cx);
+        }
+      },
+    );
     let installed_search =
       cx.new(|cx| InputState::new(window, cx).placeholder(text::INSTALLED_SEARCH_PLACEHOLDER));
     let installed_searched = cx.subscribe_in(
@@ -176,6 +190,7 @@ impl Shell {
       search,
       package_search,
       profile_name,
+      import_code,
       fill_profile_name: None,
       launch_arguments,
       fill_launch_arguments: None,
@@ -188,6 +203,7 @@ impl Shell {
         searched,
         package_searched,
         named,
+        coded,
         installed_searched,
         arguments_typed,
         focused,
@@ -211,6 +227,8 @@ impl Shell {
           self.commands.unbounded_send(command).ok();
         }
         Effect::ChooseFolder => self.choose_folder(cx),
+        Effect::ChooseExportFile(suggested) => self.choose_export_file(&suggested, cx),
+        Effect::ChooseImportFile => self.choose_import_file(cx),
         Effect::FillProfileName(text) => self.fill_profile_name = Some(text),
         Effect::FillLaunchArguments(text) => self.fill_launch_arguments = Some(text),
         Effect::OpenUrl(url) => cx.open_url(&url),
@@ -232,10 +250,22 @@ impl Shell {
       .update(cx, |input, cx| input.set_value("", window, cx));
   }
 
+  /// Sends the name field's text as the name of the import being asked
+  /// about, or else of the profile the switcher asked a name for.
   fn submit_profile_name(&mut self, cx: &mut Context<Self>) {
     let name = self.profile_name.read(cx).value().to_string();
+    let msg = match self.state.importing {
+      Some(Importing::Naming(_)) => Msg::ImportNameSubmitted(name),
+      _ => Msg::ProfileNameSubmitted(name),
+    };
 
-    self.dispatch(Msg::ProfileNameSubmitted(name), cx);
+    self.dispatch(msg, cx);
+  }
+
+  fn submit_import_code(&mut self, cx: &mut Context<Self>) {
+    let code = self.import_code.read(cx).value().to_string();
+
+    self.dispatch(Msg::ImportCodeSubmitted(code), cx);
   }
 
   fn choose_folder(&mut self, cx: &mut Context<Self>) {
@@ -246,8 +276,30 @@ impl Shell {
       prompt: None,
     });
 
+    self.answer_path_prompt(answer, Msg::FolderChosen, cx);
+  }
+
+  fn choose_import_file(&mut self, cx: &mut Context<Self>) {
+    let answer = cx.prompt_for_paths(PathPromptOptions {
+      files: true,
+      directories: false,
+      multiple: false,
+      prompt: None,
+    });
+
+    self.answer_path_prompt(answer, Msg::ImportFileChosen, cx);
+  }
+
+  /// Dispatches the first path a dialog answers with, wrapped by `msg`, or
+  /// `None` when it was cancelled or could not open.
+  fn answer_path_prompt<Closed, Failed>(
+    &mut self,
+    answer: impl Future<Output = Result<Result<Option<Vec<PathBuf>>, Failed>, Closed>> + 'static,
+    msg: fn(Option<PathBuf>) -> Msg,
+    cx: &mut Context<Self>,
+  ) {
     cx.spawn(async move |this, cx| {
-      let folder = answer
+      let path = answer
         .await
         .ok()
         .and_then(Result::ok)
@@ -255,7 +307,23 @@ impl Shell {
         .and_then(|paths| paths.into_iter().next());
 
       this
-        .update(cx, |this, cx| this.dispatch(Msg::FolderChosen(folder), cx))
+        .update(cx, |this, cx| this.dispatch(msg(path), cx))
+        .ok();
+    })
+    .detach();
+  }
+
+  fn choose_export_file(&mut self, suggested: &str, cx: &mut Context<Self>) {
+    let folder = rivet_platform::paths::save_folder().unwrap_or_default();
+    let answer = cx.prompt_for_new_path(&folder, Some(suggested));
+
+    cx.spawn(async move |this, cx| {
+      let path = answer.await.ok().and_then(Result::ok).flatten();
+
+      this
+        .update(cx, |this, cx| {
+          this.dispatch(Msg::ExportFileChosen(path), cx)
+        })
         .ok();
     })
     .detach();
@@ -406,10 +474,10 @@ impl Shell {
   }
 
   /// What the app is busy with outside the queue: starting a game, changing
-  /// a profile, finding a game from the picker or checking a folder chosen in
-  /// settings, refreshing the package list,
-  /// or checking Steam's launch options, first match in that order. `None`
-  /// when it is busy with none.
+  /// a profile, exporting one, reading one to import, finding a game from
+  /// the picker or checking a folder chosen in settings, refreshing the
+  /// package list, or checking Steam's launch options, first match in that
+  /// order. `None` when it is busy with none.
   fn status_note(&self) -> Option<String> {
     let state = &self.state;
     let launching = state
@@ -423,6 +491,14 @@ impl Shell {
         .as_ref()
         .and_then(|switcher| switcher.changing.as_ref())
         .map(text::changing)
+    };
+    let exporting = || match &state.exporting {
+      Some(Exporting::Running(export)) => Some(text::exporting(&export.profile)),
+      _ => None,
+    };
+    let reading = || match &state.importing {
+      Some(Importing::Reading(_)) => Some(text::READING_SHARED.to_string()),
+      _ => None,
     };
     let finding = || match (&state.screen, &state.picker.step) {
       (Screen::Picker, Step::Locating(game)) => Some(text::locating(&self.game_name(game))),
@@ -449,6 +525,8 @@ impl Shell {
 
     launching
       .or_else(changing)
+      .or_else(exporting)
+      .or_else(reading)
       .or_else(finding)
       .or_else(refreshing)
       .or_else(checking_steam)
@@ -813,6 +891,8 @@ impl Shell {
     let can_switch = state.can_switch_profile();
     let can_rename_or_delete = state.can_rename_or_delete_profile();
     let can_duplicate = state.can_duplicate_profile();
+    let can_export = state.can_export_profile();
+    let can_import = state.can_import_profile();
     let profiles: Vec<(String, Option<usize>)> = state
       .profile_names()
       .into_iter()
@@ -844,6 +924,16 @@ impl Shell {
                 .disabled(!can_switch)
                 .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Create))),
             )
+            .item(
+              menu_item("import-code", text::IMPORT_CODE, None)
+                .disabled(!can_import)
+                .on_click(send(&shell, Msg::ImportCodePressed)),
+            )
+            .item(
+              menu_item("import-file", text::IMPORT_FILE, None)
+                .disabled(!can_import)
+                .on_click(send(&shell, Msg::ImportFilePressed)),
+            )
         }
       });
     let actions = Button::new("profile-actions")
@@ -866,6 +956,16 @@ impl Shell {
               menu_item("duplicate-profile", text::DUPLICATE_PROFILE, None)
                 .disabled(!can_duplicate)
                 .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Duplicate))),
+            )
+            .item(
+              menu_item("export-code", text::EXPORT_CODE, None)
+                .disabled(!can_export)
+                .on_click(send(&shell, Msg::ExportCodePressed)),
+            )
+            .item(
+              menu_item("export-file", text::EXPORT_FILE, None)
+                .disabled(!can_export)
+                .on_click(send(&shell, Msg::ExportFilePressed)),
             )
             .separator()
             .item(
