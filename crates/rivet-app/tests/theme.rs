@@ -1,5 +1,5 @@
 use gpui_kit::component::{ActiveTheme as _, ThemeMode};
-use gpui_kit::{App, Hsla, TestAppContext, WindowAppearance, rgb, rgba};
+use gpui_kit::{App, Hsla, TestAppContext, WindowAppearance, px, rgb, rgba, size};
 use rivet_app::palette::Palette;
 use rivet_app::theme;
 use rivet_core::settings::{Appearance, ThemeFamily};
@@ -202,6 +202,30 @@ fn match_system_follows_the_os_and_light_or_dark_ignores_it() {
 }
 
 #[test]
+fn the_automatic_interface_size_enlarges_only_dense_displays_the_os_does_not_scale() {
+  let cases = [
+    (1.0, (1920., 1080.), 100),
+    (1.0, (1366., 768.), 100),
+    (1.0, (1080., 1920.), 100),
+    (1.0, (2560., 1440.), 115),
+    (1.0, (2880., 1800.), 130),
+    (1.0, (3840., 2160.), 150),
+    (1.0, (2160., 3840.), 150),
+    (1.0, (5120., 2880.), 150),
+    (2.0, (1920., 1080.), 100),
+    (1.5, (2560., 1440.), 100),
+  ];
+
+  for (scale_factor, (width, height), expected) in cases {
+    assert_eq!(
+      theme::automatic_size(scale_factor, size(px(width), px(height))),
+      expected,
+      "{width}x{height} at scale {scale_factor}"
+    );
+  }
+}
+
+#[test]
 fn small_text_uses_the_spec_size_not_the_rem_scale() {
   let sources = [
     ("lib.rs", include_str!("../src/lib.rs")),
@@ -216,6 +240,22 @@ fn small_text_uses_the_spec_size_not_the_rem_scale() {
         "{file} sizes text with {scale}, a fraction of the 14px body; use text_small for the spec's 13px"
       );
     }
+  }
+}
+
+#[test]
+fn fixed_sizes_scale_with_the_interface_size() {
+  let sources = [
+    ("lib.rs", include_str!("../src/lib.rs")),
+    ("modal.rs", include_str!("../src/modal.rs")),
+    ("segmented.rs", include_str!("../src/segmented.rs")),
+  ];
+
+  for (file, source) in sources {
+    assert!(
+      !source.contains("px("),
+      "{file} sizes something in plain pixels, which stays put as the interface size changes; use theme::spec"
+    );
   }
 }
 

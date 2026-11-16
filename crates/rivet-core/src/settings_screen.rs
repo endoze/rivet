@@ -142,6 +142,19 @@ pub(crate) fn theme_chosen(state: &mut State, theme: ThemeFamily) -> Vec<Effect>
   vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
 }
 
+/// Records the interface size, `None` for the display's, and saves it. The
+/// shell scales the interface from the settings.
+pub(crate) fn interface_size_chosen(state: &mut State, size: Option<u16>) -> Vec<Effect> {
+  if !matches!(state.screen, Screen::Settings(_)) || state.settings.interface_size == size {
+    return Vec::new();
+  }
+
+  state.settings.interface_size = size;
+  state.settings_screen.unsaved = false;
+
+  vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+}
+
 /// Asks for a new `target` folder, unless another change is under way.
 pub(crate) fn change_pressed(state: &mut State, target: Target) -> Vec<Effect> {
   let screen = &mut state.settings_screen;
@@ -741,6 +754,32 @@ mod tests {
     let effects = update(&mut state, Msg::ThemeChosen(ThemeFamily::Default));
 
     assert_eq!(effects, vec![]);
+  }
+
+  #[test]
+  fn choosing_an_interface_size_saves_it_and_auto_hands_it_back_to_the_display() {
+    let mut state = on_settings("valheim");
+
+    let chosen = update(&mut state, Msg::InterfaceSizeChosen(Some(130)));
+
+    assert_eq!(state.settings.interface_size, Some(130));
+    assert_eq!(
+      chosen,
+      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+    );
+    assert_eq!(
+      update(&mut state, Msg::InterfaceSizeChosen(Some(130))),
+      vec![],
+      "choosing the size already set saved again"
+    );
+
+    let auto = update(&mut state, Msg::InterfaceSizeChosen(None));
+
+    assert_eq!(state.settings.interface_size, None);
+    assert_eq!(
+      auto,
+      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+    );
   }
 
   #[test]

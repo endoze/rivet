@@ -8,6 +8,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use thunderstore_engine::profile::launch::Runtime;
 
+/// The interface sizes settings offer, as percentages of the spec's sizes.
+pub const INTERFACE_SIZES: [u16; 5] = [90, 100, 115, 130, 150];
+
 /// The settings file's contents.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,6 +29,11 @@ pub struct Settings {
   /// its light or dark member.
   #[serde(skip_serializing_if = "ThemeFamily::is_default")]
   pub theme: ThemeFamily,
+  /// How large Rivet draws its interface, as a percentage of the spec's
+  /// sizes, one of [`INTERFACE_SIZES`]. `None` picks one for the display the
+  /// window is on.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub interface_size: Option<u16>,
   /// Per-game settings, keyed by community slug.
   pub games: BTreeMap<String, GameSettings>,
 }
@@ -320,6 +328,30 @@ mod tests {
     let saved = serde_json::to_value(&settings).unwrap();
 
     assert_eq!(saved["theme"], "one");
+    assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
+  }
+
+  #[test]
+  fn the_interface_size_follows_the_display_until_one_is_chosen() {
+    let older: Settings = serde_json::from_value(serde_json::json!({ "games": {} })).unwrap();
+
+    assert_eq!(Settings::default().interface_size, None);
+    assert_eq!(older.interface_size, None);
+    assert!(
+      serde_json::to_value(Settings::default()).unwrap()["interface_size"].is_null(),
+      "an unchosen size is written to the file"
+    );
+  }
+
+  #[test]
+  fn a_chosen_interface_size_is_saved_as_a_percentage_and_read_back() {
+    let settings = Settings {
+      interface_size: Some(130),
+      ..Settings::default()
+    };
+    let saved = serde_json::to_value(&settings).unwrap();
+
+    assert_eq!(saved["interface_size"], 130);
     assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
   }
 }

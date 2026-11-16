@@ -2,7 +2,7 @@
 //! and what each holds.
 
 use crate::palette::Palette;
-use crate::theme::Typography as _;
+use crate::theme::{Typography as _, spec};
 use crate::{Shell, failure, send, text};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -12,7 +12,7 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{Disableable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::{
   AnyElement, App, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
-  ParentElement as _, SharedString, Styled as _, TestSupportExt as _, WeakEntity, Window, div, px,
+  ParentElement as _, SharedString, Styled as _, TestSupportExt as _, WeakEntity, Window, div,
 };
 use rivet_core::install::Confirmation;
 use rivet_core::manage::{Folders, Pending, Scope};
@@ -459,9 +459,11 @@ fn version_menu(shell: &WeakEntity<Shell>, confirmation: &Confirmation) -> impl 
     .label(label)
     .small()
     .dropdown_caret(true)
-    .dropdown_menu(move |menu: PopupMenu, _, _| {
+    .dropdown_menu(move |menu: PopupMenu, window, _| {
       choices.iter().fold(
-        menu.scrollable(true).max_h(px(VERSION_MENU_HEIGHT)),
+        menu
+          .scrollable(true)
+          .max_h(spec(VERSION_MENU_HEIGHT).to_pixels(window.rem_size())),
         |menu, (version, label)| {
           let id = SharedString::from(format!(
             "version-{}",

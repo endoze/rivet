@@ -165,6 +165,17 @@ pub const APPEARANCE: &str = "Appearance";
 pub const APPEARANCE_SYSTEM: &str = "Match system";
 pub const APPEARANCE_LIGHT: &str = "Light";
 pub const APPEARANCE_DARK: &str = "Dark";
+pub const INTERFACE_SIZE: &str = "Interface size";
+pub const INTERFACE_SIZE_AUTO: &str = "Auto";
+
+/// An interface size as settings offer it.
+///
+/// ```
+/// assert_eq!(rivet_app::text::percent(115), "115%");
+/// ```
+pub fn percent(size: u16) -> String {
+  format!("{size}%")
+}
 
 pub const LOADER_FILES: &str = "Loader files";
 pub const REMOVE: &str = "Remove";

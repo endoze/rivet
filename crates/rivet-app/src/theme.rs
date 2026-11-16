@@ -2,8 +2,8 @@
 //! Plex fonts they set text in, both bundled into the binary.
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode};
-use gpui_kit::{App, FontFeatures, Styled, Window, WindowAppearance, px};
-use rivet_core::settings::{Appearance, ThemeFamily};
+use gpui_kit::{App, FontFeatures, Pixels, Rems, Size, Styled, Window, WindowAppearance, px, rems};
+use rivet_core::settings::{Appearance, INTERFACE_SIZES, ThemeFamily};
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -17,13 +17,15 @@ pub const MONO: &str = "IBM Plex Mono";
 pub const BODY_TEXT_SIZE: f32 = 14.0;
 /// Small text, in pixels: hints, bylines, and the status bar.
 pub const SMALL_TEXT_SIZE: f32 = 13.0;
+/// Monospaced text, in pixels: the Steam launch line and code in a readme.
+const MONO_TEXT_SIZE: f32 = 13.0;
 
 /// The spec's type scale and figure style on any element that sets text.
 pub trait Typography: Styled + Sized {
-  /// Sets text at [`SMALL_TEXT_SIZE`]. gpui's `text_sm` is 0.875rem, which
-  /// is 12.25px on a 14px body.
+  /// Sets text at [`SMALL_TEXT_SIZE`], scaled with the interface size.
+  /// gpui's `text_sm` is 0.875rem, which is 12.25px on a 14px body.
   fn text_small(self) -> Self {
-    self.text_size(px(SMALL_TEXT_SIZE))
+    self.text_size(spec(SMALL_TEXT_SIZE))
   }
 
   /// Sets figures at one width, so counts, versions, and download totals
@@ -227,6 +229,81 @@ pub fn apply(family: ThemeFamily, appearance: Appearance, window: &Window, cx: &
 
   if theme.mode != mode || theme.theme_name() != wanted.name {
     change(family, mode, cx);
+  }
+}
+
+/// A size the spec gives in pixels, scaled with the interface size. Spec
+/// pixels assume 14px body text, the rem, so this is that many fourteenths
+/// of a rem.
+///
+/// ```
+/// use gpui_kit::{px, rems};
+/// use rivet_app::theme;
+///
+/// assert_eq!(theme::spec(21.), rems(1.5));
+/// assert_eq!(theme::spec(21.).to_pixels(px(28.)), px(42.));
+/// ```
+pub fn spec(pixels: f32) -> Rems {
+  rems(pixels / BODY_TEXT_SIZE)
+}
+
+/// The factor an interface size of `percent` scales the spec's sizes by,
+/// clamped to the sizes settings offer.
+///
+/// ```
+/// use rivet_app::theme;
+///
+/// assert_eq!(theme::scale(150), 1.5);
+/// assert_eq!(theme::scale(400), 1.5);
+/// ```
+pub fn scale(percent: u16) -> f32 {
+  let (smallest, largest) = (
+    INTERFACE_SIZES[0],
+    INTERFACE_SIZES[INTERFACE_SIZES.len() - 1],
+  );
+
+  f32::from(percent.clamp(smallest, largest)) / 100.0
+}
+
+/// Draws the interface at `percent` of the spec's sizes, clamped to the
+/// sizes settings offer, by setting the rem that [`spec`] sizes and gpui's
+/// relative sizes are measured in. Does nothing when it already is, so it can
+/// run on every render.
+pub fn apply_size(percent: u16, window: &mut Window, cx: &mut App) {
+  let scale = scale(percent);
+  let body = px(BODY_TEXT_SIZE * scale);
+
+  if cx.theme().font_size != body {
+    Theme::update(cx, |theme| {
+      theme.font_size = body;
+      theme.mono_font_size = px(MONO_TEXT_SIZE * scale);
+    });
+  }
+
+  window.set_rem_size(body);
+}
+
+/// The interface size, as a percentage, for a display `display` big at
+/// `scale_factor`. A display the OS scales gets 100%, since the OS already
+/// made it readable; an unscaled one gets more the more pixels its shorter
+/// side has.
+///
+/// ```
+/// use gpui_kit::{px, size};
+/// use rivet_app::theme;
+///
+/// assert_eq!(theme::automatic_size(1.0, size(px(1920.), px(1080.))), 100);
+/// assert_eq!(theme::automatic_size(1.0, size(px(3840.), px(2160.))), 150);
+/// ```
+pub fn automatic_size(scale_factor: f32, display: Size<Pixels>) -> u16 {
+  let shorter = f32::from(display.width.min(display.height));
+
+  match shorter {
+    _ if scale_factor > 1.0 => 100,
+    2160.0.. => 150,
+    1800.0.. => 130,
+    1440.0.. => 115,
+    _ => 100,
   }
 }
 

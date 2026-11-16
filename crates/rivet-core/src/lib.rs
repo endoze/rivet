@@ -363,6 +363,9 @@ pub enum Msg {
   AppearanceChosen(Appearance),
   /// A family of themes was chosen on the settings screen.
   ThemeChosen(ThemeFamily),
+  /// An interface size was chosen on the settings screen, as a percentage,
+  /// or `None` to pick one for the display.
+  InterfaceSizeChosen(Option<u16>),
   /// Remove was pressed beside the loader files on the settings screen.
   RemoveLoaderFilesPressed,
   /// A [`Command::RemoveLoaderFiles`] ended: what became of each file.
@@ -753,6 +756,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::RuntimeChosen(choice) => settings_screen::runtime_chosen(state, choice),
     Msg::AppearanceChosen(appearance) => settings_screen::appearance_chosen(state, appearance),
     Msg::ThemeChosen(theme) => settings_screen::theme_chosen(state, theme),
+    Msg::InterfaceSizeChosen(size) => settings_screen::interface_size_chosen(state, size),
     Msg::RemoveLoaderFilesPressed => loader_files::remove_pressed(state),
     Msg::LoaderFilesRemoved { game, files } => loader_files::removed(state, game, files),
     Msg::ExportCodePressed(name) => portability::export_code_pressed(state, name),

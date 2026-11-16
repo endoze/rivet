@@ -29,11 +29,11 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-  Anchor, AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Div, ElementId,
-  Entity, FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _,
-  PathPromptOptions, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement as _,
-  Styled as _, StyledImage as _, Subscription, Task, TestSupportExt as _, WeakEntity, Window, div,
-  img, px, uniform_list,
+  Anchor, AnyElement, App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context,
+  DEFAULT_WINDOW_SIZE, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
+  IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render, SharedString, Size, Stateful,
+  StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Task,
+  TestSupportExt as _, WeakEntity, Window, div, img, uniform_list,
 };
 use icons::IconCache;
 use modal::Modal;
@@ -47,7 +47,7 @@ use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::portability::{Exporting, Importing};
 use rivet_core::readme::{Package, Readme, Status};
-use rivet_core::settings::{Appearance, RuntimeChoice, ThemeFamily};
+use rivet_core::settings::{Appearance, INTERFACE_SIZES, RuntimeChoice, ThemeFamily};
 use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
@@ -56,7 +56,7 @@ use segmented::{Segment, Segmented};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use theme::Typography as _;
+use theme::{Typography as _, spec};
 use thunderstore_engine::profile::launch::{HostOs, LaunchMode, Runtime};
 use thunderstore_engine::query::PackageRow;
 
@@ -90,6 +90,12 @@ pub struct Shell {
   /// The widths of the list and the detail pane, kept while the app runs so
   /// the pane reopens at the width it was given.
   panes: Entity<ResizableState>,
+  /// The interface size, as a percentage, picked for the display the window
+  /// is on, used until the user chooses one.
+  display_size: u16,
+  /// Whether the window has been sized for the interface size, which waits
+  /// for the settings to load.
+  window_fitted: bool,
   _subscriptions: Vec<Subscription>,
   _inbox: Task<()>,
 }
@@ -180,6 +186,8 @@ impl Shell {
       }
     });
     let appearance = cx.observe_window_appearance(window, |_: &mut Self, _, cx| cx.notify());
+    let moved = cx.observe_window_display(window, Self::measure_display);
+    let rescaled = cx.observe_window_bounds(window, Self::measure_display);
     let shell = cx.weak_entity();
 
     window.on_window_should_close(cx, move |_, cx| {
@@ -194,11 +202,6 @@ impl Shell {
           break;
         }
       }
-    });
-    Theme::update(cx, |theme| {
-      let margins = &mut theme.notification.margins;
-
-      margins.bottom = px(STATUS_BAR_HEIGHT) + margins.right;
     });
 
     let mut shell = Self {
@@ -217,6 +220,8 @@ impl Shell {
       installed_search,
       icons: cx.new(|_| IconCache::new()),
       panes: cx.new(|_| ResizableState::default()),
+      display_size: display_size(window, cx),
+      window_fitted: false,
       _subscriptions: vec![
         searched,
         package_searched,
@@ -226,6 +231,8 @@ impl Shell {
         arguments_typed,
         focused,
         appearance,
+        moved,
+        rescaled,
       ],
       _inbox,
     };
@@ -237,6 +244,42 @@ impl Shell {
 
   pub fn state(&self) -> &State {
     &self.state
+  }
+
+  /// Picks the interface size again for the display the window is on, after
+  /// it moved to another or its scale changed.
+  fn measure_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    let size = display_size(window, cx);
+
+    if size != self.display_size {
+      self.display_size = size;
+      cx.notify();
+    }
+  }
+
+  /// Draws the interface at the chosen size, or the display's, and keeps
+  /// toasts clear of the status bar at that size. Once the settings load,
+  /// sizes the window for it too.
+  fn apply_size(&mut self, window: &mut Window, cx: &mut App) {
+    let size = self
+      .state
+      .settings
+      .interface_size
+      .unwrap_or(self.display_size);
+
+    theme::apply_size(size, window, cx);
+
+    if !self.window_fitted && self.state.screen != Screen::Starting {
+      self.window_fitted = true;
+      fit_window(size, window, cx);
+    }
+
+    let margins = &cx.theme().notification.margins;
+    let bottom = spec(STATUS_BAR_HEIGHT).to_pixels(window.rem_size()) + margins.right;
+
+    if margins.bottom != bottom {
+      Theme::update(cx, |theme| theme.notification.margins.bottom = bottom);
+    }
   }
 
   fn dispatch(&mut self, msg: Msg, cx: &mut Context<Self>) {
@@ -501,7 +544,7 @@ impl Shell {
 
     h_flex()
       .flex_none()
-      .h(px(STATUS_BAR_HEIGHT))
+      .h(spec(STATUS_BAR_HEIGHT))
       .px_4()
       .gap_3()
       .overflow_hidden()
@@ -594,8 +637,9 @@ impl Shell {
   fn render_game(&self, game: &str, window: &Window, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
     let shown = self.state.details_shown;
-    let content = window.viewport_size().width - px(SIDEBAR_WIDTH + 2. * MAIN_PADDING);
-    let pane_width = (content * DETAILS_SHARE).max(px(DETAILS_MIN_WIDTH));
+    let pixels = |size: f32| spec(size).to_pixels(window.rem_size());
+    let content = window.viewport_size().width - pixels(SIDEBAR_WIDTH + 2. * MAIN_PADDING);
+    let pane_width = (content * DETAILS_SHARE).max(pixels(DETAILS_MIN_WIDTH));
     let content = match self.state.tab {
       Tab::Browse => self
         .state
@@ -616,13 +660,13 @@ impl Shell {
     let details = resizable_panel()
       .visible(shown)
       .size(pane_width)
-      .size_range(px(DETAILS_MIN_WIDTH)..Pixels::MAX)
+      .size_range(pixels(DETAILS_MIN_WIDTH)..Pixels::MAX)
       .when(shown, |pane| pane.child(self.render_details(cx)));
     let panes = h_resizable("panes")
       .with_state(&self.panes)
       .child(
         resizable_panel()
-          .size_range(px(LIST_MIN_WIDTH)..Pixels::MAX)
+          .size_range(pixels(LIST_MIN_WIDTH)..Pixels::MAX)
           .child(list),
       )
       .child(details);
@@ -630,7 +674,7 @@ impl Shell {
       .flex_1()
       .min_w_0()
       .h_full()
-      .p(px(MAIN_PADDING))
+      .p(spec(MAIN_PADDING))
       .gap_3()
       .children(self.render_profile_notes(cx))
       .children(self.render_launch_notes(cx))
@@ -674,7 +718,7 @@ impl Shell {
     let state = &self.state;
     let idle = state.settings_screen.step == settings_screen::Step::Idle;
     let name = self.game_name(game);
-    let label = |label: &'static str| div().w(px(SETTINGS_LABEL_WIDTH)).flex_none().child(label);
+    let label = |label: &'static str| div().w(spec(SETTINGS_LABEL_WIDTH)).flex_none().child(label);
     let folder_row = |id: &'static str, title: &'static str, folder: String, target: Target| {
       h_flex()
         .gap_3()
@@ -841,6 +885,34 @@ impl Shell {
             ThemeFamily::One,
           )),
       );
+    let size_segment = |id: SharedString, title: SharedString, size: Option<u16>| {
+      Segment::new(
+        id,
+        title,
+        state.settings.interface_size == size,
+        cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::InterfaceSizeChosen(size), cx);
+        }),
+      )
+    };
+    let interface_size = h_flex()
+      .gap_2()
+      .items_center()
+      .child(label(text::INTERFACE_SIZE))
+      .child(INTERFACE_SIZES.into_iter().fold(
+        Segmented::new("interface-size").child(size_segment(
+          "interface-size-auto".into(),
+          text::INTERFACE_SIZE_AUTO.into(),
+          None,
+        )),
+        |sizes, size| {
+          sizes.child(size_segment(
+            format!("interface-size-{size}").into(),
+            text::percent(size).into(),
+            Some(size),
+          ))
+        },
+      ));
     let loader_files = v_flex()
       .gap_1()
       .child(
@@ -920,7 +992,12 @@ impl Shell {
         steam_folder,
         Target::SteamFolder,
       )))
-      .child(section(text::DISPLAY.into()).child(theme).child(appearance))
+      .child(
+        section(text::DISPLAY.into())
+          .child(theme)
+          .child(appearance)
+          .child(interface_size),
+      )
       .into_any_element()
   }
 
@@ -953,15 +1030,15 @@ impl Shell {
     h_flex()
       .id("toolbar")
       .flex_none()
-      .h(px(TOOLBAR_HEIGHT))
+      .h(spec(TOOLBAR_HEIGHT))
       .gap_3()
       .child(self.render_views(&shell))
       .child(
         div()
           .id(search_id)
           .flex_shrink(1.)
-          .min_w(px(SEARCH_MIN_WIDTH))
-          .w(px(SEARCH_WIDTH))
+          .min_w(spec(SEARCH_MIN_WIDTH))
+          .w(spec(SEARCH_WIDTH))
           .child(
             Input::new(search)
               .small()
@@ -976,7 +1053,7 @@ impl Shell {
       .child(
         h_flex()
           .flex_none()
-          .w(px(DETAILS_BUTTON_WIDTH))
+          .w(spec(DETAILS_BUTTON_WIDTH))
           .justify_end()
           .children(open_details),
       )
@@ -1001,7 +1078,7 @@ impl Shell {
           .child(count.to_string())
           .test_support()
       });
-    let count = div().w(px(VIEW_COUNT_WIDTH)).tabular().children(count);
+    let count = div().w(spec(VIEW_COUNT_WIDTH)).tabular().children(count);
 
     Segmented::new("views")
       .child(Segment::new(
@@ -1104,7 +1181,7 @@ impl Shell {
       .ghost()
       .small()
       .flex_none()
-      .w(px(FILTER_BUTTON_WIDTH))
+      .w(spec(FILTER_BUTTON_WIDTH))
       .disabled(self.state.browse.is_none())
       .dropdown_caret(true)
       .dropdown_menu(move |menu, _, _| filter_menu(menu, tab, &categories, &filters, &shell))
@@ -1208,7 +1285,7 @@ impl Shell {
       .bg(palette.panel)
       .border_1()
       .border_color(palette.border)
-      .rounded(px(PANE_RADIUS));
+      .rounded(spec(PANE_RADIUS));
     let (Some(details), Some(readme)) = (self.state.details(), self.state.readme.as_ref()) else {
       let empty = div()
         .id("details-empty")
@@ -1232,9 +1309,9 @@ impl Shell {
     let head = v_flex()
       .flex_none()
       .px_5()
-      .pt(px(18.))
-      .pb(px(14.))
-      .gap(px(14.))
+      .pt(spec(18.))
+      .pb(spec(14.))
+      .gap(spec(14.))
       .border_b_1()
       .border_color(palette.border)
       .child(self.render_details_header(&details, close, cx))
@@ -1292,7 +1369,7 @@ impl Shell {
     let name = div()
       .id("details-name")
       .truncate()
-      .text_size(px(DETAILS_NAME_SIZE))
+      .text_size(spec(DETAILS_NAME_SIZE))
       .font_weight(FontWeight::BOLD)
       .aria_label(details.name.clone())
       .child(details.name.clone())
@@ -1300,8 +1377,8 @@ impl Shell {
 
     h_flex()
       .items_start()
-      .gap(px(14.))
-      .child(mod_icon(&details.name, icon, DETAILS_ICON_SIZE))
+      .gap(spec(14.))
+      .child(mod_icon(&details.name, icon, DETAILS_ICON_SIZE, cx))
       .child(
         v_flex()
           .flex_1()
@@ -1379,7 +1456,7 @@ impl Shell {
     let heading = v_flex()
       .flex_none()
       .px_4()
-      .pt(px(18.))
+      .pt(spec(18.))
       .pb_4()
       .border_b_1()
       .border_color(palette.border)
@@ -1392,7 +1469,7 @@ impl Shell {
               .flex_1()
               .min_w_0()
               .truncate()
-              .text_size(px(GAME_NAME_SIZE))
+              .text_size(spec(GAME_NAME_SIZE))
               .font_weight(FontWeight::BOLD)
               .child(self.game_name(game))
               .test_support(),
@@ -1478,7 +1555,7 @@ impl Shell {
     v_flex()
       .id("sidebar")
       .flex_none()
-      .w(px(SIDEBAR_WIDTH))
+      .w(spec(SIDEBAR_WIDTH))
       .h_full()
       .bg(palette.panel)
       .border_r_1()
@@ -1535,7 +1612,7 @@ impl Shell {
           .child(
             div()
               .flex_none()
-              .size(px(PROFILE_DOT_SIZE))
+              .size(spec(PROFILE_DOT_SIZE))
               .rounded_full()
               .bg(dot),
           )
@@ -2084,11 +2161,15 @@ fn installed_row(
       this.dispatch(Msg::PackageSelected(selection.clone()), cx);
     }))
     .child(
-      row_lead(mod_icon(name, icon, ICON_SIZE), name_label(name), byline)
-        .when(!package.enabled, |lead| lead.opacity(DIMMED)),
+      row_lead(
+        mod_icon(name, icon, ICON_SIZE, cx),
+        name_label(name),
+        byline,
+      )
+      .when(!package.enabled, |lead| lead.opacity(DIMMED)),
     )
     .child(actions_slot(full_name, selected, actions))
-    .child(div().flex_none().w(px(SWITCH_WIDTH)).children(switch))
+    .child(div().flex_none().w(spec(SWITCH_WIDTH)).children(switch))
     .test_support();
 
   row_slot(item).into_any_element()
@@ -2105,7 +2186,7 @@ fn list_row(id: impl Into<SharedString>, selected: bool, palette: Palette) -> St
     .overflow_hidden()
     .px_2()
     .gap_3()
-    .rounded(px(ROW_RADIUS))
+    .rounded(spec(ROW_RADIUS))
     .map(|row| paint_row(row, selected, palette))
 }
 
@@ -2122,26 +2203,27 @@ fn row_lead(icon: impl IntoElement, first: impl IntoElement, second: impl IntoEl
   )
 }
 
-/// A mod's icon, `size` pixels square, from `url`, or the initials of `name`
-/// when there is none or it fails to load.
-fn mod_icon(name: &str, url: Option<&str>, size: f32) -> AnyElement {
+/// A mod's icon, `size` spec pixels square, from `url`, or the initials of
+/// `name` when there is none or it fails to load.
+fn mod_icon(name: &str, url: Option<&str>, size: f32, cx: &App) -> AnyElement {
   let name = SharedString::from(name.to_string());
+  let avatar_size = spec(size).to_pixels(cx.theme().font_size);
   let initials = move || {
     div()
       .id("initials")
       .child(
         Avatar::new()
           .name(name.clone())
-          .with_size(px(size))
-          .rounded(px(ICON_RADIUS)),
+          .with_size(avatar_size)
+          .rounded(spec(ICON_RADIUS)),
       )
       .test_support()
       .into_any_element()
   };
   let icon = match url {
     Some(url) => img(SharedString::from(url.to_string()))
-      .size(px(size))
-      .rounded(px(ICON_RADIUS))
+      .size(spec(size))
+      .rounded(spec(ICON_RADIUS))
       .with_fallback(initials)
       .into_any_element(),
     None => initials(),
@@ -2150,7 +2232,7 @@ fn mod_icon(name: &str, url: Option<&str>, size: f32) -> AnyElement {
   div()
     .id("icon")
     .flex_none()
-    .size(px(size))
+    .size(spec(size))
     .child(icon)
     .test_support()
     .into_any_element()
@@ -2167,7 +2249,7 @@ fn state_tag(id: String, color: Hsla, label: String) -> AnyElement {
         .outline()
         .small()
         .rounded_full()
-        .text_size(px(TAG_TEXT_SIZE))
+        .text_size(spec(TAG_TEXT_SIZE))
         .child(label),
     )
     .test_support()
@@ -2181,7 +2263,7 @@ fn actions_slot(full_name: &str, shown: bool, actions: Vec<AnyElement>) -> AnyEl
   h_flex()
     .id(SharedString::from(format!("actions-{full_name}")))
     .flex_none()
-    .w(px(ACTIONS_WIDTH))
+    .w(spec(ACTIONS_WIDTH))
     .justify_end()
     .gap_1()
     .when(!shown, |slot| {
@@ -2230,8 +2312,8 @@ fn headline(name: &str, byline: String, muted: Hsla) -> Div {
 fn row_slot(row: impl IntoElement) -> Div {
   div()
     .flex_none()
-    .h(px(ROW_HEIGHT))
-    .py(px(ROW_GAP / 2.))
+    .h(spec(ROW_HEIGHT))
+    .py(spec(ROW_GAP / 2.))
     .child(row)
 }
 
@@ -2263,6 +2345,44 @@ fn install_action(
       this.dispatch(Msg::InstallPressed(package.clone()), cx);
     }))
     .into_any_element()
+}
+
+/// The interface size, as a percentage, for the display `window` is on, at
+/// the scale the OS draws it at. 100% when the display is unknown.
+fn display_size(window: &Window, cx: &App) -> u16 {
+  window.display(cx).map_or(100, |display| {
+    theme::automatic_size(window.scale_factor(), display.bounds().size)
+  })
+}
+
+/// Resizes `window` to gpui's default window size scaled for an interface
+/// size of `percent`, so the layout has the room it has at 100%, but no
+/// larger than fits in the visible part of its display. gpui cannot move an
+/// open window, so the window keeps its top-left corner and grows only as
+/// far as the display's right and bottom edges.
+fn fit_window(percent: u16, window: &mut Window, cx: &App) {
+  let scale = theme::scale(percent);
+  let wanted = DEFAULT_WINDOW_SIZE.map(|side| side * scale);
+  let content = window.viewport_size();
+  let size = window.display(cx).map_or(wanted, |display| {
+    wanted.min(&room(window.bounds(), content, display.visible_bounds()))
+  });
+
+  if size != content {
+    window.resize(size);
+  }
+}
+
+/// The largest content a window can hold without leaving `visible` while
+/// its top-left corner stays put, given its outer `bounds` around content
+/// of size `content`. The difference between the two is its frame.
+fn room(bounds: Bounds<Pixels>, content: Size<Pixels>, visible: Bounds<Pixels>) -> Size<Pixels> {
+  let origin = bounds.origin.max(&visible.origin);
+
+  Size {
+    width: visible.right() - origin.x - (bounds.size.width - content.width),
+    height: visible.bottom() - origin.y - (bounds.size.height - content.height),
+  }
 }
 
 /// Fixed so the lists can be virtualized: only the rows in view are built.
@@ -2377,7 +2497,7 @@ fn render_facts(details: &Details) -> impl IntoElement + use<> {
       DescriptionList::horizontal()
         .columns(1)
         .bordered(false)
-        .label_width(px(FACT_LABEL_WIDTH))
+        .label_width(spec(FACT_LABEL_WIDTH))
         .small(),
       |facts, (label, value)| facts.item(label, value, 1),
     )
@@ -2516,7 +2636,7 @@ fn package_row(
   let downloads = h_flex()
     .id("downloads")
     .flex_none()
-    .w(px(DOWNLOADS_WIDTH))
+    .w(spec(DOWNLOADS_WIDTH))
     .justify_end()
     .text_small()
     .tabular()
@@ -2531,7 +2651,7 @@ fn package_row(
       }))
     })
     .child(row_lead(
-      mod_icon(name, row.icon(), ICON_SIZE),
+      mod_icon(name, row.icon(), ICON_SIZE, cx),
       author,
       description,
     ))
@@ -2565,6 +2685,8 @@ impl Render for Shell {
       window,
       cx,
     );
+    // After the theme, since loading one puts back its text size.
+    self.apply_size(window, cx);
 
     if let Some(text) = self.fill_profile_name.take() {
       self.profile_name.update(cx, |input, cx| {

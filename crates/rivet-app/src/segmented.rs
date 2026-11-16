@@ -2,19 +2,19 @@
 //! selected segment looks the same wherever one appears.
 
 use crate::palette::Palette;
-use crate::theme::Typography as _;
+use crate::theme::{Typography as _, spec};
 use gpui_kit::accesskit::Toggled;
 use gpui_kit::component::{ActiveTheme as _, ThemeStyled as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
   AnyElement, App, ClickEvent, ElementId, InteractiveElement as _, IntoElement, MouseButton,
   ParentElement as _, RenderOnce, Role, StatefulInteractiveElement as _, Styled as _,
-  TestSupportExt as _, Window, px,
+  TestSupportExt as _, Window,
 };
 
-/// The height of a segment, in pixels.
+/// The height of a segment, in spec pixels.
 const SEGMENT_HEIGHT: f32 = 24.0;
-/// The space between the control's edge and its segments, in pixels.
+/// The space between the control's edge and its segments, in spec pixels.
 const INSET: f32 = 2.0;
 
 type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -81,8 +81,8 @@ impl RenderOnce for Segmented {
       .id(self.id)
       .role(Role::RadioGroup)
       .flex_none()
-      .p(px(INSET))
-      .gap(px(INSET))
+      .p(spec(INSET))
+      .gap(spec(INSET))
       .rounded(radius)
       .bg(colors.unselected)
       .text_small()
@@ -107,10 +107,10 @@ impl RenderOnce for Segmented {
           } else {
             Toggled::False
           })
-          .h(px(SEGMENT_HEIGHT))
+          .h(spec(SEGMENT_HEIGHT))
           .px_2p5()
           .items_center()
-          .rounded(radius - px(INSET))
+          .rounded(radius - spec(INSET).to_pixels(window.rem_size()))
           .border_b_2()
           .cursor_pointer()
           .map(|this| {
