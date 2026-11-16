@@ -998,8 +998,8 @@ mod tests {
 
     assert!(state.is_profile_busy());
     assert!(!state.can_launch());
-    assert!(!state.can_rename_or_delete_profile());
-    assert!(!state.can_duplicate_profile());
+    assert!(!state.can_rename_or_delete_profile("Modded"));
+    assert!(!state.can_duplicate_profile("Modded"));
     assert!(!state.can_manage());
     assert!(state.can_install());
 
@@ -1008,7 +1008,7 @@ mod tests {
 
     assert!(state.is_busy());
     assert!(!state.is_profile_busy());
-    assert!(state.can_duplicate_profile());
+    assert!(state.can_duplicate_profile(DEFAULT_PROFILE));
     assert!(state.can_manage());
   }
 

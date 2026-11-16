@@ -17,7 +17,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::description_list::DescriptionList;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
 use gpui_kit::component::switch::Switch;
@@ -1420,7 +1420,7 @@ impl Shell {
           .text_color(palette.muted_text)
           .child(text::PROFILES),
       )
-      .children(self.render_profile_items(cx))
+      .children(self.render_profile_items(&shell, cx))
       .child(
         sidebar_item("new-profile", text::NEW_PROFILE)
           .disabled(!state.can_switch_profile())
@@ -1432,7 +1432,6 @@ impl Shell {
       .p_2()
       .border_t_1()
       .border_color(palette.border)
-      .child(self.render_profile_actions(&shell))
       .child(
         sidebar_item("open-settings", text::SETTINGS).on_click(send(&shell, Msg::SettingsPressed)),
       );
@@ -1454,8 +1453,13 @@ impl Shell {
 
   /// The open game's profiles, each with its mod count when known, the
   /// current one selected, pressed for accessibility, and marked with a dot
-  /// in the primary color. Clicking one picks it.
-  fn render_profile_items(&self, cx: &mut Context<Self>) -> Vec<Button> {
+  /// in the primary color. Clicking one picks it; right-clicking one opens
+  /// [`Shell::profile_menu`] for it.
+  fn render_profile_items(
+    &self,
+    shell: &WeakEntity<Self>,
+    cx: &mut Context<Self>,
+  ) -> Vec<AnyElement> {
     let state = &self.state;
     let palette = Palette::new(cx);
     let primary = cx.theme().primary;
@@ -1500,6 +1504,8 @@ impl Shell {
           .on_click(cx.listener(move |this, _, _, cx| {
             this.dispatch(Msg::ProfilePicked(picked.clone()), cx);
           }))
+          .context_menu(self.profile_menu(name, shell))
+          .into_any_element()
       })
       .collect()
   }
@@ -1533,49 +1539,56 @@ impl Shell {
     })
   }
 
-  /// Profile actions, with its menu of what can be done to the current
-  /// profile, opening upward from the foot of the sidebar.
-  fn render_profile_actions(&self, shell: &WeakEntity<Self>) -> impl IntoElement + use<> {
+  /// Builds the right-click menu of what can be done to the profile `name`.
+  fn profile_menu(
+    &self,
+    name: &str,
+    shell: &WeakEntity<Self>,
+  ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + use<> {
     let state = &self.state;
-    let can_rename_or_delete = state.can_rename_or_delete_profile();
-    let can_duplicate = state.can_duplicate_profile();
-    let can_export = state.can_export_profile();
+    let can_rename_or_delete = state.can_rename_or_delete_profile(name);
+    let can_duplicate = state.can_duplicate_profile(name);
+    let can_export = state.can_export_profile(name);
+    let name = name.to_string();
     let shell = shell.clone();
 
-    sidebar_item("profile-actions", text::PROFILE_ACTIONS).dropdown_menu_with_anchor(
-      Anchor::BottomLeft,
-      move |menu: PopupMenu, _, cx| {
-        let danger = can_rename_or_delete.then(|| Palette::new(cx).danger_text);
+    move |menu, _, cx| {
+      let danger = can_rename_or_delete.then(|| Palette::new(cx).danger_text);
 
-        menu
-          .item(
-            menu_item("rename-profile", text::RENAME_PROFILE, None)
-              .disabled(!can_rename_or_delete)
-              .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Rename))),
-          )
-          .item(
-            menu_item("duplicate-profile", text::DUPLICATE_PROFILE, None)
-              .disabled(!can_duplicate)
-              .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Duplicate))),
-          )
-          .item(
-            menu_item("export-code", text::EXPORT_CODE, None)
-              .disabled(!can_export)
-              .on_click(send(&shell, Msg::ExportCodePressed)),
-          )
-          .item(
-            menu_item("export-file", text::EXPORT_FILE, None)
-              .disabled(!can_export)
-              .on_click(send(&shell, Msg::ExportFilePressed)),
-          )
-          .separator()
-          .item(
-            menu_item("delete-profile", text::DELETE_PROFILE, danger)
-              .disabled(!can_rename_or_delete)
-              .on_click(send(&shell, Msg::DeleteProfilePressed)),
-          )
-      },
-    )
+      menu
+        .item(
+          menu_item("rename-profile", text::RENAME_PROFILE, None)
+            .disabled(!can_rename_or_delete)
+            .on_click(send(
+              &shell,
+              Msg::ProfileNamePressed(Naming::Rename(name.clone())),
+            )),
+        )
+        .item(
+          menu_item("duplicate-profile", text::DUPLICATE_PROFILE, None)
+            .disabled(!can_duplicate)
+            .on_click(send(
+              &shell,
+              Msg::ProfileNamePressed(Naming::Duplicate(name.clone())),
+            )),
+        )
+        .item(
+          menu_item("share-code", text::SHARE_CODE, None)
+            .disabled(!can_export)
+            .on_click(send(&shell, Msg::ExportCodePressed(name.clone()))),
+        )
+        .item(
+          menu_item("share-file", text::SHARE_FILE, None)
+            .disabled(!can_export)
+            .on_click(send(&shell, Msg::ExportFilePressed(name.clone()))),
+        )
+        .separator()
+        .item(
+          menu_item("delete-profile", text::DELETE_PROFILE, danger)
+            .disabled(!can_rename_or_delete)
+            .on_click(send(&shell, Msg::DeleteProfilePressed(name.clone()))),
+        )
+    }
   }
 
   /// Why the profiles could not be listed, or `None` when they were.

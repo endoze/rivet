@@ -797,7 +797,6 @@ pub const NEW_PROFILE: &str = "New profile…";
 pub const RENAME_PROFILE: &str = "Rename…";
 pub const DUPLICATE_PROFILE: &str = "Duplicate…";
 pub const DELETE_PROFILE: &str = "Delete…";
-pub const PROFILE_ACTIONS: &str = "Profile actions";
 pub const PROFILES: &str = "Profiles";
 /// Opens a menu of the places a profile can be imported from.
 pub const IMPORT_PROFILE: &str = "Import a profile";
@@ -809,11 +808,11 @@ pub const DELETE_WARNING: &str =
   "Its mods and their config files are deleted with it. This cannot be undone.";
 
 /// What the profile name field asks for.
-pub fn name_prompt(naming: Naming, from: &str) -> String {
+pub fn name_prompt(naming: &Naming) -> String {
   match naming {
     Naming::Create => "Name the new profile".to_string(),
-    Naming::Rename => format!("Rename the {from} profile"),
-    Naming::Duplicate => format!("Name the copy of the {from} profile"),
+    Naming::Rename(from) => format!("Rename the {from} profile"),
+    Naming::Duplicate(from) => format!("Name the copy of the {from} profile"),
   }
 }
 
@@ -1203,8 +1202,8 @@ pub fn r2modman_lead(game: &str) -> String {
   )
 }
 
-pub const EXPORT_CODE: &str = "Export as code";
-pub const EXPORT_FILE: &str = "Export as file…";
+pub const SHARE_CODE: &str = "Share as code";
+pub const SHARE_FILE: &str = "Share as file…";
 pub const IMPORT_CODE: &str = "Import from code…";
 pub const IMPORT_FILE: &str = "Import from file…";
 pub const IMPORT: &str = "Import";
@@ -1214,16 +1213,17 @@ pub const IMPORT_CODE_LEAD: &str =
   "Paste the code someone shared from Rivet or r2modman. The profile is imported as a new one.";
 pub const READING_SHARED: &str = "Reading the shared profile";
 
-/// An export being made, such as `Exporting the Default profile`.
+/// A profile being shared, such as `Sharing the Default profile`.
 pub fn exporting(profile: &str) -> String {
-  format!("Exporting the {profile} profile")
+  format!("Sharing the {profile} profile")
 }
 
-/// A finished export: the code that was copied, or the file written.
+/// A profile shared: the code that was copied, or the file written.
 ///
 /// ```
 /// use rivet_app::text::profile_exported;
 /// use rivet_core::portability::Exported;
+/// use std::path::PathBuf;
 ///
 /// let told = profile_exported("Default", &Exported::Code("0193e2b5".to_string()));
 ///
@@ -1232,6 +1232,10 @@ pub fn exporting(profile: &str) -> String {
 ///   told.detail,
 ///   ["Anyone can import the Default profile with it in Rivet or r2modman."]
 /// );
+///
+/// let told = profile_exported("Default", &Exported::File(PathBuf::from("/home/me/Default.r2z")));
+///
+/// assert_eq!(told.title, "Shared the Default profile as a file");
 /// ```
 pub fn profile_exported(profile: &str, exported: &Exported) -> Told {
   match exported {
@@ -1242,13 +1246,13 @@ pub fn profile_exported(profile: &str, exported: &Exported) -> Told {
       )],
     },
     Exported::File(path) => Told {
-      title: format!("Exported the {profile} profile"),
+      title: format!("Shared the {profile} profile as a file"),
       detail: vec![path.display().to_string()],
     },
   }
 }
 
-/// An export that could not be made.
+/// A profile that could not be shared.
 pub fn export_failed(profile: &str, to: &Destination, reason: &str) -> Failure {
   let next = match to {
     Destination::Code => {
@@ -1258,7 +1262,7 @@ pub fn export_failed(profile: &str, to: &Destination, reason: &str) -> Failure {
   };
 
   Failure {
-    headline: format!("The {profile} profile could not be exported"),
+    headline: format!("The {profile} profile could not be shared"),
     detail: reason.to_string(),
     next: next.to_string(),
   }
@@ -1274,9 +1278,9 @@ pub fn read_failure(failure: &ReadFailure) -> Failure {
       next: "Check the code with whoever shared it, or ask them for a new one.".to_string(),
     },
     ReadFailure::Damaged(reason) => Failure {
-      headline: "This is not a profile export".to_string(),
+      headline: "This is not a shared profile".to_string(),
       detail: reason.clone(),
-      next: "Choose a .r2z file exported from Rivet or r2modman, or ask for the profile again."
+      next: "Choose a .r2z file shared from Rivet or r2modman, or ask for the profile again."
         .to_string(),
     },
     ReadFailure::Unreachable(reason) => Failure {

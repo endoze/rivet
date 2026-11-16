@@ -96,7 +96,7 @@ pub struct State {
   pub details_shown: bool,
   /// How many readme fetches have been started, so each gets its own id.
   pub readmes: u64,
-  /// Exporting the open profile. One running outlives leaving its game.
+  /// Exporting one of the open game's profiles. One running outlives leaving its game.
   pub exporting: Option<Exporting>,
   /// Importing a shared profile into the open game. `None` outside a game.
   pub importing: Option<Importing>,
@@ -338,8 +338,8 @@ pub enum Msg {
   /// A profile name was entered.
   ProfileNameSubmitted(String),
   ProfileNameDismissed,
-  /// Delete was pressed on the selected profile.
-  DeleteProfilePressed,
+  /// Delete was pressed on a profile, by name.
+  DeleteProfilePressed(String),
   DeleteProfileConfirmed,
   DeleteProfileDismissed,
   /// A [`ProfileChange`] to a game's profiles ended: made, or why it was not.
@@ -368,10 +368,10 @@ pub enum Msg {
     game: String,
     files: Vec<(PathBuf, FileRemoval)>,
   },
-  /// Export as code was pressed on the open profile.
-  ExportCodePressed,
-  /// Export as file was pressed on the open profile.
-  ExportFilePressed,
+  /// Share as code was pressed on a profile, by name.
+  ExportCodePressed(String),
+  /// Share as file was pressed on a profile, by name.
+  ExportFilePressed(String),
   /// The save dialog closed, with `None` if it was cancelled.
   ExportFileChosen(Option<PathBuf>),
   /// Import from code was pressed.
@@ -628,7 +628,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       state.importing = None;
       state.r2modman = None;
 
-      if state.exporting == Some(Exporting::ChoosingFile) {
+      if matches!(state.exporting, Some(Exporting::ChoosingFile(_))) {
         state.exporting = None;
       }
 
@@ -736,7 +736,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::ProfileNamePressed(naming) => switcher::name_pressed(state, naming),
     Msg::ProfileNameSubmitted(name) => switcher::name_submitted(state, name),
     Msg::ProfileNameDismissed => switcher::name_dismissed(state),
-    Msg::DeleteProfilePressed => switcher::delete_pressed(state),
+    Msg::DeleteProfilePressed(name) => switcher::delete_pressed(state, name),
     Msg::DeleteProfileConfirmed => switcher::delete_confirmed(state),
     Msg::DeleteProfileDismissed => switcher::delete_dismissed(state),
     Msg::ProfileChanged {
@@ -752,8 +752,8 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::AppearanceChosen(appearance) => settings_screen::appearance_chosen(state, appearance),
     Msg::RemoveLoaderFilesPressed => loader_files::remove_pressed(state),
     Msg::LoaderFilesRemoved { game, files } => loader_files::removed(state, game, files),
-    Msg::ExportCodePressed => portability::export_code_pressed(state),
-    Msg::ExportFilePressed => portability::export_file_pressed(state),
+    Msg::ExportCodePressed(name) => portability::export_code_pressed(state, name),
+    Msg::ExportFilePressed(name) => portability::export_file_pressed(state, name),
     Msg::ExportFileChosen(path) => portability::export_file_chosen(state, path),
     Msg::ImportCodePressed => portability::import_code_pressed(state),
     Msg::ImportCodeSubmitted(code) => portability::import_code_submitted(state, code),

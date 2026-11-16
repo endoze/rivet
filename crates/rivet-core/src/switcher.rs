@@ -43,23 +43,20 @@ impl Switcher {
 }
 
 /// What a name is being asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Naming {
   /// A new, empty profile.
   Create,
-  /// A new name for the selected profile.
-  Rename,
-  /// A copy of the selected profile.
-  Duplicate,
+  /// A new name for this profile.
+  Rename(String),
+  /// A copy of this profile.
+  Duplicate(String),
 }
 
 /// A name being asked for, and why the last one given was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameForm {
   pub naming: Naming,
-  /// The profile selected when the form opened, which a rename or duplicate
-  /// starts from.
-  pub from: String,
   pub refusal: Option<NameRefusal>,
 }
 
@@ -188,35 +185,40 @@ impl State {
       .is_some_and(|switcher| switcher.changing.is_some())
   }
 
-  /// Whether the selected profile can be duplicated: it has been opened, no
-  /// operation on it is running or waiting, and no launch is being prepared,
-  /// any of which could be reading or writing it.
-  pub fn can_duplicate_profile(&self) -> bool {
-    let opened = self
+  /// Whether the open game's profile `name` can be duplicated: the switcher
+  /// shows it, no operation on it is running or waiting, no launch is being
+  /// prepared, and it has been opened when it is the selected profile, any
+  /// of which could be reading or writing it.
+  pub fn can_duplicate_profile(&self, name: &str) -> bool {
+    let Some(switcher) = self.switcher.as_ref() else {
+      return false;
+    };
+    let listed = self.profile_names().contains(&name);
+    let opening = self
       .profile
       .as_ref()
-      .is_some_and(|profile| profile.status != ProfileStatus::Opening);
+      .is_some_and(|profile| profile.name == name && profile.status == ProfileStatus::Opening);
+    let busy = self
+      .queue
+      .operations
+      .iter()
+      .any(|operation| operation.game == switcher.game && operation.profile == name);
 
-    self.can_switch_profile() && opened && !self.is_profile_busy() && !self.is_launching()
+    self.can_switch_profile() && listed && !opening && !busy && !self.is_launching()
   }
 
-  /// Whether the selected profile can be renamed or deleted: as for
+  /// Whether the open game's profile `name` can be renamed or deleted: as for
   /// [`State::can_duplicate_profile`], it is not the default profile, which
-  /// every game keeps, and no export is reading it.
-  pub fn can_rename_or_delete_profile(&self) -> bool {
-    let default = self
-      .profile
-      .as_ref()
-      .is_some_and(|profile| profile.name == DEFAULT_PROFILE);
-
-    self.can_duplicate_profile() && !default && self.exporting.is_none()
+  /// every game keeps, and no export is running.
+  pub fn can_rename_or_delete_profile(&self, name: &str) -> bool {
+    self.can_duplicate_profile(name) && name != DEFAULT_PROFILE && self.exporting.is_none()
   }
 
-  fn can_start(&self, naming: Naming) -> bool {
+  fn can_start(&self, naming: &Naming) -> bool {
     match naming {
       Naming::Create => self.can_switch_profile(),
-      Naming::Duplicate => self.can_duplicate_profile(),
-      Naming::Rename => self.can_rename_or_delete_profile(),
+      Naming::Duplicate(from) => self.can_duplicate_profile(from),
+      Naming::Rename(from) => self.can_rename_or_delete_profile(from),
     }
   }
 
@@ -346,25 +348,21 @@ fn remember(state: &mut State, game: &str, name: Option<&str>) -> Vec<Effect> {
 
 /// Asks for a name for `naming`, unless it cannot start now.
 pub(crate) fn name_pressed(state: &mut State, naming: Naming) -> Vec<Effect> {
-  if !state.can_start(naming) {
+  if !state.can_start(&naming) {
     return Vec::new();
   }
 
-  let Some(from) = state.selected().map(str::to_string) else {
-    return Vec::new();
-  };
   let Some(switcher) = state.switcher.as_mut() else {
     return Vec::new();
   };
-  let filled = match naming {
-    Naming::Rename => from.clone(),
-    Naming::Create | Naming::Duplicate => String::new(),
+  let filled = match &naming {
+    Naming::Rename(from) => from.clone(),
+    Naming::Create | Naming::Duplicate(_) => String::new(),
   };
 
   switcher.deleting = None;
   switcher.form = Some(NameForm {
     naming,
-    from,
     refusal: None,
   });
 
@@ -382,7 +380,7 @@ pub(crate) fn name_submitted(state: &mut State, name: String) -> Vec<Effect> {
     return Vec::new();
   };
 
-  if !state.can_start(form.naming) {
+  if !state.can_start(&form.naming) {
     return Vec::new();
   }
 
@@ -390,16 +388,18 @@ pub(crate) fn name_submitted(state: &mut State, name: String) -> Vec<Effect> {
   let Some(switcher) = state.switcher.as_mut() else {
     return Vec::new();
   };
+  let renaming = match &form.naming {
+    Naming::Rename(from) => Some(from.as_str()),
+    Naming::Create | Naming::Duplicate(_) => None,
+  };
 
-  if form.naming == Naming::Rename && name == form.from {
+  if renaming == Some(name.as_str()) {
     switcher.form = None;
 
     return Vec::new();
   }
 
-  let except = (form.naming == Naming::Rename).then_some(form.from.as_str());
-
-  if let Err(refusal) = check_name(&taken, &name, except) {
+  if let Err(refusal) = check_name(&taken, &name, renaming) {
     switcher.form = Some(NameForm {
       refusal: Some(refusal),
       ..form
@@ -410,14 +410,8 @@ pub(crate) fn name_submitted(state: &mut State, name: String) -> Vec<Effect> {
 
   let change = match form.naming {
     Naming::Create => ProfileChange::Create(name),
-    Naming::Rename => ProfileChange::Rename {
-      from: form.from,
-      to: name,
-    },
-    Naming::Duplicate => ProfileChange::Duplicate {
-      from: form.from,
-      to: name,
-    },
+    Naming::Rename(from) => ProfileChange::Rename { from, to: name },
+    Naming::Duplicate(from) => ProfileChange::Duplicate { from, to: name },
   };
 
   switcher.form = None;
@@ -433,33 +427,38 @@ pub(crate) fn name_dismissed(state: &mut State) -> Vec<Effect> {
   Vec::new()
 }
 
-/// Asks to confirm deleting the selected profile.
-pub(crate) fn delete_pressed(state: &mut State) -> Vec<Effect> {
-  if !state.can_rename_or_delete_profile() {
+/// Asks to confirm deleting the profile `name`.
+pub(crate) fn delete_pressed(state: &mut State, name: String) -> Vec<Effect> {
+  if !state.can_rename_or_delete_profile(&name) {
     return Vec::new();
   }
 
-  let selected = state.selected().map(str::to_string);
-
   if let Some(switcher) = state.switcher.as_mut() {
     switcher.form = None;
-    switcher.deleting = selected;
+    switcher.deleting = Some(name);
   }
 
   Vec::new()
 }
 
 pub(crate) fn delete_confirmed(state: &mut State) -> Vec<Effect> {
-  if !state.can_rename_or_delete_profile() {
+  let Some(name) = state
+    .switcher
+    .as_ref()
+    .and_then(|switcher| switcher.deleting.clone())
+  else {
+    return Vec::new();
+  };
+
+  if !state.can_rename_or_delete_profile(&name) {
     return Vec::new();
   }
 
   let Some(switcher) = state.switcher.as_mut() else {
     return Vec::new();
   };
-  let Some(name) = switcher.deleting.take() else {
-    return Vec::new();
-  };
+
+  switcher.deleting = None;
 
   start(switcher, ProfileChange::Delete(name))
 }
@@ -908,7 +907,10 @@ mod tests {
   fn renaming_the_selected_profile_keeps_it_selected_under_its_new_name() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    let effects = update(&mut state, Msg::ProfileNamePressed(Naming::Rename));
+    let effects = update(
+      &mut state,
+      Msg::ProfileNamePressed(Naming::Rename("Modded".to_string())),
+    );
 
     assert_eq!(effects, vec![Effect::FillProfileName("Modded".to_string())]);
 
@@ -928,10 +930,36 @@ mod tests {
   }
 
   #[test]
+  fn renaming_a_profile_that_is_not_selected_leaves_the_selected_one_open() {
+    let mut state = ready("Default", &["Default", "Modded"]);
+
+    let effects = update(
+      &mut state,
+      Msg::ProfileNamePressed(Naming::Rename("Modded".to_string())),
+    );
+
+    assert_eq!(effects, vec![Effect::FillProfileName("Modded".to_string())]);
+
+    let effects = update(&mut state, Msg::ProfileNameSubmitted("Heavy".to_string()));
+
+    assert_eq!(effects, vec![change(rename("Modded", "Heavy"))]);
+
+    let effects = update(&mut state, changed(rename("Modded", "Heavy"), Ok(())));
+
+    assert_eq!(state.profile_names(), vec!["Default", "Heavy"]);
+    assert_eq!(
+      selected(&state),
+      Some(("Default", &ProfileStatus::Ready(Installed::new())))
+    );
+    assert_eq!(remembered(&state), None);
+    assert_eq!(effects, vec![made(rename("Modded", "Heavy"))]);
+  }
+
+  #[test]
   fn a_profile_can_be_renamed_to_a_different_case_of_its_own_name() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    let effects = submit(&mut state, Naming::Rename, "modded");
+    let effects = submit(&mut state, Naming::Rename("Modded".to_string()), "modded");
 
     assert_eq!(effects, vec![change(rename("Modded", "modded"))]);
   }
@@ -940,7 +968,7 @@ mod tests {
   fn renaming_to_the_same_name_closes_the_form_and_changes_nothing() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    let effects = submit(&mut state, Naming::Rename, "Modded");
+    let effects = submit(&mut state, Naming::Rename("Modded".to_string()), "Modded");
 
     assert_eq!(effects, vec![]);
     assert_eq!(switcher(&state).form, None);
@@ -950,7 +978,11 @@ mod tests {
   fn duplicating_copies_the_selected_profile_and_selects_the_copy() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    let effects = submit(&mut state, Naming::Duplicate, "Modded copy");
+    let effects = submit(
+      &mut state,
+      Naming::Duplicate("Modded".to_string()),
+      "Modded copy",
+    );
 
     assert_eq!(effects, vec![change(duplicate("Modded", "Modded copy"))]);
 
@@ -978,7 +1010,7 @@ mod tests {
   fn deleting_asks_for_confirmation_first() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    let effects = update(&mut state, Msg::DeleteProfilePressed);
+    let effects = update(&mut state, Msg::DeleteProfilePressed("Modded".to_string()));
 
     assert_eq!(effects, vec![]);
     assert_eq!(switcher(&state).deleting.as_deref(), Some("Modded"));
@@ -990,10 +1022,62 @@ mod tests {
   }
 
   #[test]
+  fn deleting_a_profile_that_is_not_selected_leaves_the_selected_one_open() {
+    let mut state = ready("Default", &["Default", "Modded"]);
+
+    update(&mut state, Msg::DeleteProfilePressed("Modded".to_string()));
+
+    assert_eq!(switcher(&state).deleting.as_deref(), Some("Modded"));
+
+    let effects = update(&mut state, Msg::DeleteProfileConfirmed);
+
+    assert_eq!(effects, vec![change(delete("Modded"))]);
+
+    let effects = update(&mut state, changed(delete("Modded"), Ok(())));
+
+    assert_eq!(state.profile_names(), vec!["Default"]);
+    assert_eq!(
+      selected(&state),
+      Some(("Default", &ProfileStatus::Ready(Installed::new())))
+    );
+    assert_eq!(effects, vec![made(delete("Modded"))]);
+  }
+
+  #[test]
+  fn duplicating_a_profile_that_is_not_selected_copies_that_one() {
+    let mut state = ready("Default", &["Default", "Modded"]);
+
+    let effects = submit(
+      &mut state,
+      Naming::Duplicate("Modded".to_string()),
+      "Modded copy",
+    );
+
+    assert_eq!(effects, vec![change(duplicate("Modded", "Modded copy"))]);
+  }
+
+  #[test]
+  fn a_profile_being_installed_into_cannot_be_changed_while_the_others_can() {
+    let mut state = installing();
+
+    update(&mut state, Msg::ProfilePicked("Default".to_string()));
+    update(&mut state, opened("Default"));
+
+    assert!(!state.can_duplicate_profile("Modded"));
+    assert!(!state.can_rename_or_delete_profile("Modded"));
+    assert!(state.can_duplicate_profile("Default"));
+    assert_eq!(
+      update(&mut state, Msg::DeleteProfilePressed("Modded".to_string())),
+      vec![]
+    );
+    assert_eq!(switcher(&state).deleting, None);
+  }
+
+  #[test]
   fn deleting_the_selected_profile_falls_back_to_the_default_one() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    update(&mut state, Msg::DeleteProfilePressed);
+    update(&mut state, Msg::DeleteProfilePressed("Modded".to_string()));
 
     let effects = update(&mut state, Msg::DeleteProfileConfirmed);
 
@@ -1018,13 +1102,19 @@ mod tests {
   fn the_default_profile_cannot_be_renamed_or_deleted_but_can_be_duplicated() {
     let mut state = ready("Default", &["Default"]);
 
-    assert!(!state.can_rename_or_delete_profile());
-    assert!(state.can_duplicate_profile());
+    assert!(!state.can_rename_or_delete_profile(DEFAULT_PROFILE));
+    assert!(state.can_duplicate_profile(DEFAULT_PROFILE));
     assert_eq!(
-      update(&mut state, Msg::ProfileNamePressed(Naming::Rename)),
+      update(
+        &mut state,
+        Msg::ProfileNamePressed(Naming::Rename("Default".to_string()))
+      ),
       vec![]
     );
-    assert_eq!(update(&mut state, Msg::DeleteProfilePressed), vec![]);
+    assert_eq!(
+      update(&mut state, Msg::DeleteProfilePressed("Default".to_string())),
+      vec![]
+    );
     assert_eq!(switcher(&state).deleting, None);
   }
 
@@ -1032,7 +1122,7 @@ mod tests {
   fn a_failed_change_says_why_and_leaves_the_switcher_as_it_was() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    update(&mut state, Msg::DeleteProfilePressed);
+    update(&mut state, Msg::DeleteProfilePressed("Modded".to_string()));
     update(&mut state, Msg::DeleteProfileConfirmed);
 
     let effects = update(&mut state, changed(delete("Modded"), Err("busy")));
@@ -1083,7 +1173,7 @@ mod tests {
     assert!(state.can_install());
     assert!(state.can_launch());
 
-    submit(&mut state, Naming::Rename, "Renamed");
+    submit(&mut state, Naming::Rename("Modded".to_string()), "Renamed");
 
     assert!(!state.can_install());
     assert!(!state.can_launch());
@@ -1107,8 +1197,8 @@ mod tests {
 
     update(&mut state, listed(&["Default", "Modded"]));
 
-    assert!(!state.can_duplicate_profile());
-    assert!(!state.can_rename_or_delete_profile());
+    assert!(!state.can_duplicate_profile("Modded"));
+    assert!(!state.can_rename_or_delete_profile("Modded"));
   }
 
   /// A state with `Owner-Pack` installing into the selected `Modded`
@@ -1154,9 +1244,12 @@ mod tests {
     let mut state = installing();
 
     assert!(state.can_switch_profile());
-    assert!(!state.can_duplicate_profile());
-    assert!(!state.can_rename_or_delete_profile());
-    assert_eq!(update(&mut state, Msg::DeleteProfilePressed), vec![]);
+    assert!(!state.can_duplicate_profile("Modded"));
+    assert!(!state.can_rename_or_delete_profile("Modded"));
+    assert_eq!(
+      update(&mut state, Msg::DeleteProfilePressed("Modded".to_string())),
+      vec![]
+    );
 
     let effects = update(&mut state, Msg::ProfilePicked("Default".to_string()));
 
@@ -1189,7 +1282,7 @@ mod tests {
   fn a_rename_that_ends_after_leaving_the_game_still_updates_the_remembered_profile() {
     let mut state = ready("Modded", &["Default", "Modded"]);
 
-    submit(&mut state, Naming::Rename, "Heavy");
+    submit(&mut state, Naming::Rename("Modded".to_string()), "Heavy");
     update(&mut state, Msg::SwitchGamePressed);
 
     let effects = update(&mut state, changed(rename("Modded", "Heavy"), Ok(())));
@@ -1286,12 +1379,12 @@ mod tests {
 
     update(&mut state, opened_with("Modded", &[("Owner-A", "1.0.0")]));
     update(&mut state, listed(&["Default", "Modded"]));
-    submit(&mut state, Naming::Rename, "Heavy");
+    submit(&mut state, Naming::Rename("Modded".to_string()), "Heavy");
     update(&mut state, changed(rename("Modded", "Heavy"), Ok(())));
 
     assert_eq!(counts(&state), vec![("Default", None), ("Heavy", Some(1))]);
 
-    submit(&mut state, Naming::Duplicate, "Copy");
+    submit(&mut state, Naming::Duplicate("Heavy".to_string()), "Copy");
     update(&mut state, changed(duplicate("Heavy", "Copy"), Ok(())));
 
     assert_eq!(
@@ -1300,7 +1393,7 @@ mod tests {
     );
 
     update(&mut state, opened_with("Copy", &[("Owner-A", "1.0.0")]));
-    update(&mut state, Msg::DeleteProfilePressed);
+    update(&mut state, Msg::DeleteProfilePressed("Copy".to_string()));
     update(&mut state, Msg::DeleteProfileConfirmed);
     update(&mut state, changed(delete("Copy"), Ok(())));
 

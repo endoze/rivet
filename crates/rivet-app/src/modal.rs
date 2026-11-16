@@ -28,7 +28,7 @@ pub(crate) enum Modal {
   Closing,
   /// Asks for a name for a new, renamed, or copied profile.
   Naming,
-  /// Asks to confirm deleting the selected profile.
+  /// Asks to confirm deleting a profile.
   Deleting,
   /// Asks for a profile code to import, then the name to import it as.
   Importing,
@@ -208,7 +208,7 @@ fn naming(
         .into_any_element()
     });
     let frame = Frame {
-      title: text::name_prompt(form.naming, &form.from),
+      title: text::name_prompt(&form.naming),
       id: "profile-name-dialog",
       body: std::iter::once(Input::new(&input).into_any_element())
         .chain(refusal)
@@ -336,7 +336,7 @@ fn importing(
   }
 }
 
-/// The modal asking to confirm deleting the selected profile.
+/// The modal asking to confirm deleting a profile.
 fn deleting(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
   move |dialog, _, cx| {
     let deleting = shell.upgrade().and_then(|shell| {
@@ -700,7 +700,6 @@ mod tests {
       names: vec!["Default".to_string()],
       form: naming.then_some(NameForm {
         naming: Naming::Create,
-        from: "Default".to_string(),
         refusal: None,
       }),
       deleting: deleting.then(|| "Default".to_string()),

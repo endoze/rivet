@@ -39,11 +39,11 @@ pub enum Exported {
   File(PathBuf),
 }
 
-/// Exporting the open profile.
+/// Exporting one of the open game's profiles.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exporting {
-  /// Waiting for the user to choose where to save the file.
-  ChoosingFile,
+  /// Waiting for the user to choose where to save this profile's file.
+  ChoosingFile(String),
   Running(Export),
 }
 
@@ -164,57 +164,56 @@ impl State {
     )
   }
 
-  /// Whether the open profile can be exported: it has been read, nothing
-  /// else is exporting, and as for [`State::can_duplicate_profile`].
-  pub fn can_export_profile(&self) -> bool {
-    let read = self
-      .profile
-      .as_ref()
-      .and_then(crate::install::Profile::installed)
-      .is_some();
+  /// Whether the open game's profile `name` can be exported: the package
+  /// list is loaded, nothing else is exporting, as for
+  /// [`State::can_duplicate_profile`], and it has been read when it is the
+  /// selected profile.
+  pub fn can_export_profile(&self, name: &str) -> bool {
+    let unread = self.profile.as_ref().is_some_and(|profile| {
+      profile.name == name && crate::install::Profile::installed(profile).is_none()
+    });
 
-    read && self.exporting.is_none() && self.can_duplicate_profile()
+    self.browse.is_some() && !unread && self.exporting.is_none() && self.can_duplicate_profile(name)
   }
 }
 
-/// Exports the open profile as a code, unless
+/// Exports the profile `name` as a code, unless
 /// [`State::can_export_profile`] says it cannot.
-pub(crate) fn export_code_pressed(state: &mut State) -> Vec<Effect> {
-  if !state.can_export_profile() {
+pub(crate) fn export_code_pressed(state: &mut State, name: String) -> Vec<Effect> {
+  if !state.can_export_profile(&name) {
     return Vec::new();
   }
 
-  start_export(state, Destination::Code)
+  start_export(state, name, Destination::Code)
 }
 
-/// Asks where to save the open profile's export, unless
+/// Asks where to save the export of the profile `name`, unless
 /// [`State::can_export_profile`] says it cannot be exported.
-pub(crate) fn export_file_pressed(state: &mut State) -> Vec<Effect> {
-  if !state.can_export_profile() {
+pub(crate) fn export_file_pressed(state: &mut State, name: String) -> Vec<Effect> {
+  if !state.can_export_profile(&name) {
     return Vec::new();
   }
 
-  let Some(profile) = state.profile.as_ref() else {
-    return Vec::new();
-  };
-  let suggested = format!("{}.r2z", profile.name);
+  let suggested = format!("{name}.r2z");
 
-  state.exporting = Some(Exporting::ChoosingFile);
+  state.exporting = Some(Exporting::ChoosingFile(name));
 
   vec![Effect::ChooseExportFile(suggested)]
 }
 
-/// Exports the open profile to `path`, or nothing when the dialog was
-/// cancelled.
+/// Exports the profile the save dialog was opened for to `path`, or nothing
+/// when the dialog was cancelled.
 pub(crate) fn export_file_chosen(state: &mut State, path: Option<PathBuf>) -> Vec<Effect> {
-  if state.exporting != Some(Exporting::ChoosingFile) {
+  let Some(Exporting::ChoosingFile(name)) = state.exporting.clone() else {
     return Vec::new();
-  }
+  };
 
   state.exporting = None;
 
   match path {
-    Some(path) if state.can_export_profile() => start_export(state, Destination::File(path)),
+    Some(path) if state.can_export_profile(&name) => {
+      start_export(state, name, Destination::File(path))
+    }
     _ => Vec::new(),
   }
 }
@@ -435,18 +434,18 @@ fn read(state: &mut State, source: Source) -> Vec<Effect> {
   vec![Effect::Run(Command::ReadShared { community, source })]
 }
 
-/// Exports the open profile to `to`.
-fn start_export(state: &mut State, to: Destination) -> Vec<Effect> {
-  let Some(profile) = state.profile.as_ref() else {
+/// Exports the open game's profile `name` to `to`.
+fn start_export(state: &mut State, name: String, to: Destination) -> Vec<Effect> {
+  let Some(switcher) = state.switcher.as_ref() else {
     return Vec::new();
   };
   let Some(browse) = state.browse.as_ref() else {
     return Vec::new();
   };
   let export = Export {
-    game: profile.game.clone(),
+    game: switcher.game.clone(),
     community: browse.community.clone(),
-    profile: profile.name.clone(),
+    profile: name,
     to,
   };
 
@@ -554,20 +553,71 @@ mod tests {
   fn exporting_as_a_code_shares_the_open_profile_through_thunderstore() {
     let mut state = ready();
 
-    let effects = update(&mut state, Msg::ExportCodePressed);
+    let effects = update(
+      &mut state,
+      Msg::ExportCodePressed(DEFAULT_PROFILE.to_string()),
+    );
 
     assert_eq!(
       effects,
       vec![Effect::Run(Command::Export(export(Destination::Code)))]
     );
-    assert!(!state.can_export_profile());
+    assert!(!state.can_export_profile(DEFAULT_PROFILE));
+  }
+
+  #[test]
+  fn a_profile_that_is_not_open_is_exported_by_name() {
+    let mut state = ready();
+    let modded = |to| Export {
+      profile: "Modded".to_string(),
+      ..export(to)
+    };
+
+    let effects = update(&mut state, Msg::ExportCodePressed("Modded".to_string()));
+
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::Export(modded(Destination::Code)))]
+    );
+
+    update(
+      &mut state,
+      Msg::ProfileExported {
+        export: modded(Destination::Code),
+        result: Err("offline".to_string()),
+      },
+    );
+
+    let effects = update(&mut state, Msg::ExportFilePressed("Modded".to_string()));
+
+    assert_eq!(
+      effects,
+      vec![Effect::ChooseExportFile("Modded.r2z".to_string())]
+    );
+
+    let path = PathBuf::from("/home/me/Modded.r2z");
+    let effects = update(&mut state, Msg::ExportFileChosen(Some(path.clone())));
+
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::Export(modded(Destination::File(
+        path
+      ))))]
+    );
+    assert!(
+      state.can_manage(),
+      "exporting another profile locked the open one"
+    );
   }
 
   #[test]
   fn the_profile_being_exported_cannot_change_until_the_export_ends() {
     let mut state = ready();
 
-    update(&mut state, Msg::ExportCodePressed);
+    update(
+      &mut state,
+      Msg::ExportCodePressed(DEFAULT_PROFILE.to_string()),
+    );
 
     assert!(!state.can_install());
     assert!(!state.can_manage());
@@ -594,7 +644,10 @@ mod tests {
   fn another_profile_can_change_while_one_is_exported() {
     let mut state = ready();
 
-    update(&mut state, Msg::ExportCodePressed);
+    update(
+      &mut state,
+      Msg::ExportCodePressed(DEFAULT_PROFILE.to_string()),
+    );
     update(&mut state, Msg::ProfilePicked("Modded".to_string()));
     update(
       &mut state,
@@ -619,7 +672,10 @@ mod tests {
   fn an_exported_code_is_copied_and_told() {
     let mut state = ready();
 
-    update(&mut state, Msg::ExportCodePressed);
+    update(
+      &mut state,
+      Msg::ExportCodePressed(DEFAULT_PROFILE.to_string()),
+    );
 
     let effects = update(
       &mut state,
@@ -636,14 +692,17 @@ mod tests {
         }),
       ]
     );
-    assert!(state.can_export_profile());
+    assert!(state.can_export_profile(DEFAULT_PROFILE));
   }
 
   #[test]
   fn an_export_that_fails_says_why() {
     let mut state = ready();
 
-    update(&mut state, Msg::ExportCodePressed);
+    update(
+      &mut state,
+      Msg::ExportCodePressed(DEFAULT_PROFILE.to_string()),
+    );
 
     let effects = update(&mut state, exported(Destination::Code, Err("offline")));
 
@@ -662,7 +721,10 @@ mod tests {
   fn exporting_as_a_file_asks_where_to_save_it_named_after_the_profile() {
     let mut state = ready();
 
-    let effects = update(&mut state, Msg::ExportFilePressed);
+    let effects = update(
+      &mut state,
+      Msg::ExportFilePressed(DEFAULT_PROFILE.to_string()),
+    );
 
     assert_eq!(
       effects,
@@ -700,10 +762,13 @@ mod tests {
   fn closing_the_save_dialog_exports_nothing() {
     let mut state = ready();
 
-    update(&mut state, Msg::ExportFilePressed);
+    update(
+      &mut state,
+      Msg::ExportFilePressed(DEFAULT_PROFILE.to_string()),
+    );
 
     assert_eq!(update(&mut state, Msg::ExportFileChosen(None)), vec![]);
-    assert!(state.can_export_profile());
+    assert!(state.can_export_profile(DEFAULT_PROFILE));
   }
 
   #[test]
@@ -712,9 +777,21 @@ mod tests {
 
     update(&mut state, Msg::DisablePressed("Owner-ModA".to_string()));
 
-    assert!(!state.can_export_profile());
-    assert_eq!(update(&mut state, Msg::ExportCodePressed), vec![]);
-    assert_eq!(update(&mut state, Msg::ExportFilePressed), vec![]);
+    assert!(!state.can_export_profile(DEFAULT_PROFILE));
+    assert_eq!(
+      update(
+        &mut state,
+        Msg::ExportCodePressed(DEFAULT_PROFILE.to_string())
+      ),
+      vec![]
+    );
+    assert_eq!(
+      update(
+        &mut state,
+        Msg::ExportFilePressed(DEFAULT_PROFILE.to_string())
+      ),
+      vec![]
+    );
   }
 
   #[test]
@@ -731,11 +808,11 @@ mod tests {
       },
     );
 
-    assert!(state.can_rename_or_delete_profile());
+    assert!(state.can_rename_or_delete_profile("Modded"));
 
-    update(&mut state, Msg::ExportCodePressed);
+    update(&mut state, Msg::ExportCodePressed("Modded".to_string()));
 
-    assert!(!state.can_rename_or_delete_profile());
+    assert!(!state.can_rename_or_delete_profile("Modded"));
   }
 
   #[test]

@@ -1964,19 +1964,16 @@ fn the_sidebar_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
 
   cx.run_until_parked();
   drain();
-  cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
-    window.click("profile-actions", cx);
-    window.render_frame(cx);
-    window.click("rename-profile", cx);
-  })
-  .unwrap();
-  settle(cx, window);
+  choose_on_profile(cx, window, DEFAULT_PROFILE, "rename-profile");
 
   assert!(
     !dialog_open(cx, window),
     "the default profile could be renamed"
   );
+
+  cx.update_window(window, |_, window, cx| window.press("escape", cx))
+    .unwrap();
+  settle(cx, window);
 
   let place = |window: &mut Window| {
     [
@@ -1989,9 +1986,6 @@ fn the_sidebar_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
   };
   let before = cx
     .update_window(window, |_, window, cx| {
-      window.press("escape", cx);
-      window.render_frame(cx);
-
       let sidebar = window.within("sidebar");
 
       assert_eq!(sidebar.find("pick-profile-Default").checked(), Some(true));
@@ -2131,14 +2125,7 @@ fn the_sidebar_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
     "a saved name left the dialog open"
   );
 
-  cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
-    window.click("profile-actions", cx);
-    window.render_frame(cx);
-    window.click("delete-profile", cx);
-  })
-  .unwrap();
-  settle(cx, window);
+  choose_on_profile(cx, window, "Fresh", "delete-profile");
   cx.update_window(window, |_, window, cx| {
     assert!(
       window
@@ -2173,6 +2160,214 @@ fn the_sidebar_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
     toasted(cx, window, "notice-error"),
     "the failed delete was not told"
   );
+}
+
+/// Right-clicks the profile `profile` in the sidebar and clicks `item` in its
+/// menu.
+fn choose_on_profile(
+  cx: &mut TestAppContext,
+  window: AnyWindowHandle,
+  profile: &str,
+  item: &'static str,
+) {
+  let id = format!("pick-profile-{profile}");
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.right_click(id, cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| window.click(item, cx))
+    .unwrap();
+  settle(cx, window);
+}
+
+#[gpui_kit::test]
+fn a_profile_s_right_click_menu_acts_on_it_and_not_the_current_one(cx: &mut TestAppContext) {
+  use rivet_core::portability::{Destination, Export};
+  use rivet_core::switcher::ProfileChange;
+
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let mut drain = move || std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>();
+  let changed = |change: ProfileChange| Msg::ProfileChanged {
+    game: "valheim".to_string(),
+    change,
+    result: Err("busy".to_string()),
+  };
+  let export = |to: Destination| Export {
+    game: "valheim".to_string(),
+    community: "valheim".to_string(),
+    profile: "Modded".to_string(),
+    to,
+  };
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[])].into()),
+    },
+    Msg::ProfilesListed {
+      game: "valheim".to_string(),
+      names: Ok(vec![DEFAULT_PROFILE.to_string(), "Modded".to_string()]),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  drain();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(
+      window.try_find("profile-actions").is_none(),
+      "Profile actions is still in the sidebar"
+    );
+  })
+  .unwrap();
+
+  choose_on_profile(cx, window, "Modded", "rename-profile");
+
+  assert!(dialog_open(cx, window), "renaming opened no dialog");
+
+  cx.update_window(window, |_, window, cx| {
+    window.input("Heavy", cx);
+    window.press("enter", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  let renamed = drain()
+    .into_iter()
+    .find_map(|command| match command {
+      Command::ChangeProfile {
+        change: change @ ProfileChange::Rename { .. },
+        ..
+      } => Some(change),
+      _ => None,
+    })
+    .expect("the rename was not made");
+
+  assert!(
+    matches!(&renamed, ProfileChange::Rename { from, .. } if from == "Modded"),
+    "{renamed:?}"
+  );
+
+  answers.unbounded_send(changed(renamed)).unwrap();
+  cx.run_until_parked();
+
+  choose_on_profile(cx, window, "Modded", "duplicate-profile");
+
+  assert!(dialog_open(cx, window), "duplicating opened no dialog");
+
+  cx.update_window(window, |_, window, cx| {
+    window.input("Copy", cx);
+    window.press("enter", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  let duplicated = ProfileChange::Duplicate {
+    from: "Modded".to_string(),
+    to: "Copy".to_string(),
+  };
+
+  assert_eq!(
+    drain(),
+    vec![Command::ChangeProfile {
+      game: "valheim".to_string(),
+      change: duplicated.clone(),
+    }]
+  );
+
+  answers.unbounded_send(changed(duplicated)).unwrap();
+  cx.run_until_parked();
+
+  choose_on_profile(cx, window, "Modded", "share-code");
+
+  assert_eq!(drain(), vec![Command::Export(export(Destination::Code))]);
+
+  answers
+    .unbounded_send(Msg::ProfileExported {
+      export: export(Destination::Code),
+      result: Err("offline".to_string()),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  choose_on_profile(cx, window, "Modded", "share-file");
+
+  assert!(
+    cx.did_prompt_for_new_path(),
+    "sharing a file asked where to save none"
+  );
+
+  let path = PathBuf::from("/home/me/Modded.r2z");
+
+  cx.simulate_new_path_selection(|_| Some(path.clone()));
+  cx.run_until_parked();
+
+  assert_eq!(
+    drain(),
+    vec![Command::Export(export(Destination::File(path.clone())))]
+  );
+
+  answers
+    .unbounded_send(Msg::ProfileExported {
+      export: export(Destination::File(path)),
+      result: Err("disk full".to_string()),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  choose_on_profile(cx, window, "Modded", "delete-profile");
+  cx.update_window(window, |_, window, cx| {
+    assert!(
+      window
+        .within("delete-profile-dialog")
+        .try_find("confirm-delete-profile")
+        .is_some(),
+      "deleting asked nothing"
+    );
+
+    window.click("confirm-delete-profile", cx);
+  })
+  .unwrap();
+
+  assert_eq!(
+    drain(),
+    vec![Command::ChangeProfile {
+      game: "valheim".to_string(),
+      change: ProfileChange::Delete("Modded".to_string()),
+    }]
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert_eq!(
+      window.find("pick-profile-Default").checked(),
+      Some(true),
+      "acting on another profile changed the current one"
+    );
+  })
+  .unwrap();
 }
 
 #[gpui_kit::test]
@@ -2704,7 +2899,6 @@ fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_toolbar(
       "pick-profile-Default",
       "new-profile",
       "import-profile",
-      "profile-actions",
       "open-settings",
     ] {
       assert!(within.try_find(id).is_some(), "{id} is not in the sidebar");
@@ -2712,7 +2906,7 @@ fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_toolbar(
 
     let row = within.find("open-settings").bounds().size.width;
 
-    for id in ["new-profile", "import-profile", "profile-actions"] {
+    for id in ["new-profile", "import-profile"] {
       assert_eq!(
         within.find(id).bounds().size.width,
         row,
