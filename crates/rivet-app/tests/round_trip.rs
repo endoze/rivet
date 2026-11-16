@@ -9,6 +9,7 @@ use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
 use rivet_core::loader_files::{FileRemoval, LoaderFile};
+use rivet_core::manage::Tab;
 use rivet_core::readme::{self, Request};
 use rivet_core::settings::{Appearance, GameSettings, RuntimeChoice, Settings, ThemeFamily};
 use rivet_core::{Command, Msg, Screen, State};
@@ -80,6 +81,7 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
     );
   }
 
+  answers.unbounded_send(Msg::TabChosen(Tab::Browse)).unwrap();
   answers
     .unbounded_send(Msg::CachedIndexRead {
       community: "valheim".to_string(),
@@ -165,6 +167,7 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -277,6 +280,7 @@ fn the_toolbar_switches_views_without_moving_the_list(cx: &mut TestAppContext) {
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -387,6 +391,7 @@ fn clicking_a_profile_from_find_mods_shows_its_mods(cx: &mut TestAppContext) {
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -417,7 +422,7 @@ fn clicking_a_profile_from_find_mods_shows_its_mods(cx: &mut TestAppContext) {
 
     assert!(
       window.try_find("package-search").is_some(),
-      "the game did not open on Find mods"
+      "choosing Find mods did not show it"
     );
 
     window.click("pick-profile-Default", cx);
@@ -477,6 +482,7 @@ fn the_filter_menu_filters_both_views_by_category(cx: &mut TestAppContext) {
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(index_with_categories())),
@@ -650,6 +656,7 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -759,6 +766,7 @@ fn closing_the_install_modal_any_way_installs_nothing(cx: &mut TestAppContext) {
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -823,6 +831,7 @@ fn closing_while_an_install_runs_asks_then_cancels_it_and_closes(cx: &mut TestAp
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -935,6 +944,7 @@ fn the_status_bar_shows_the_running_change_without_moving_the_tabs(cx: &mut Test
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -1096,6 +1106,7 @@ fn cancel_and_error_toasts_stay_clear_of_the_status_bar(cx: &mut TestAppContext)
 
   for msg in [
     Msg::SettingsLoaded(Ok(settings)),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -1189,6 +1200,7 @@ fn the_installed_tab_asks_before_disabling_a_dependency_and_the_disable_can_be_c
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::ProfileOpened {
       game: "valheim".to_string(),
       profile: DEFAULT_PROFILE.to_string(),
@@ -1383,6 +1395,7 @@ fn a_version_chosen_in_the_install_modal_is_the_one_installed(cx: &mut TestAppCo
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -2461,6 +2474,7 @@ fn selecting_a_package_in_either_tab_shows_its_readme_beside_the_list(cx: &mut T
 
   for msg in [
     Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::TabChosen(Tab::Browse),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),

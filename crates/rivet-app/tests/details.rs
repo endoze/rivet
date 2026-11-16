@@ -24,6 +24,8 @@ fn the_pane_shows_the_first_mod_until_another_is_selected_without_moving_the_lis
 
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
 
     let list = window.find("mod-list").bounds();
     let row = window.find("Owner-ModA").bounds();
@@ -81,6 +83,8 @@ fn the_pane_closes_and_reopens_at_the_width_it_was_given_without_moving_the_tool
 
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
 
     let pane = window.find("details").bounds();
     let list = window.find("mod-list").bounds().size.width;
@@ -121,6 +125,8 @@ fn the_list_starts_under_the_toolbar_and_stays_there_as_the_pane_comes_and_goes(
   let (window, _) = open_valheim(cx, vec![]);
 
   cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-browse", cx);
     window.render_frame(cx);
 
     let top = window.find("mod-list").bounds().top();
@@ -224,6 +230,11 @@ fn a_search_shows_its_first_mod_at_once_and_fetches_its_readme_once_typing_pause
 ) {
   let (window, mut sent) = open_valheim(cx, vec![]);
 
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-browse", cx);
+  })
+  .unwrap();
   readme_fetches(&mut sent);
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);

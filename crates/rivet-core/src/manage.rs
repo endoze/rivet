@@ -7,13 +7,13 @@ use crate::{Command, Effect, State};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// The tab shown in a game.
+/// The tab shown in a game. A game opens on [`Tab::Installed`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Tab {
   /// The game's package list.
-  #[default]
   Browse,
   /// The open profile's packages.
+  #[default]
   Installed,
 }
 
@@ -701,11 +701,11 @@ mod tests {
   fn choosing_a_tab_shows_it() {
     let mut state = ready(profile());
 
-    assert_eq!(state.tab, Tab::Browse);
-
-    update(&mut state, Msg::TabChosen(Tab::Installed));
-
     assert_eq!(state.tab, Tab::Installed);
+
+    update(&mut state, Msg::TabChosen(Tab::Browse));
+
+    assert_eq!(state.tab, Tab::Browse);
   }
 
   #[test]

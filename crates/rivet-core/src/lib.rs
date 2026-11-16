@@ -997,6 +997,7 @@ fn show_game(state: &mut State, game: String) -> Vec<Effect> {
   let launcher = launch::open(state, &game);
 
   switcher::open(state, &game);
+  show_tab(state, Tab::Installed);
 
   state.screen = Screen::Game(game);
   state.browse = community.clone().map(Browse::new);
@@ -1442,6 +1443,44 @@ mod tests {
       folder: PathBuf::from(folder),
       entries: Ok(entries.iter().map(|entry| entry.to_string()).collect()),
     }
+  }
+
+  #[test]
+  fn a_start_on_the_last_game_lands_on_its_profiles_mods() {
+    let mut state = started();
+
+    update(
+      &mut state,
+      Msg::SettingsLoaded(Ok(settings_with("valheim", "/games/valheim"))),
+    );
+
+    assert_eq!(state.tab, Tab::Installed);
+  }
+
+  #[test]
+  fn picking_a_game_lands_on_its_profiles_mods() {
+    let mut state = checking("valheim", "/games/valheim");
+
+    update(&mut state, listed("/games/valheim", &["valheim.x86_64"]));
+
+    assert_eq!(state.screen, Screen::Game("valheim".to_string()));
+    assert_eq!(state.tab, Tab::Installed);
+  }
+
+  #[test]
+  fn switching_games_from_find_mods_lands_on_the_next_games_profile() {
+    let mut state = started();
+
+    update(
+      &mut state,
+      Msg::SettingsLoaded(Ok(settings_with("valheim", "/games/valheim"))),
+    );
+    update(&mut state, Msg::TabChosen(Tab::Browse));
+    update(&mut state, Msg::SwitchGamePressed);
+    update(&mut state, Msg::GamePicked("valheim".to_string()));
+
+    assert_eq!(state.screen, Screen::Game("valheim".to_string()));
+    assert_eq!(state.tab, Tab::Installed);
   }
 
   #[test]

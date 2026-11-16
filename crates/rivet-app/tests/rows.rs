@@ -36,6 +36,8 @@ fn a_package_row_keeps_long_text_inside_one_uniform_row(cx: &mut TestAppContext)
 
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
 
     assert_rows_hold_their_text(window, &rows);
 
@@ -108,8 +110,12 @@ fn a_profile_row_shows_an_icon_its_tags_and_a_switch(cx: &mut TestAppContext) {
 fn a_row_shows_initials_when_its_icon_fails_to_load(cx: &mut TestAppContext) {
   let window = open_valheim(cx, vec![]);
 
-  cx.update_window(window, |_, window, cx| window.render_frame(cx))
-    .unwrap();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
+  })
+  .unwrap();
   cx.run_until_parked();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
@@ -149,6 +155,8 @@ fn a_rows_main_action_shows_on_hover_and_on_the_selected_row_without_resizing_it
   let window = open_valheim(cx, vec![]);
 
   cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-browse", cx);
     window.render_frame(cx);
 
     let shown = |window: &mut Window, row: &str| window.find(format!("actions-{row}")).visible();

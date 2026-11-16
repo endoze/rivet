@@ -117,6 +117,8 @@ fn assert_game_layout_holds(cx: &mut TestAppContext, size: u16) {
 
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
+    window.click("tab-browse", cx);
+    window.render_frame(cx);
 
     let viewport = window.viewport_size();
     let corner = window.bounds().origin;

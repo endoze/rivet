@@ -475,8 +475,8 @@ mod tests {
   use crate::{Command, Effect, Msg, State, test_ecosystem, update};
   use std::path::PathBuf;
 
-  /// A state that started with `game` open, its cache and profile not yet
-  /// read.
+  /// A state that started with `game` open on Find mods, its cache and
+  /// profile not yet read, and the effects of opening it.
   fn opened(game: &str) -> (State, Vec<Effect>) {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
@@ -492,6 +492,8 @@ mod tests {
     update(&mut state, Msg::Started);
 
     let effects = update(&mut state, Msg::SettingsLoaded(Ok(settings)));
+
+    update(&mut state, Msg::TabChosen(crate::manage::Tab::Browse));
 
     (state, effects)
   }

@@ -298,7 +298,7 @@ mod tests {
   use crate::settings::{GameSettings, Settings};
   use crate::{Command, Effect, Msg, State, test_ecosystem, update};
 
-  /// A state with valheim open, its package list not yet read.
+  /// A state with valheim open on Find mods, its package list not yet read.
   fn opened() -> State {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
@@ -309,6 +309,7 @@ mod tests {
 
     update(&mut state, Msg::Started);
     update(&mut state, Msg::SettingsLoaded(Ok(settings)));
+    update(&mut state, Msg::TabChosen(Tab::Browse));
 
     state
   }
