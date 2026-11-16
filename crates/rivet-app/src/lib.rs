@@ -2322,7 +2322,8 @@ fn mod_tags(
 /// One mod of the open profile: its icon, name, author and version with its
 /// state tags, its main action, and its switch. The mod loader has no switch
 /// and is tagged as the loader, and a disabled mod is dimmed. Clicking the
-/// row selects it, showing the rest of its actions in the detail pane.
+/// row selects it, showing the rest of its actions in the detail pane;
+/// right-clicking it opens [`mod_menu`] for it.
 fn installed_row(
   state: &State,
   full_name: &str,
@@ -2415,9 +2416,32 @@ fn installed_row(
     )
     .child(actions_slot(full_name, selected, actions))
     .child(div().flex_none().w(spec(SWITCH_WIDTH)).children(switch))
-    .test_support();
+    .test_support()
+    .context_menu(mod_menu(state, full_name, &cx.weak_entity()));
 
   row_slot(item).into_any_element()
+}
+
+/// Builds the right-click menu of what can be done to the open profile's mod
+/// `full_name`: uninstalling it, as the detail pane's button does.
+fn mod_menu(
+  state: &State,
+  full_name: &str,
+  shell: &WeakEntity<Shell>,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + use<> {
+  let can_uninstall = state.can_take(&Action::Uninstall);
+  let msg = Action::Uninstall.msg(full_name);
+  let shell = shell.clone();
+
+  move |menu, _, cx| {
+    let danger = can_uninstall.then(|| Palette::new(cx).danger_text);
+
+    menu.item(
+      menu_item("uninstall-mod", text::UNINSTALL, danger)
+        .disabled(!can_uninstall)
+        .on_click(send(&shell, msg.clone())),
+    )
+  }
 }
 
 /// A row of either list, found in tests by `id`, painted for whether it is

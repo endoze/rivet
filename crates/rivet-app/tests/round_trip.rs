@@ -2832,6 +2832,147 @@ fn a_refused_uninstall_shows_in_the_modal_and_dismissing_it_clears_it(cx: &mut T
   assert!(!dialog_open(cx, window), "dismissing kept the refusal open");
 }
 
+/// Right-clicks the row of `package` in In this profile and clicks `item` in
+/// its menu.
+fn choose_on_row(
+  cx: &mut TestAppContext,
+  window: AnyWindowHandle,
+  package: &str,
+  item: &'static str,
+) {
+  let id = format!("profile-{package}");
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.right_click(id, cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| window.click(item, cx))
+    .unwrap();
+  settle(cx, window);
+}
+
+#[gpui_kit::test]
+fn a_row_s_right_click_menu_uninstalls_it_asking_about_its_dependants(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(
+        [
+          package("Owner-ModA", &[]),
+          package("Owner-ModC", &["Owner-ModA"]),
+        ]
+        .into(),
+      ),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+  })
+  .unwrap();
+  choose_on_row(cx, window, "Owner-ModA", "uninstall-mod");
+
+  assert!(
+    dialog_open(cx, window),
+    "uninstalling from the menu asked nothing about the dependants"
+  );
+
+  cx.update_window(window, |_, window, cx| {
+    window
+      .within("dependants-question")
+      .click("with-dependants", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  let checked = std::iter::from_fn(|| sent.try_recv().ok()).any(|command| {
+    command
+      == Command::CheckUninstall {
+        game: "valheim".to_string(),
+        profile: DEFAULT_PROFILE.to_string(),
+        packages: vec!["Owner-ModA".to_string(), "Owner-ModC".to_string()],
+      }
+  });
+
+  assert!(checked, "the uninstall from the menu was not checked");
+}
+
+#[gpui_kit::test]
+fn a_row_s_menu_cannot_uninstall_while_a_change_to_the_profile_runs(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok([package("Owner-ModA", &[])].into()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("tab-installed", cx);
+    window.render_frame(cx);
+    window.click("switch-Owner-ModA", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  let disabling = std::iter::from_fn(|| sent.try_recv().ok()).count();
+
+  assert!(disabling > 0, "the switch started no change");
+
+  choose_on_row(cx, window, "Owner-ModA", "uninstall-mod");
+
+  let checked = std::iter::from_fn(|| sent.try_recv().ok())
+    .any(|command| matches!(command, Command::CheckUninstall { .. }));
+
+  assert!(
+    !checked,
+    "the menu uninstalled while the profile was changing"
+  );
+
+  cx.update_window(window, |_, window, _| {
+    assert!(
+      window.try_find("uninstall-mod").is_some(),
+      "the menu took the click on a disabled Uninstall"
+    );
+  })
+  .unwrap();
+}
+
 /// The settings `saves` last saved for valheim, failing when there are none.
 fn last_saved(saves: &[Command]) -> GameSettings {
   saves
