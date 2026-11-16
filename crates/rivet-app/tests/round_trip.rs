@@ -7,6 +7,7 @@ use gpui_kit::{
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
+use rivet_core::loader_files::{FileRemoval, LoaderFile};
 use rivet_core::readme::{self, Request};
 use rivet_core::settings::{GameSettings, RuntimeChoice, Settings};
 use rivet_core::{Command, Msg, Screen, State};
@@ -2142,5 +2143,81 @@ fn settings_force_a_linux_game_to_run_under_proton(cx: &mut TestAppContext) {
         .and_then(|launcher| launcher.runtime)
     }),
     Some(Runtime::Proton)
+  );
+}
+
+#[gpui_kit::test]
+fn settings_remove_the_loader_files_launches_copied_into_the_game_folder(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let mut drain = move || std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>();
+  let proxy = LoaderFile {
+    path: PathBuf::from("/games/Valheim/winhttp.dll"),
+    sha256: "aa".to_string(),
+  };
+  let mut settings = valheim_settings();
+
+  if let Some(valheim) = settings.games.get_mut("valheim") {
+    valheim.loader_files = vec![proxy.clone()];
+  }
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(settings)))
+    .unwrap();
+  cx.run_until_parked();
+  drain();
+
+  let place = |window: &mut Window| window.find("steam-folder").bounds();
+  let before = cx
+    .update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+      window.click("game-menu", cx);
+      window.render_frame(cx);
+      window.click("open-settings", cx);
+      window.render_frame(cx);
+
+      let before = place(window);
+
+      window.click("remove-loader-files", cx);
+
+      before
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert_eq!(
+    drain(),
+    vec![Command::RemoveLoaderFiles {
+      game: "valheim".to_string(),
+      files: vec![proxy.clone()],
+    }]
+  );
+
+  answers
+    .unbounded_send(Msg::LoaderFilesRemoved {
+      game: "valheim".to_string(),
+      files: vec![(proxy.path.clone(), FileRemoval::Removed)],
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert_eq!(last_saved(&drain()).loader_files, []);
+  assert!(toasted(cx, window, "notice-success"));
+  assert_eq!(
+    cx.update_window(window, |_, window, cx| {
+      window.render_frame(cx);
+
+      place(window)
+    })
+    .unwrap(),
+    before
   );
 }

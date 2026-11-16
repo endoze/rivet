@@ -10,7 +10,7 @@ use rivet_core::notice::Notice;
 use rivet_core::picker::{FolderRefusal, NotFound, Refusal, STEAM_LIBRARY};
 use rivet_core::portability::{Destination, Exported, ReadFailure};
 use rivet_core::switcher::{NameRefusal, Naming, ProfileChange};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thunderstore_engine::ecosystem::LoaderKind;
 use thunderstore_engine::profile::launch::LaunchMode;
 use thunderstore_engine::profile::layout::BadName;
@@ -128,6 +128,29 @@ pub const RUNTIME_NATIVE: &str = "Native";
 pub const RUNTIME_PROTON: &str = "Proton";
 pub const RUNTIME_HINT: &str =
   "Detect picks Proton when the game folder holds only the Windows build. Takes effect at once.";
+
+pub const LOADER_FILES: &str = "Loader files";
+pub const REMOVE: &str = "Remove";
+
+/// How many files launches copied into the game folder and have not been
+/// removed, such as `2 files copied into the game folder`.
+///
+/// ```
+/// use rivet_app::text::loader_files;
+///
+/// assert_eq!(loader_files(0), "None in the game folder");
+/// assert_eq!(loader_files(1), "1 file copied into the game folder");
+/// assert_eq!(loader_files(3), "3 files copied into the game folder");
+/// ```
+pub fn loader_files(count: usize) -> String {
+  match count {
+    0 => "None in the game folder".to_string(),
+    1 => "1 file copied into the game folder".to_string(),
+    count => format!("{count} files copied into the game folder"),
+  }
+}
+
+pub const LOADER_FILES_HINT: &str = "Some modded launches copy the mod loader into the game folder. Remove takes out what Rivet copied and leaves anything you changed.";
 
 pub fn settings_title(game: &str) -> String {
   format!("{game} settings")
@@ -908,8 +931,80 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
         detail: vec![failure.detail, failure.next],
       }
     }
+    Notice::LoaderFilesRemoved {
+      game,
+      changed,
+      failed,
+    } => loader_files_removed(&game_name(game), changed, failed),
   }
 }
+
+/// A removal of the loader files launches copied into `game`'s folder,
+/// naming the files it left and why.
+///
+/// ```
+/// use rivet_app::text::loader_files_removed;
+/// use std::path::PathBuf;
+///
+/// let changed = [PathBuf::from("/games/Valheim/doorstop_config.ini")];
+/// let failed = [(
+///   PathBuf::from("/games/Valheim/winhttp.dll"),
+///   "permission denied".to_string(),
+/// )];
+/// let told = loader_files_removed("Valheim", &changed, &failed);
+///
+/// assert_eq!(told.title, "Some loader files could not be removed from Valheim");
+/// assert_eq!(
+///   told.detail,
+///   [
+///     "winhttp.dll: permission denied",
+///     "Left doorstop_config.ini, since it changed after Rivet copied it.",
+///     "Close the game if it is running, then try again.",
+///   ]
+/// );
+/// assert_eq!(
+///   loader_files_removed("Valheim", &[], &[]).title,
+///   "Removed the loader files from Valheim's folder"
+/// );
+/// ```
+pub fn loader_files_removed(game: &str, changed: &[PathBuf], failed: &[(PathBuf, String)]) -> Told {
+  let name = |path: &PathBuf| {
+    path
+      .file_name()
+      .unwrap_or(path.as_os_str())
+      .to_string_lossy()
+      .into_owned()
+  };
+  let title = match failed {
+    [] => format!("Removed the loader files from {game}'s folder"),
+    _ => format!("Some loader files could not be removed from {game}"),
+  };
+  let mut detail: Vec<String> = failed
+    .iter()
+    .map(|(path, reason)| format!("{}: {reason}", name(path)))
+    .collect();
+
+  if !changed.is_empty() {
+    let names: Vec<String> = changed.iter().map(name).collect();
+    let (they, them) = match changed {
+      [_] => ("it", "it"),
+      _ => ("they", "them"),
+    };
+
+    detail.push(format!(
+      "Left {}, since {they} changed after Rivet copied {them}.",
+      names.join(", ")
+    ));
+  }
+
+  if !failed.is_empty() {
+    detail.push(TRY_AGAIN_AFTER_CLOSING.to_string());
+  }
+
+  Told { title, detail }
+}
+
+pub const TRY_AGAIN_AFTER_CLOSING: &str = "Close the game if it is running, then try again.";
 
 pub const EXPORT_CODE: &str = "Export as code";
 pub const EXPORT_FILE: &str = "Export as file…";

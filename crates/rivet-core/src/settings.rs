@@ -2,6 +2,7 @@
 //! platform's config location.
 
 use crate::install::DEFAULT_PROFILE;
+use crate::loader_files::LoaderFile;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,10 @@ pub struct GameSettings {
   /// [`RuntimeChoice::Detect`] to tell from its folder.
   #[serde(default, skip_serializing_if = "RuntimeChoice::is_detect")]
   pub runtime: RuntimeChoice,
+  /// The files launches copied into the game's folder and have not been
+  /// removed since, so they can be.
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub loader_files: Vec<LoaderFile>,
 }
 
 impl GameSettings {
@@ -53,6 +58,7 @@ impl GameSettings {
   /// assert_eq!(valheim.profile, None);
   /// assert_eq!(valheim.launch_arguments, "");
   /// assert_eq!(valheim.runtime, RuntimeChoice::Detect);
+  /// assert!(valheim.loader_files.is_empty());
   /// ```
   pub fn new(folder: impl Into<PathBuf>) -> Self {
     Self {
@@ -60,6 +66,7 @@ impl GameSettings {
       profile: None,
       launch_arguments: String::new(),
       runtime: RuntimeChoice::Detect,
+      loader_files: Vec::new(),
     }
   }
 }

@@ -611,9 +611,10 @@ impl Shell {
       .into_any_element()
   }
 
-  /// The settings of `game`: its folder, launch arguments, and on Linux
-  /// whether it runs natively or under Proton, then the Steam folder every
-  /// game shares. While a folder is being changed, no other can be.
+  /// The settings of `game`: its folder, launch arguments, on Linux whether
+  /// it runs natively or under Proton, and the loader files launches copied
+  /// into its folder, then the Steam folder every game shares. While a folder
+  /// is being changed, no other can be.
   fn render_settings(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
     let state = &self.state;
@@ -723,6 +724,38 @@ impl Shell {
             .child(text::RUNTIME_HINT),
         )
     });
+    let loader_files = v_flex()
+      .gap_1()
+      .child(
+        h_flex()
+          .gap_3()
+          .items_center()
+          .child(label(text::LOADER_FILES))
+          .child(
+            div()
+              .id("loader-files")
+              .flex_1()
+              .min_w_0()
+              .truncate()
+              .child(text::loader_files(state.loader_files(game).len()))
+              .test_support(),
+          )
+          .child(
+            Button::new("remove-loader-files")
+              .label(text::REMOVE)
+              .small()
+              .disabled(!state.can_remove_loader_files(game))
+              .on_click(cx.listener(|this, _, _, cx| {
+                this.dispatch(Msg::RemoveLoaderFilesPressed, cx);
+              })),
+          ),
+      )
+      .child(
+        div()
+          .text_sm()
+          .text_color(palette.muted_text)
+          .child(text::LOADER_FILES_HINT),
+      );
 
     v_flex()
       .size_full()
@@ -761,7 +794,8 @@ impl Shell {
             Target::GameFolder,
           ))
           .child(launch_arguments)
-          .children(runtime),
+          .children(runtime)
+          .child(loader_files),
       )
       .child(section(text::EVERY_GAME.into()).child(folder_row(
         "steam-folder",

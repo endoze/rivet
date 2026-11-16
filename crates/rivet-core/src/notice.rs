@@ -6,6 +6,7 @@ use crate::install::{Action, FailedPackage};
 use crate::launch::LaunchFailure;
 use crate::portability::{Destination, Exported, ReadFailure};
 use crate::switcher::ProfileChange;
+use std::path::PathBuf;
 use thunderstore_engine::profile::launch::LaunchMode;
 
 /// How a [`Notice`] reads at a glance.
@@ -89,6 +90,15 @@ pub enum Notice {
   },
   /// A file to import could not be read, so nothing was imported.
   ImportUnread(ReadFailure),
+  /// The files launches copied into a game's folder were removed, except
+  /// those listed: `changed` were changed since and left in place, and
+  /// `failed` could not be removed, each with the reason.
+  LoaderFilesRemoved {
+    /// The game, by its key in the game definitions.
+    game: String,
+    changed: Vec<PathBuf>,
+    failed: Vec<(PathBuf, String)>,
+  },
 }
 
 impl Notice {
@@ -113,6 +123,9 @@ impl Notice {
       | Notice::LaunchFailed { .. }
       | Notice::ExportFailed { .. }
       | Notice::ImportUnread(_) => Level::Error,
+      Notice::LoaderFilesRemoved { failed, .. } if !failed.is_empty() => Level::Error,
+      Notice::LoaderFilesRemoved { changed, .. } if !changed.is_empty() => Level::Warning,
+      Notice::LoaderFilesRemoved { .. } => Level::Success,
       Notice::IndexStale(_) => Level::Warning,
       Notice::OperationCancelled { .. } | Notice::LaunchLineCopied => Level::Info,
     }
@@ -129,6 +142,19 @@ mod tests {
       profile: "Default".to_string(),
       action: Action::Install("Owner-Mod".to_string()),
       changed: changed.iter().map(|name| name.to_string()).collect(),
+    }
+  }
+
+  /// A removal of loader files that left `changed` and failed to remove
+  /// `failed`.
+  fn removed(changed: &[&str], failed: &[&str]) -> Notice {
+    Notice::LoaderFilesRemoved {
+      game: "valheim".to_string(),
+      changed: changed.iter().map(PathBuf::from).collect(),
+      failed: failed
+        .iter()
+        .map(|name| (PathBuf::from(name), "in use".to_string()))
+        .collect(),
     }
   }
 
@@ -180,6 +206,12 @@ mod tests {
       (
         Notice::SteamOptionSet("valheim".to_string()),
         Level::Success,
+      ),
+      (removed(&[], &[]), Level::Success),
+      (removed(&["winhttp.dll"], &[]), Level::Warning),
+      (
+        removed(&["winhttp.dll"], &["doorstop_config.ini"]),
+        Level::Error,
       ),
     ];
 

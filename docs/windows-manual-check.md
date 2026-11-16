@@ -13,6 +13,7 @@ Use a Windows 10 or 11 machine with Steam signed in, a game Thunderstore support
 - [ ] Installing a mod pulls in its dependencies and the loader. Enabling, disabling, updating, and uninstalling it work.
 - [ ] Launching modded copies the loader into the game folder and the game starts with the mod loaded.
 - [ ] Launching vanilla afterwards starts the game without mods.
+- [ ] With the game closed, Remove beside Loader files in the game's settings deletes the files that launch copied, leaves a copied file you edited since, and the game folder is back to how it was before Rivet launched it. Removing again after a restart still knows what was copied.
 - [ ] Exporting a profile as a code and as a file, then importing each, gives the same mods.
 - [ ] Closing Rivet while a change runs asks first.
 

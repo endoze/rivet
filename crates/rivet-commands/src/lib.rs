@@ -10,6 +10,7 @@ use rivet_core::install::{
   FailedPackage, Install, Installed, InstalledPackage, Outcome, Progress, Stage,
 };
 use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
+use rivet_core::loader_files::{Copied, FileRemoval, LoaderFile};
 use rivet_core::manage::{SetEnabled, Uninstall};
 use rivet_core::picker::NotFound;
 use rivet_core::readme;
@@ -17,6 +18,7 @@ use rivet_core::settings::Settings;
 use rivet_core::switcher::ProfileChange;
 use rivet_core::updates::Update;
 use rivet_core::{Command, Msg};
+use sha2::{Digest as _, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -220,7 +222,11 @@ pub async fn run(
     }
     Command::Launch(launch) => Msg::LaunchFinished {
       launch: launch.id,
-      result: start(config, launch).await,
+      result: start(config, launch, progress.clone()).await,
+    },
+    Command::RemoveLoaderFiles { game, files } => Msg::LoaderFilesRemoved {
+      files: remove_loader_files(files).await,
+      game,
     },
     Command::ListGameFolder { game, folder } => Msg::GameFolderListed {
       entries: list_folder(&folder).await,
@@ -336,8 +342,13 @@ async fn change_profile(config: &Config, game: &str, change: &ProfileChange) -> 
   .map_err(|error| error.to_string())
 }
 
-/// Prepares `launch` with the engine, then starts the game.
-async fn start(config: &Config, launch: Launch) -> Result<(), LaunchFailure> {
+/// Prepares `launch` with the engine, then starts the game. The files it
+/// copied into the game folder go to `progress` before the game is started.
+async fn start(
+  config: &Config,
+  launch: Launch,
+  progress: UnboundedSender<Msg>,
+) -> Result<(), LaunchFailure> {
   let (data, ecosystem, spawn) = (config.data.clone(), config.ecosystem.clone(), config.spawn);
 
   tokio::task::spawn_blocking(move || {
@@ -345,6 +356,24 @@ async fn start(config: &Config, launch: Launch) -> Result<(), LaunchFailure> {
       .map_err(launch_failure)?;
     let prepared =
       launch::prepare_launch(&target, &ecosystem, &launch.context).map_err(launch_failure)?;
+    let copied = Copied {
+      game: launch.game,
+      created: prepared
+        .staged
+        .iter()
+        .map(|path| loader_file(path))
+        .collect(),
+      replaced: prepared
+        .replaced
+        .iter()
+        .map(|path| loader_file(path))
+        .collect(),
+    };
+
+    if !copied.created.is_empty() || !copied.replaced.is_empty() {
+      progress.unbounded_send(Msg::LoaderFilesCopied(copied)).ok();
+    }
+
     let program = prepared
       .command
       .get_program()
@@ -356,6 +385,68 @@ async fn start(config: &Config, launch: Launch) -> Result<(), LaunchFailure> {
   })
   .await
   .map_err(|error| LaunchFailure::Other(error.to_string()))?
+}
+
+/// `path` as just copied, with an empty hash when it cannot be read back.
+fn loader_file(path: &Path) -> LoaderFile {
+  LoaderFile {
+    path: path.to_path_buf(),
+    sha256: sha256_of(path).unwrap_or_default(),
+  }
+}
+
+/// The SHA-256 of the file at `path`, in lowercase hex.
+fn sha256_of(path: &Path) -> std::io::Result<String> {
+  let digest = Sha256::digest(std::fs::read(path)?);
+
+  Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Deletes each of `files` still as it was copied, and says what became of
+/// each, in order. One that fails does not stop the rest.
+async fn remove_loader_files(files: Vec<LoaderFile>) -> Vec<(PathBuf, FileRemoval)> {
+  let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+
+  tokio::task::spawn_blocking(move || {
+    files
+      .into_iter()
+      .map(|file| {
+        let removal = remove_loader_file(&file);
+
+        (file.path, removal)
+      })
+      .collect()
+  })
+  .await
+  .unwrap_or_else(|error| {
+    paths
+      .into_iter()
+      .map(|path| (path, FileRemoval::Failed(error.to_string())))
+      .collect()
+  })
+}
+
+fn remove_loader_file(file: &LoaderFile) -> FileRemoval {
+  let metadata = match std::fs::symlink_metadata(&file.path) {
+    Ok(metadata) => metadata,
+    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return FileRemoval::Missing,
+    Err(error) => return FileRemoval::Failed(error.to_string()),
+  };
+
+  if !metadata.is_file() {
+    return FileRemoval::Changed;
+  }
+
+  match sha256_of(&file.path) {
+    Ok(sha256) if sha256 != file.sha256 => return FileRemoval::Changed,
+    Ok(_) => {}
+    Err(error) => return FileRemoval::Failed(error.to_string()),
+  }
+
+  match std::fs::remove_file(&file.path) {
+    Ok(()) => FileRemoval::Removed,
+    Err(error) => FileRemoval::Failed(error.to_string()),
+  }
 }
 
 fn launch_failure(error: thunderstore_engine::Error) -> LaunchFailure {
@@ -866,6 +957,7 @@ mod tests {
   use rivet_core::browse::{Fetch, Refresh};
   use rivet_core::install::{DEFAULT_PROFILE, Install, Installed, Outcome, Stage};
   use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
+  use rivet_core::loader_files::{Copied, FileRemoval, LoaderFile};
   use rivet_core::picker::NotFound;
   use rivet_core::settings::{GameSettings, RuntimeChoice};
   use tempfile::TempDir;
@@ -2543,6 +2635,238 @@ mod tests {
     );
   }
 
+  /// The SHA-256 of `proxy`, the contents of the loader's proxy DLL here.
+  const PROXY_SHA256: &str = "1241936d4dd3aad68fe7bfbdfe854b935926bc678fc72377e15166078916227a";
+
+  /// Puts BepInEx into the Default profile with its proxy DLL, holding
+  /// `proxy`, as the only file at the profile's root, where a Proton launch
+  /// copies files into the game folder from.
+  fn with_proxy(config: &Config) {
+    let profile = default_profile(config);
+
+    std::fs::create_dir_all(profile.join("BepInEx/core")).unwrap();
+    std::fs::write(profile.join("BepInEx/core/BepInEx.Preloader.dll"), "x").unwrap();
+    std::fs::write(profile.join("winhttp.dll"), "proxy").unwrap();
+  }
+
+  fn proxy_in(dir: &TempDir) -> LoaderFile {
+    LoaderFile {
+      path: dir.path().join("game").join("winhttp.dll"),
+      sha256: PROXY_SHA256.to_string(),
+    }
+  }
+
+  #[test]
+  fn a_modded_proton_launch_reports_the_files_it_copied_before_it_ends() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    with_proxy(&config);
+
+    let (along_the_way, answer) = run_reporting(
+      launch_under(&dir, LaunchMode::Modded, Runtime::Proton),
+      &config,
+    );
+
+    assert_eq!(
+      along_the_way,
+      vec![Msg::LoaderFilesCopied(Copied {
+        game: "valheim".to_string(),
+        created: vec![proxy_in(&dir)],
+        replaced: vec![],
+      })]
+    );
+    assert!(
+      matches!(answer, Msg::LaunchFinished { result: Ok(()), .. }),
+      "{answer:?}"
+    );
+  }
+
+  #[test]
+  fn a_launch_reports_a_file_it_overwrote_apart_from_those_it_created() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    with_proxy(&config);
+    std::fs::write(dir.path().join("game/winhttp.dll"), "older").unwrap();
+
+    let (along_the_way, _) = run_reporting(
+      launch_under(&dir, LaunchMode::Modded, Runtime::Proton),
+      &config,
+    );
+
+    assert_eq!(
+      along_the_way,
+      vec![Msg::LoaderFilesCopied(Copied {
+        game: "valheim".to_string(),
+        created: vec![],
+        replaced: vec![proxy_in(&dir)],
+      })]
+    );
+  }
+
+  #[test]
+  fn a_launch_that_copies_nothing_reports_nothing() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+
+    with_bepinex(&config);
+    with_proxy(&config);
+
+    for (mode, runtime) in [
+      (LaunchMode::Modded, Runtime::Native),
+      (LaunchMode::Vanilla, Runtime::Proton),
+    ] {
+      let (along_the_way, _) = run_reporting(launch_under(&dir, mode, runtime), &config);
+
+      assert_eq!(along_the_way, vec![], "{mode:?} {runtime:?}");
+    }
+
+    assert!(!dir.path().join("game/winhttp.dll").exists());
+  }
+
+  #[test]
+  fn files_copied_before_a_game_fails_to_start_are_still_reported() {
+    let dir = TempDir::new().unwrap();
+    let config = Config {
+      spawn: |_| Err(std::io::Error::other("no such program")),
+      ..launchable(&dir)
+    };
+
+    with_proxy(&config);
+
+    let (along_the_way, _) = run_reporting(
+      launch_under(&dir, LaunchMode::Modded, Runtime::Proton),
+      &config,
+    );
+
+    assert_eq!(
+      along_the_way,
+      vec![Msg::LoaderFilesCopied(Copied {
+        game: "valheim".to_string(),
+        created: vec![proxy_in(&dir)],
+        replaced: vec![],
+      })]
+    );
+  }
+
+  #[test]
+  fn removing_loader_files_deletes_exactly_the_recorded_ones_left_as_copied() {
+    let dir = TempDir::new().unwrap();
+    let game = dir.path().join("game");
+    let recorded = |name: &str| LoaderFile {
+      path: game.join(name),
+      sha256: PROXY_SHA256.to_string(),
+    };
+
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::write(game.join("winhttp.dll"), "proxy").unwrap();
+    std::fs::write(game.join("doorstop_config.ini"), "edited").unwrap();
+    std::fs::write(game.join("valheim.exe"), "game").unwrap();
+
+    let answer = run_now(
+      Command::RemoveLoaderFiles {
+        game: "valheim".to_string(),
+        files: vec![
+          recorded("winhttp.dll"),
+          recorded("doorstop_config.ini"),
+          recorded(".doorstop_version"),
+        ],
+      },
+      &config_in(&dir),
+    );
+
+    assert_eq!(
+      answer,
+      Msg::LoaderFilesRemoved {
+        game: "valheim".to_string(),
+        files: vec![
+          (game.join("winhttp.dll"), FileRemoval::Removed),
+          (game.join("doorstop_config.ini"), FileRemoval::Changed),
+          (game.join(".doorstop_version"), FileRemoval::Missing),
+        ],
+      }
+    );
+    assert!(!game.join("winhttp.dll").exists());
+    assert_eq!(
+      std::fs::read_to_string(game.join("doorstop_config.ini")).unwrap(),
+      "edited"
+    );
+    assert!(game.join("valheim.exe").is_file());
+  }
+
+  #[test]
+  fn a_recorded_path_that_is_no_longer_a_file_is_left_as_changed() {
+    let dir = TempDir::new().unwrap();
+    let game = dir.path().join("game");
+
+    std::fs::create_dir_all(game.join("winhttp.dll")).unwrap();
+
+    let answer = run_now(
+      Command::RemoveLoaderFiles {
+        game: "valheim".to_string(),
+        files: vec![LoaderFile {
+          path: game.join("winhttp.dll"),
+          sha256: PROXY_SHA256.to_string(),
+        }],
+      },
+      &config_in(&dir),
+    );
+
+    assert_eq!(
+      answer,
+      Msg::LoaderFilesRemoved {
+        game: "valheim".to_string(),
+        files: vec![(game.join("winhttp.dll"), FileRemoval::Changed)],
+      }
+    );
+    assert!(game.join("winhttp.dll").is_dir());
+  }
+
+  #[cfg(unix)]
+  #[test]
+  fn a_recorded_file_that_cannot_be_removed_says_why_and_the_rest_still_go() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = TempDir::new().unwrap();
+    let locked = dir.path().join("locked");
+    let game = dir.path().join("game");
+    let recorded = |path: PathBuf| LoaderFile {
+      path,
+      sha256: PROXY_SHA256.to_string(),
+    };
+
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::write(locked.join("winhttp.dll"), "proxy").unwrap();
+    std::fs::write(game.join("winhttp.dll"), "proxy").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let answer = run_now(
+      Command::RemoveLoaderFiles {
+        game: "valheim".to_string(),
+        files: vec![
+          recorded(locked.join("winhttp.dll")),
+          recorded(game.join("winhttp.dll")),
+        ],
+      },
+      &config_in(&dir),
+    );
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let Msg::LoaderFilesRemoved { files, .. } = answer else {
+      panic!("{answer:?}");
+    };
+
+    assert!(
+      matches!(&files[0], (path, FileRemoval::Failed(_)) if *path == locked.join("winhttp.dll")),
+      "{files:?}"
+    );
+    assert_eq!(files[1], (game.join("winhttp.dll"), FileRemoval::Removed));
+    assert!(locked.join("winhttp.dll").is_file());
+  }
+
   #[test]
   fn loading_without_a_settings_file_gives_the_defaults() {
     let dir = TempDir::new().unwrap();
@@ -2638,6 +2962,28 @@ mod tests {
         .unwrap()
         .contains("runtime = \"proton\"\n")
     );
+    assert_eq!(
+      run_now(Command::LoadSettings, &config),
+      Msg::SettingsLoaded(Ok(settings))
+    );
+  }
+
+  #[test]
+  fn the_loader_files_a_launch_copied_load_back_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+    let mut settings = valheim_settings();
+
+    if let Some(valheim) = settings.games.get_mut("valheim") {
+      valheim.loader_files = vec![LoaderFile {
+        path: PathBuf::from("/games/valheim/winhttp.dll"),
+        sha256: PROXY_SHA256.to_string(),
+      }];
+      valheim.launch_arguments = "-console".to_string();
+    }
+
+    run_now(Command::SaveSettings(settings.clone()), &config);
+
     assert_eq!(
       run_now(Command::LoadSettings, &config),
       Msg::SettingsLoaded(Ok(settings))

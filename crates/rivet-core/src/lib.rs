@@ -4,6 +4,7 @@
 pub mod browse;
 pub mod install;
 pub mod launch;
+pub mod loader_files;
 pub mod manage;
 pub mod notice;
 pub mod picker;
@@ -18,6 +19,7 @@ pub mod updates;
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
 use install::{Confirmation, Install, Installed, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
+use loader_files::{Copied, FileRemoval, LoaderFile};
 use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
 use notice::Notice;
 use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
@@ -71,6 +73,9 @@ pub struct State {
   pub launch: Option<Attempt>,
   /// How many launches have been started, so each gets its own id.
   pub launches: u64,
+  /// The game whose loader files are being removed. It outlives leaving the
+  /// settings screen and the game.
+  pub loader_removal: Option<String>,
   /// The open game's profiles. `None` outside a game.
   pub switcher: Option<Switcher>,
   /// The tab shown in a game.
@@ -97,6 +102,7 @@ impl State {
       launcher: None,
       launch: None,
       launches: 0,
+      loader_removal: None,
       switcher: None,
       ecosystem,
       settings: Settings::default(),
@@ -270,6 +276,9 @@ pub enum Msg {
     launch: u64,
     result: Result<(), LaunchFailure>,
   },
+  /// A launch copied files into a game's folder. Sent before its
+  /// [`Msg::LaunchFinished`], whether or not the game then started.
+  LoaderFilesCopied(Copied),
   /// The open game's folder was listed: the names of its entries, or why it
   /// could not be.
   GameFolderListed {
@@ -315,6 +324,13 @@ pub enum Msg {
   LaunchArgumentsChanged(String),
   /// How the open game runs on Linux was chosen on the settings screen.
   RuntimeChosen(RuntimeChoice),
+  /// Remove was pressed beside the loader files on the settings screen.
+  RemoveLoaderFilesPressed,
+  /// A [`Command::RemoveLoaderFiles`] ended: what became of each file.
+  LoaderFilesRemoved {
+    game: String,
+    files: Vec<(PathBuf, FileRemoval)>,
+  },
   /// Export as code was pressed on the open profile.
   ExportCodePressed,
   /// Export as file was pressed on the open profile.
@@ -443,6 +459,12 @@ pub enum Command {
     app_id: u32,
     context: LaunchContext,
     steam: Option<PathBuf>,
+  },
+  /// Delete `files` from `game`'s folder, leaving any changed since they
+  /// were copied. Answered with [`Msg::LoaderFilesRemoved`].
+  RemoveLoaderFiles {
+    game: String,
+    files: Vec<LoaderFile>,
   },
   /// List a game's profiles. Answered with [`Msg::ProfilesListed`].
   ListProfiles(String),
@@ -634,6 +656,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::LinkClicked(url) => readme::link_clicked(url),
     Msg::LaunchPressed(mode) => launch::launch_pressed(state, mode),
     Msg::LaunchFinished { launch, result } => launch::launch_finished(state, launch, result),
+    Msg::LoaderFilesCopied(copied) => loader_files::copied(state, copied),
     Msg::GameFolderListed { game, entries } => launch::game_folder_listed(state, game, entries),
     Msg::SteamOptionRead(read) => launch::steam_option_read(state, read),
     Msg::SteamOptionCheckPressed => launch::check_steam_option(state),
@@ -657,6 +680,8 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::ChangeFolderPressed(target) => settings_screen::change_pressed(state, target),
     Msg::LaunchArgumentsChanged(arguments) => settings_screen::arguments_changed(state, arguments),
     Msg::RuntimeChosen(choice) => settings_screen::runtime_chosen(state, choice),
+    Msg::RemoveLoaderFilesPressed => loader_files::remove_pressed(state),
+    Msg::LoaderFilesRemoved { game, files } => loader_files::removed(state, game, files),
     Msg::ExportCodePressed => portability::export_code_pressed(state),
     Msg::ExportFilePressed => portability::export_file_pressed(state),
     Msg::ExportFileChosen(path) => portability::export_file_chosen(state, path),

@@ -282,8 +282,8 @@ impl State {
   /// Whether a launch button would start a launch: the open profile has been
   /// read, the game's folder has shown whether it runs under Proton, no
   /// operation on the profile is running or waiting, no other launch is being
-  /// prepared, no uninstall is being checked, and no profile change is being
-  /// made.
+  /// prepared, no uninstall is being checked, no profile change is being
+  /// made, and no loader files are being removed.
   pub fn can_launch(&self) -> bool {
     let ready = self.profile.as_ref().and_then(Profile::installed).is_some();
     let runtime = self
@@ -298,6 +298,7 @@ impl State {
       && !self.is_profile_busy()
       && !self.is_checking()
       && !self.is_changing_profile()
+      && !self.is_removing_loader_files()
   }
 }
 

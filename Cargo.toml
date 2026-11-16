@@ -21,6 +21,7 @@ gpui-kit = "=0.9.1"
 reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.12" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11"
 tempfile = "3"
 thunderstore-engine = { version = "0.4.1", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync"] }
