@@ -209,15 +209,16 @@ impl Filters {
   }
 
   /// The engine query these filters stand for. Community-pinned packages lead
-  /// only the default order, as in r2modman.
+  /// only the default order with an empty search, as in r2modman.
   fn query(&self) -> BrowseQuery<'_> {
     let defaults = Self::default();
-    let default_order = self.sort == defaults.sort && self.direction == defaults.direction;
+    let pinned_first =
+      self.search.is_empty() && self.sort == defaults.sort && self.direction == defaults.direction;
 
     BrowseQuery::new()
       .search(&self.search)
       .sort(self.sort, self.direction)
-      .pinned_first(default_order)
+      .pinned_first(pinned_first)
       .categories(self.categories.iter().map(String::as_str))
       .show_nsfw(self.show_nsfw)
       .show_deprecated(self.show_deprecated)
@@ -887,6 +888,22 @@ mod tests {
     update(&mut state, Msg::SortPressed(SortKey::Name));
 
     assert_eq!(listed(&state), ["Owner-Alpha", "Owner-Pinned"]);
+  }
+
+  #[test]
+  fn community_pinned_packages_keep_their_place_in_a_search_sorted_by_last_updated() {
+    let mut pinned = package("Owner-Pinned", 1);
+
+    pinned["is_pinned"] = true.into();
+    pinned["versions"][0]["description"] = "Paints every boat".into();
+
+    let mut state = showing(vec![package("Owner-Boat", 2), pinned]);
+
+    update(&mut state, Msg::PackageSearchChanged("boat".to_string()));
+    update(&mut state, Msg::SortPressed(SortKey::LastUpdated));
+
+    assert_eq!(filters(&state).sort, SortKey::LastUpdated);
+    assert_eq!(listed(&state), ["Owner-Boat", "Owner-Pinned"]);
   }
 
   /// A package last updated on `updated_day` in `categories`.
