@@ -37,6 +37,7 @@ use rivet_core::manage::{Sort, Tab};
 use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::readme::{Package, Readme, Status};
+use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
@@ -54,6 +55,10 @@ pub struct Shell {
   /// Text for the profile name field, put there and focused on the next
   /// render, since setting it needs the window.
   fill_profile_name: Option<String>,
+  launch_arguments: Entity<InputState>,
+  /// Text for the launch arguments field, put there on the next render,
+  /// since setting it needs the window.
+  fill_launch_arguments: Option<String>,
   /// Set when the window should close, which it does on the next render or
   /// as the answer to its close button, since closing needs the window.
   close_window: bool,
@@ -127,6 +132,18 @@ impl Shell {
         }
       },
     );
+    let launch_arguments = cx.new(|cx| InputState::new(window, cx));
+    let arguments_typed = cx.subscribe_in(
+      &launch_arguments,
+      window,
+      |this: &mut Self, input, event: &InputEvent, _, cx| {
+        if let InputEvent::Change = event {
+          let arguments = input.read(cx).value().to_string();
+
+          this.dispatch(Msg::LaunchArgumentsChanged(arguments), cx);
+        }
+      },
+    );
     let focused = cx.observe_window_activation(window, |this: &mut Self, window, cx| {
       if window.is_window_active() {
         this.dispatch(Msg::WindowFocused, cx);
@@ -160,6 +177,8 @@ impl Shell {
       package_search,
       profile_name,
       fill_profile_name: None,
+      launch_arguments,
+      fill_launch_arguments: None,
       close_window: false,
       notices: Vec::new(),
       modal: None,
@@ -170,6 +189,7 @@ impl Shell {
         package_searched,
         named,
         installed_searched,
+        arguments_typed,
         focused,
       ],
       _inbox,
@@ -192,6 +212,7 @@ impl Shell {
         }
         Effect::ChooseFolder => self.choose_folder(cx),
         Effect::FillProfileName(text) => self.fill_profile_name = Some(text),
+        Effect::FillLaunchArguments(text) => self.fill_launch_arguments = Some(text),
         Effect::OpenUrl(url) => cx.open_url(&url),
         Effect::CloseWindow => self.close_window = true,
         Effect::CopyToClipboard(text) => {
@@ -385,7 +406,8 @@ impl Shell {
   }
 
   /// What the app is busy with outside the queue: starting a game, changing
-  /// a profile, finding a game from the picker, refreshing the package list,
+  /// a profile, finding a game from the picker or checking a folder chosen in
+  /// settings, refreshing the package list,
   /// or checking Steam's launch options, first match in that order. `None`
   /// when it is busy with none.
   fn status_note(&self) -> Option<String> {
@@ -405,6 +427,10 @@ impl Shell {
     let finding = || match (&state.screen, &state.picker.step) {
       (Screen::Picker, Step::Locating(game)) => Some(text::locating(&self.game_name(game))),
       (Screen::Picker, Step::Checking { folder, .. }) => Some(text::checking(folder)),
+      (Screen::Settings(_), _) => match &state.settings_screen.step {
+        settings_screen::Step::Checking { folder, .. } => Some(text::checking(folder)),
+        _ => None,
+      },
       _ => None,
     };
     let refreshing = || {
@@ -485,6 +511,125 @@ impl Shell {
           })
           .child(render_readme(self.state.readme.as_ref(), cx)),
       )
+      .into_any_element()
+  }
+
+  /// The settings of `game`: its folder and launch arguments, then the
+  /// Steam folder every game shares. While a folder is being changed, no
+  /// other can be.
+  fn render_settings(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
+    let palette = Palette::new(cx);
+    let state = &self.state;
+    let idle = state.settings_screen.step == settings_screen::Step::Idle;
+    let name = self.game_name(game);
+    let label = |label: &'static str| div().w(px(SETTINGS_LABEL_WIDTH)).flex_none().child(label);
+    let folder_row = |id: &'static str, title: &'static str, folder: String, target: Target| {
+      h_flex()
+        .gap_3()
+        .items_center()
+        .child(label(title))
+        .child(
+          div()
+            .id(id)
+            .flex_1()
+            .min_w_0()
+            .truncate()
+            .child(folder)
+            .test_support(),
+        )
+        .child(
+          Button::new(SharedString::from(format!("change-{id}")))
+            .label(text::CHANGE)
+            .small()
+            .disabled(!idle)
+            .on_click(cx.listener(move |this, _, _, cx| {
+              this.dispatch(Msg::ChangeFolderPressed(target), cx);
+            })),
+        )
+    };
+    let section = |title: SharedString| {
+      v_flex()
+        .gap_3()
+        .p_3()
+        .border_1()
+        .border_color(palette.border)
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
+    };
+    let game_folder = state
+      .settings
+      .folder(game)
+      .map(|folder| folder.display().to_string())
+      .unwrap_or_default();
+    let steam_folder = state.settings.steam_folder.as_ref().map_or_else(
+      || text::STEAM_FOLDER_FOUND.to_string(),
+      |folder| folder.display().to_string(),
+    );
+    let launch_arguments = v_flex()
+      .gap_1()
+      .child(
+        h_flex()
+          .gap_3()
+          .items_center()
+          .child(label(text::LAUNCH_ARGUMENTS))
+          .child(
+            div()
+              .id("launch-arguments")
+              .flex_1()
+              .child(Input::new(&self.launch_arguments))
+              .test_support(),
+          ),
+      )
+      .child(
+        div()
+          .text_sm()
+          .text_color(palette.muted_text)
+          .child(text::LAUNCH_ARGUMENTS_HINT),
+      );
+
+    v_flex()
+      .size_full()
+      .p_4()
+      .gap_4()
+      .child(
+        h_flex()
+          .gap_3()
+          .items_center()
+          .child(
+            Button::new("close-settings")
+              .label(text::BACK)
+              .ghost()
+              .on_click(cx.listener(|this, _, _, cx| this.dispatch(Msg::SettingsClosed, cx))),
+          )
+          .child(div().text_xl().child(text::settings_title(&name))),
+      )
+      .children(
+        state
+          .settings_error
+          .as_ref()
+          .map(|error| failure(palette, text::settings_error(error))),
+      )
+      .children(state.settings_screen.refusal.as_ref().map(|refusal| {
+        div()
+          .id("settings-refusal")
+          .child(failure(palette, text::refusal(&name, refusal)))
+          .test_support()
+      }))
+      .child(
+        section(name.clone())
+          .child(folder_row(
+            "game-folder",
+            text::GAME_FOLDER,
+            game_folder,
+            Target::GameFolder,
+          ))
+          .child(launch_arguments),
+      )
+      .child(section(text::EVERY_GAME.into()).child(folder_row(
+        "steam-folder",
+        text::STEAM_FOLDER,
+        steam_folder,
+        Target::SteamFolder,
+      )))
       .into_any_element()
   }
 
@@ -595,18 +740,21 @@ impl Shell {
         let shell = shell.clone();
 
         move |menu, _, _| {
+          let settings = send(&shell, Msg::SettingsPressed);
           let shell = shell.clone();
 
-          menu.item(menu_item("switch-game", text::SWITCH_GAME, None).on_click(
-            move |_, window, cx| {
-              shell
-                .update(cx, |this, cx| {
-                  this.dispatch(Msg::SwitchGamePressed, cx);
-                  this.empty_package_search(window, cx);
-                })
-                .ok();
-            },
-          ))
+          menu
+            .item(menu_item("open-settings", text::SETTINGS, None).on_click(settings))
+            .item(menu_item("switch-game", text::SWITCH_GAME, None).on_click(
+              move |_, window, cx| {
+                shell
+                  .update(cx, |this, cx| {
+                    this.dispatch(Msg::SwitchGamePressed, cx);
+                    this.empty_package_search(window, cx);
+                  })
+                  .ok();
+              },
+            ))
         }
       });
     let profile_menus = self.render_profile_menus(&shell).map(|menus| {
@@ -1182,6 +1330,8 @@ const ROW_GAP: f32 = 6.0;
 /// Tall enough for one line of small text and an extra-small button.
 const STATUS_BAR_HEIGHT: f32 = 36.0;
 const ICON_SIZE: f32 = 48.0;
+/// Wide enough for the longest label on the settings screen.
+const SETTINGS_LABEL_WIDTH: f32 = 140.0;
 
 /// Whether the readme shown is `full_name`'s.
 fn is_selected(readme: Option<&Readme>, full_name: &str) -> bool {
@@ -1507,6 +1657,12 @@ impl Render for Shell {
       });
     }
 
+    if let Some(text) = self.fill_launch_arguments.take() {
+      self
+        .launch_arguments
+        .update(cx, |input, cx| input.set_value(text, window, cx));
+    }
+
     if std::mem::take(&mut self.close_window) {
       window.remove_window();
     }
@@ -1528,6 +1684,7 @@ impl Render for Shell {
         .into_any_element(),
       Screen::Picker => self.render_picker(cx),
       Screen::Game(game) => self.render_game(&game, cx),
+      Screen::Settings(game) => self.render_settings(&game, cx),
     };
     let status_bar = (self.state.screen != Screen::Starting).then(|| self.render_status_bar(cx));
 

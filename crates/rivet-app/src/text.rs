@@ -7,7 +7,7 @@ use rivet_core::install::{Action, FailedPackage, Planned, Progress, Stage};
 use rivet_core::launch::LaunchFailure;
 use rivet_core::manage::Removal;
 use rivet_core::notice::Notice;
-use rivet_core::picker::{FolderRefusal, NotFound, Refusal};
+use rivet_core::picker::{FolderRefusal, NotFound, Refusal, STEAM_LIBRARY};
 use rivet_core::switcher::{NameRefusal, Naming, ProfileChange};
 use std::path::Path;
 use thunderstore_engine::ecosystem::LoaderKind;
@@ -101,7 +101,26 @@ pub fn refusal(game: &str, refusal: &Refusal) -> Failure {
       detail: format!("{folder}: {reason}"),
       next: "Choose another folder, or check that you can open this one.".to_string(),
     },
+    FolderRefusal::NotSteam => Failure {
+      headline: "This folder is not a Steam install".to_string(),
+      detail: format!("Looked in {folder} for {STEAM_LIBRARY}."),
+      next: "Choose the folder Steam is installed in.".to_string(),
+    },
   }
+}
+
+pub const SETTINGS: &str = "Settings";
+pub const BACK: &str = "Back";
+pub const CHANGE: &str = "Change";
+pub const GAME_FOLDER: &str = "Game folder";
+pub const STEAM_FOLDER: &str = "Steam folder";
+pub const STEAM_FOLDER_FOUND: &str = "Found on this computer";
+pub const LAUNCH_ARGUMENTS: &str = "Launch arguments";
+pub const LAUNCH_ARGUMENTS_HINT: &str = "Added after the mod loader's own on modded and vanilla launches. Put double quotes around an argument with spaces. Saved when you leave settings or close Rivet.";
+pub const EVERY_GAME: &str = "Every game";
+
+pub fn settings_title(game: &str) -> String {
+  format!("{game} settings")
 }
 
 pub fn settings_error(error: &SettingsError) -> Failure {

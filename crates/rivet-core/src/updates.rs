@@ -156,7 +156,6 @@ mod tests {
   use crate::install::{DEFAULT_PROFILE, Outcome};
   use crate::settings::{GameSettings, Settings};
   use crate::{Command, Msg, test_ecosystem, update};
-  use std::path::PathBuf;
   use thunderstore_engine::models::PackageIndex;
 
   /// A package published at each of `versions`, in order, the last most
@@ -292,14 +291,8 @@ mod tests {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
       last_game: Some("valheim".to_string()),
-      games: [(
-        "valheim".to_string(),
-        GameSettings {
-          folder: PathBuf::from("/games/valheim"),
-          profile: None,
-        },
-      )]
-      .into(),
+      games: [("valheim".to_string(), GameSettings::new("/games/valheim"))].into(),
+      ..Settings::default()
     };
     let index = index(vec![
       listed("Owner-Old", &["1.0.0", "1.2.0"], false),

@@ -567,11 +567,12 @@ mod tests {
       games: [(
         "valheim".to_string(),
         GameSettings {
-          folder: "/games/valheim".into(),
           profile: profile.map(str::to_string),
+          ..GameSettings::new("/games/valheim")
         },
       )]
       .into(),
+      ..Settings::default()
     }
   }
 

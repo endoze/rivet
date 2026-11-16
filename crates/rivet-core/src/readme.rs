@@ -139,21 +139,14 @@ mod tests {
   use crate::manage::Tab;
   use crate::settings::{GameSettings, Settings};
   use crate::{Command, Effect, Msg, State, test_ecosystem, update};
-  use std::path::PathBuf;
 
   /// A state with valheim open, its package list not yet read.
   fn opened() -> State {
     let mut state = State::new(test_ecosystem());
     let settings = Settings {
       last_game: Some("valheim".to_string()),
-      games: [(
-        "valheim".to_string(),
-        GameSettings {
-          folder: PathBuf::from("/games/valheim"),
-          profile: None,
-        },
-      )]
-      .into(),
+      games: [("valheim".to_string(), GameSettings::new("/games/valheim"))].into(),
+      ..Settings::default()
     };
 
     update(&mut state, Msg::Started);

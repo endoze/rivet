@@ -100,6 +100,32 @@ pub enum FolderRefusal {
   MissingExecutable { expected: Vec<String> },
   /// The folder could not be listed. The detail is the system's reason.
   Unreadable(String),
+  /// A folder chosen as the Steam install has no [`STEAM_LIBRARY`] in it.
+  NotSteam,
+}
+
+/// The folder every Steam install keeps its games in, which marks a folder
+/// as one.
+pub const STEAM_LIBRARY: &str = "steamapps";
+
+/// Accepts `entries`, the file names in a folder, as a Steam install when
+/// one of them is [`STEAM_LIBRARY`], ignoring ASCII case as Windows does.
+///
+/// ```
+/// use rivet_core::picker::{FolderRefusal, check_steam_folder};
+///
+/// assert_eq!(check_steam_folder(&["steamapps".into()]), Ok(()));
+/// assert_eq!(check_steam_folder(&[]), Err(FolderRefusal::NotSteam));
+/// ```
+pub fn check_steam_folder(entries: &[String]) -> Result<(), FolderRefusal> {
+  if entries
+    .iter()
+    .any(|entry| entry.eq_ignore_ascii_case(STEAM_LIBRARY))
+  {
+    return Ok(());
+  }
+
+  Err(FolderRefusal::NotSteam)
 }
 
 /// Accepts `entries`, the file names in a folder, as an install folder of
@@ -177,6 +203,22 @@ mod tests {
     let valheim = ecosystem.game("valheim").unwrap();
 
     assert_eq!(check_folder(valheim, &["Valheim.EXE".to_string()]), Ok(()));
+  }
+
+  #[test]
+  fn a_folder_holding_a_steam_library_is_accepted_as_steam() {
+    for entries in [&["steamapps", "steam.sh"][..], &["SteamApps"]] {
+      let entries: Vec<String> = entries.iter().map(|entry| entry.to_string()).collect();
+
+      assert_eq!(check_steam_folder(&entries), Ok(()), "{entries:?}");
+    }
+  }
+
+  #[test]
+  fn a_folder_without_a_steam_library_is_refused_as_steam() {
+    let entries = vec!["Documents".to_string(), "steam.desktop".to_string()];
+
+    assert_eq!(check_steam_folder(&entries), Err(FolderRefusal::NotSteam));
   }
 
   #[test]

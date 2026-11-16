@@ -4,6 +4,7 @@
 
 use crate::install::Profile;
 use crate::notice::Notice;
+use crate::settings::split_arguments;
 use crate::{Command, Effect, Screen, State};
 use std::path::{Path, PathBuf};
 use thunderstore_engine::ecosystem::{Ecosystem, LoaderKind};
@@ -303,7 +304,11 @@ impl State {
     let profile = self.profile.as_ref()?;
     let installed = profile.installed()?;
     let context = context(self, &profile.game, LaunchMode::Modded)?;
-    let loader = self.ecosystem.require_profile(&profile.game).ok()?.package_loader;
+    let loader = self
+      .ecosystem
+      .require_profile(&profile.game)
+      .ok()?
+      .package_loader;
     let needs_none = matches!(loader, LoaderKind::None | LoaderKind::Other);
     let held = installed.keys().any(|name| {
       self
@@ -335,12 +340,13 @@ pub(crate) fn launch_pressed(state: &mut State, mode: LaunchMode) -> Vec<Effect>
   let Some(context) = context(state, game, mode) else {
     return Vec::new();
   };
+  let arguments = split_arguments(state.settings.launch_arguments(game));
   let launch = Launch {
     id: state.launches + 1,
     game: game.clone(),
     profile: profile.name.clone(),
     folder: folder.to_path_buf(),
-    context,
+    context: context.with_extra_args(arguments),
   };
 
   state.launches = launch.id;
@@ -474,7 +480,11 @@ pub(crate) fn window_focused(state: &mut State) -> Vec<Effect> {
 /// Reads Steam's launch options for the open game again, when it has a line
 /// to set, keeping what the last read found until this one ends.
 pub(crate) fn check_steam_option(state: &mut State) -> Vec<Effect> {
-  let Some(launcher) = state.launcher.as_ref().filter(|launcher| launcher.steam.is_some()) else {
+  let Some(launcher) = state
+    .launcher
+    .as_ref()
+    .filter(|launcher| launcher.steam.is_some())
+  else {
     return Vec::new();
   };
   let game = launcher.game.clone();
@@ -497,6 +507,7 @@ pub(crate) fn check_steam_option(state: &mut State) -> Vec<Effect> {
     game,
     app_id,
     context,
+    steam: state.settings.steam_folder.clone(),
   })]
 }
 
@@ -605,12 +616,10 @@ mod tests {
       last_game: Some(game.to_string()),
       games: [(
         game.to_string(),
-        GameSettings {
-          folder: PathBuf::from("/games").join(game),
-          profile: None,
-        },
+        GameSettings::new(PathBuf::from("/games").join(game)),
       )]
       .into(),
+      ..Settings::default()
     };
 
     state.host = Some(host);
@@ -636,11 +645,36 @@ mod tests {
         runtime,
         LaunchMode::Vanilla,
       ),
+      steam: None,
     })
   }
 
+  #[test]
+  fn steams_launch_options_are_read_from_the_steam_folder_chosen_in_settings() {
+    let (mut state, _) = opened("valheim");
+
+    update(&mut state, read("valheim", Ok(None)));
+
+    state.settings.steam_folder = Some(PathBuf::from("/mnt/Steam"));
+
+    let effects = update(&mut state, Msg::SteamOptionCheckPressed);
+
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::ReadSteamOption {
+        game: "valheim".to_string(),
+        app_id: VALHEIM,
+        context: context(StorePlatform::Steam, LaunchMode::Vanilla),
+        steam: Some(PathBuf::from("/mnt/Steam")),
+      })]
+    );
+  }
+
   fn runtime(state: &State) -> Option<Runtime> {
-    state.launcher.as_ref().and_then(|launcher| launcher.runtime)
+    state
+      .launcher
+      .as_ref()
+      .and_then(|launcher| launcher.runtime)
   }
 
   #[test]
@@ -746,7 +780,10 @@ mod tests {
     update(&mut state, profile_opened("lethal", &[]));
 
     assert!(!state.can_launch());
-    assert_eq!(update(&mut state, Msg::LaunchPressed(LaunchMode::Modded)), vec![]);
+    assert_eq!(
+      update(&mut state, Msg::LaunchPressed(LaunchMode::Modded)),
+      vec![]
+    );
 
     update(
       &mut state,
@@ -1113,6 +1150,34 @@ mod tests {
       attempt(&state).map(|attempt| attempt.status),
       Some(AttemptStatus::Started)
     );
+  }
+
+  #[test]
+  fn modded_and_vanilla_launches_pass_the_games_launch_arguments() {
+    for mode in [LaunchMode::Modded, LaunchMode::Vanilla] {
+      let mut state = ready("valheim", &["denikson-BepInExPack_Valheim"]);
+
+      if let Some(valheim) = state.settings.games.get_mut("valheim") {
+        valheim.launch_arguments = r#"-console -log "My Logs""#.to_string();
+      }
+
+      let effects = update(&mut state, Msg::LaunchPressed(mode));
+      let arguments = vec![
+        "-console".to_string(),
+        "-log".to_string(),
+        "My Logs".to_string(),
+      ];
+
+      assert_eq!(
+        effects,
+        vec![launch(
+          1,
+          "valheim",
+          context(StorePlatform::Steam, mode).with_extra_args(arguments)
+        )],
+        "{mode:?}"
+      );
+    }
   }
 
   #[test]

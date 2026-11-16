@@ -10,6 +10,7 @@ pub mod picker;
 pub mod queue;
 pub mod readme;
 pub mod settings;
+pub mod settings_screen;
 pub mod switcher;
 pub mod updates;
 
@@ -22,6 +23,7 @@ use picker::{Fallback, FolderRefusal, NotFound, Picker, Refusal, Step};
 use queue::{CloseChoice, Closing, Queue};
 use readme::Readme;
 use settings::{GameSettings, Settings};
+use settings_screen::{SettingsScreen, Target};
 use std::path::PathBuf;
 use switcher::{Naming, ProfileChange, Switcher};
 use thunderstore_engine::ecosystem::Ecosystem;
@@ -36,6 +38,8 @@ pub struct State {
   pub settings: Settings,
   pub screen: Screen,
   pub picker: Picker,
+  /// The settings screen, while it is shown.
+  pub settings_screen: SettingsScreen,
   /// The last failure to read or write the settings file, if unresolved.
   pub settings_error: Option<SettingsError>,
   /// The open game's package list. `None` outside a game.
@@ -49,8 +53,12 @@ pub struct State {
   /// Every operation asked for and not dismissed, on every game and profile.
   /// It outlives leaving the game and profile each belongs to.
   pub queue: Queue,
-  /// Closing the window while operations are running or waiting.
+  /// Closing the window while operations are running or waiting, or settings
+  /// saves are unanswered.
   pub closing: Option<Closing>,
+  /// How many settings saves are sent and not yet answered. The window
+  /// closes only once each has been written.
+  pub saves: usize,
   /// The operating system games launch on, or `None` where launching is not
   /// supported.
   pub host: Option<HostOs>,
@@ -88,6 +96,7 @@ impl State {
       settings: Settings::default(),
       screen: Screen::Starting,
       picker: Picker::default(),
+      settings_screen: SettingsScreen::default(),
       settings_error: None,
       browse: None,
       refreshes: 0,
@@ -95,6 +104,7 @@ impl State {
       confirmation: None,
       queue: Queue::default(),
       closing: None,
+      saves: 0,
       tab: Tab::default(),
       manage: Manage::default(),
       readme: None,
@@ -112,6 +122,8 @@ pub enum Screen {
   Picker,
   /// One game, by community slug.
   Game(String),
+  /// The settings of one game, by community slug, which return to it.
+  Settings(String),
 }
 
 /// A failure to read or write the settings file, with the system's reason.
@@ -285,6 +297,14 @@ pub enum Msg {
     change: ProfileChange,
     result: Result<(), String>,
   },
+  /// Settings was pressed in a game.
+  SettingsPressed,
+  /// The settings screen was left for its game.
+  SettingsClosed,
+  /// Change was pressed beside a folder on the settings screen.
+  ChangeFolderPressed(Target),
+  /// The launch arguments on the settings screen were edited.
+  LaunchArgumentsChanged(String),
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -297,6 +317,9 @@ pub enum Effect {
   /// Put this text in the profile name field. Needs the window, so the shell
   /// runs it. Not answered.
   FillProfileName(String),
+  /// Put this text in the launch arguments field. Needs the window, so the
+  /// shell runs it. Not answered.
+  FillLaunchArguments(String),
   /// Open this web address in the user's browser. Needs the platform's
   /// opener, which the shell holds. Not answered.
   OpenUrl(String),
@@ -319,9 +342,14 @@ pub enum Command {
   LoadSettings,
   /// Answered with [`Msg::SettingsSaved`].
   SaveSettings(Settings),
-  /// Search every Steam library on the computer for the game sold on Steam
-  /// as `app_id`. Answered with [`Msg::SteamSearched`].
-  FindInSteam { game: String, app_id: u32 },
+  /// Search every Steam library for the game sold on Steam as `app_id`: those
+  /// of the install at `steam` when the user chose one, or else of every
+  /// install on the computer. Answered with [`Msg::SteamSearched`].
+  FindInSteam {
+    game: String,
+    app_id: u32,
+    steam: Option<PathBuf>,
+  },
   /// Answered with [`Msg::FolderListed`].
   ListFolder(PathBuf),
   /// Read a community's cached package index without touching the network.
@@ -362,12 +390,14 @@ pub enum Command {
   ListGameFolder { game: String, folder: PathBuf },
   /// Work out the line Steam's launch options must hold for a launch in
   /// `context`, write the game's Steam wrapper when the line names it, and
-  /// read Steam's launch options for `app_id`, never changing them. Answered
-  /// with [`Msg::SteamOptionRead`].
+  /// read Steam's launch options for `app_id`, never changing them. They are
+  /// read from the install at `steam` when the user chose one, or else from
+  /// the one found on the computer. Answered with [`Msg::SteamOptionRead`].
   ReadSteamOption {
     game: String,
     app_id: u32,
     context: LaunchContext,
+    steam: Option<PathBuf>,
   },
   /// List a game's profiles. Answered with [`Msg::ProfilesListed`].
   ListProfiles(String),
@@ -390,6 +420,17 @@ pub enum Command {
 /// assert_eq!(effects, vec![Effect::Run(Command::LoadSettings)]);
 /// ```
 pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
+  let effects = apply(state, msg);
+
+  state.saves += effects
+    .iter()
+    .filter(|effect| matches!(effect, Effect::Run(Command::SaveSettings(_))))
+    .count();
+
+  effects
+}
+
+fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
   match msg {
     Msg::Started => {
       state.screen = Screen::Starting;
@@ -423,8 +464,14 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     }
     Msg::GamePicked(game) => pick_game(state, game),
     Msg::SteamSearched { game, folder } => steam_searched(state, game, folder),
-    Msg::FolderChosen(folder) => folder_chosen(state, folder),
-    Msg::FolderListed { folder, entries } => folder_listed(state, folder, entries),
+    Msg::FolderChosen(folder) => match state.screen {
+      Screen::Settings(_) => settings_screen::folder_chosen(state, folder),
+      _ => folder_chosen(state, folder),
+    },
+    Msg::FolderListed { folder, entries } => match state.screen {
+      Screen::Settings(_) => settings_screen::folder_listed(state, folder, entries),
+      _ => folder_listed(state, folder, entries),
+    },
     Msg::SwitchGamePressed => {
       state.screen = Screen::Picker;
       state.picker.step = Step::Idle;
@@ -446,8 +493,9 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     }
     Msg::SettingsSaved(result) => {
       state.settings_error = result.err().map(SettingsError::Save);
+      state.saves = state.saves.saturating_sub(1);
 
-      Vec::new()
+      queue::close_when_done(state)
     }
     Msg::CachedIndexRead { community, index } => browse::cache_read(state, community, index),
     Msg::IndexRefreshed { refresh, index } => browse::refreshed(state, refresh, index),
@@ -545,6 +593,10 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
       change,
       result,
     } => switcher::changed(state, game, change, result),
+    Msg::SettingsPressed => settings_screen::pressed(state),
+    Msg::SettingsClosed => settings_screen::closed(state),
+    Msg::ChangeFolderPressed(target) => settings_screen::change_pressed(state, target),
+    Msg::LaunchArgumentsChanged(arguments) => settings_screen::arguments_changed(state, arguments),
   }
 }
 
@@ -573,7 +625,11 @@ fn pick_game(state: &mut State, game: String) -> Vec<Effect> {
     Some(app_id) => {
       state.picker.step = Step::Locating(game.clone());
 
-      vec![Effect::Run(Command::FindInSteam { game, app_id })]
+      vec![Effect::Run(Command::FindInSteam {
+        game,
+        app_id,
+        steam: state.settings.steam_folder.clone(),
+      })]
     }
     None => choose_by_hand(state, game, NotFound::NotOnSteam),
   }
@@ -668,13 +724,10 @@ fn folder_listed(
 
   match verdict {
     Ok(()) => {
-      state.settings.games.insert(
-        game.clone(),
-        GameSettings {
-          folder,
-          profile: None,
-        },
-      );
+      state
+        .settings
+        .games
+        .insert(game.clone(), GameSettings::new(folder));
 
       open_game(state, game)
     }
@@ -830,14 +883,8 @@ mod tests {
   fn settings_with(game: &str, folder: &str) -> Settings {
     Settings {
       last_game: Some(game.to_string()),
-      games: [(
-        game.to_string(),
-        GameSettings {
-          folder: PathBuf::from(folder),
-          profile: None,
-        },
-      )]
-      .into(),
+      games: [(game.to_string(), GameSettings::new(folder))].into(),
+      ..Settings::default()
     }
   }
 
@@ -996,6 +1043,29 @@ mod tests {
       vec![Effect::Run(Command::FindInSteam {
         game: LETHAL.to_string(),
         app_id: 1966720,
+        steam: None,
+      })]
+    );
+  }
+
+  #[test]
+  fn a_steam_folder_chosen_in_settings_is_the_one_searched() {
+    let mut state = started();
+    let settings = Settings {
+      steam_folder: Some(PathBuf::from("/mnt/Steam")),
+      ..Settings::default()
+    };
+
+    update(&mut state, Msg::SettingsLoaded(Ok(settings)));
+
+    let effects = update(&mut state, Msg::GamePicked(LETHAL.to_string()));
+
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::FindInSteam {
+        game: LETHAL.to_string(),
+        app_id: 1966720,
+        steam: Some(PathBuf::from("/mnt/Steam")),
       })]
     );
   }
@@ -1106,13 +1176,9 @@ mod tests {
 
     settings.last_game = Some("riskofrain2".to_string());
 
-    settings.games.insert(
-      "riskofrain2".to_string(),
-      GameSettings {
-        folder: PathBuf::from("/games/ror2"),
-        profile: None,
-      },
-    );
+    settings
+      .games
+      .insert("riskofrain2".to_string(), GameSettings::new("/games/ror2"));
     update(&mut state, Msg::SettingsLoaded(Ok(settings)));
     update(&mut state, Msg::SwitchGamePressed);
 

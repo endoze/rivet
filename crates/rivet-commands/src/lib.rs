@@ -43,11 +43,11 @@ pub struct Config {
   pub thunderstore: String,
   /// The game definitions installs are routed by.
   pub ecosystem: Ecosystem,
-  /// The Steam install whose launch options are read, or `None` when none
-  /// was found.
+  /// The Steam install whose launch options are read when the user chose
+  /// none, or `None` when none was found.
   pub steam: Option<PathBuf>,
-  /// Every Steam install searched for a game's folder, in order. Empty when
-  /// none was found.
+  /// Every Steam install searched for a game's folder, in order, when the
+  /// user chose none. Empty when none was found.
   pub steam_installs: Vec<PathBuf>,
   /// Starts a prepared game, such as [`spawn_detached`].
   pub spawn: fn(std::process::Command) -> std::io::Result<()>,
@@ -117,10 +117,18 @@ pub async fn run(
     Command::SaveSettings(settings) => {
       Msg::SettingsSaved(save_settings(&config.settings, &settings).await)
     }
-    Command::FindInSteam { game, app_id } => Msg::SteamSearched {
+    Command::FindInSteam {
       game,
-      folder: find_in_steam(config, app_id).await,
-    },
+      app_id,
+      steam,
+    } => {
+      let installs = steam.map_or_else(|| config.steam_installs.clone(), |steam| vec![steam]);
+
+      Msg::SteamSearched {
+        game,
+        folder: find_in_steam(installs, app_id).await,
+      }
+    }
     Command::ListFolder(folder) => {
       let entries = list_folder(&folder).await;
 
@@ -220,6 +228,7 @@ pub async fn run(
       game,
       app_id,
       context,
+      steam,
     } => {
       let script = launch::wrapper_path(&config.data, &game);
       let plan = launch::launch_plan_from(
@@ -236,8 +245,9 @@ pub async fn run(
       let wrapper = plan
         .is_some_and(|plan| plan.steam_wrapper.is_some())
         .then_some(script);
+      let steam = steam.or_else(|| config.steam.clone());
       let current = match line {
-        Some(_) => read_steam_option(config, wrapper, app_id).await,
+        Some(_) => read_steam_option(steam, wrapper, app_id).await,
         None => Ok(None),
       };
 
@@ -338,10 +348,8 @@ fn launch_failure(error: thunderstore_engine::Error) -> LaunchFailure {
 }
 
 /// The folder the game sold on Steam as `app_id` is installed in, searching
-/// every library of every Steam install in `config`.
-async fn find_in_steam(config: &Config, app_id: u32) -> Result<PathBuf, NotFound> {
-  let installs = config.steam_installs.clone();
-
+/// every library of each of `installs`.
+async fn find_in_steam(installs: Vec<PathBuf>, app_id: u32) -> Result<PathBuf, NotFound> {
   if installs.is_empty() {
     return Err(NotFound::NoSteam);
   }
@@ -354,14 +362,13 @@ async fn find_in_steam(config: &Config, app_id: u32) -> Result<PathBuf, NotFound
 }
 
 /// Writes the game's Steam wrapper at `wrapper`, when the line names one, so
-/// the line works once pasted, then reads Steam's launch options for `app_id`.
+/// the line works once pasted, then reads the launch options for `app_id` of
+/// the Steam install at `steam`.
 async fn read_steam_option(
-  config: &Config,
+  steam: Option<PathBuf>,
   wrapper: Option<PathBuf>,
   app_id: u32,
 ) -> Result<Option<String>, String> {
-  let steam = config.steam.clone();
-
   tokio::task::spawn_blocking(move || {
     if let Some(script) = wrapper {
       launch::write_wrapper_script(&script).map_err(|error| error.to_string())?;
@@ -772,9 +779,10 @@ fn failure(path: &Path, error: impl std::fmt::Display) -> String {
 
 /// Starts a Tokio runtime for commands, on threads named `commands`.
 ///
-/// Commands sent on the returned sender run concurrently on that runtime, and
-/// their answers arrive on the returned receiver. The runtime stops once the
-/// sender is dropped.
+/// Commands sent on the returned sender run concurrently on that runtime, but
+/// settings saves run one at a time in the order sent, so the last one sent
+/// is the one left on disk. Answers arrive on the returned receiver. The
+/// runtime stops once the sender is dropped.
 ///
 /// # Panics
 ///
@@ -782,6 +790,7 @@ fn failure(path: &Path, error: impl std::fmt::Display) -> String {
 pub fn spawn(config: Config) -> (UnboundedSender<Command>, UnboundedReceiver<Msg>) {
   let (commands, mut pending) = unbounded::<Command>();
   let (answers, inbox) = unbounded::<Msg>();
+  let (saves, mut saving) = unbounded::<Command>();
   let config = Arc::new(config);
   let runtime = tokio::runtime::Builder::new_multi_thread()
     .thread_name("commands")
@@ -793,7 +802,26 @@ pub fn spawn(config: Config) -> (UnboundedSender<Command>, UnboundedReceiver<Msg
     .name("commands".into())
     .spawn(move || {
       runtime.block_on(async move {
+        let saver = {
+          let answers = answers.clone();
+          let config = config.clone();
+
+          tokio::spawn(async move {
+            while let Some(save) = saving.next().await {
+              if let Some(answer) = run(save, &config, &answers).await {
+                answers.unbounded_send(answer).ok();
+              }
+            }
+          })
+        };
+
         while let Some(command) = pending.next().await {
+          if let Command::SaveSettings(_) = command {
+            saves.unbounded_send(command).ok();
+
+            continue;
+          }
+
           let answers = answers.clone();
           let config = config.clone();
 
@@ -803,6 +831,9 @@ pub fn spawn(config: Config) -> (UnboundedSender<Command>, UnboundedReceiver<Msg
             }
           });
         }
+
+        drop(saves);
+        saver.await.ok();
       });
     })
     .expect("commands thread");
@@ -1107,14 +1138,8 @@ mod tests {
   fn valheim_settings() -> Settings {
     Settings {
       last_game: Some("valheim".to_string()),
-      games: [(
-        "valheim".to_string(),
-        GameSettings {
-          folder: PathBuf::from("/games/Valheim"),
-          profile: None,
-        },
-      )]
-      .into(),
+      games: [("valheim".to_string(), GameSettings::new("/games/Valheim"))].into(),
+      ..Settings::default()
     }
   }
 
@@ -1967,7 +1992,39 @@ mod tests {
     Command::FindInSteam {
       game: "valheim".to_string(),
       app_id: VALHEIM,
+      steam: None,
     }
+  }
+
+  #[test]
+  fn finding_a_game_searches_only_the_steam_folder_the_user_chose() {
+    let dir = TempDir::new().unwrap();
+    let chosen = dir.path().join("Chosen");
+    let found = dir.path().join("Found");
+
+    for (install, folder) in [(&chosen, "Chosen Valheim"), (&found, "Found Valheim")] {
+      std::fs::create_dir_all(install.join("steamapps")).unwrap();
+      std::fs::write(
+        install.join(format!("steamapps/appmanifest_{VALHEIM}.acf")),
+        format!(r#""AppState" {{ "installdir" "{folder}" }}"#),
+      )
+      .unwrap();
+    }
+
+    let config = Config {
+      steam_installs: vec![found],
+      ..config_in(&dir)
+    };
+    let find = Command::FindInSteam {
+      game: "valheim".to_string(),
+      app_id: VALHEIM,
+      steam: Some(chosen.clone()),
+    };
+
+    assert_eq!(
+      run_now(find, &config),
+      steam_searched(Ok(chosen.join("steamapps/common/Chosen Valheim")))
+    );
   }
 
   fn steam_searched(folder: Result<PathBuf, NotFound>) -> Msg {
@@ -2058,6 +2115,12 @@ mod tests {
   }
 
   fn read_steam_option_under(runtime: Runtime) -> Command {
+    read_steam_option_from(runtime, None)
+  }
+
+  /// As [`read_steam_option_under`], reading the Steam install at `steam`
+  /// when given.
+  fn read_steam_option_from(runtime: Runtime, steam: Option<PathBuf>) -> Command {
     Command::ReadSteamOption {
       game: "valheim".to_string(),
       app_id: VALHEIM,
@@ -2067,7 +2130,25 @@ mod tests {
         runtime,
         LaunchMode::Vanilla,
       ),
+      steam,
     }
+  }
+
+  #[test]
+  fn the_steam_option_is_read_from_the_steam_folder_the_user_chose() {
+    let dir = TempDir::new().unwrap();
+    let chosen = TempDir::new().unwrap();
+    let config = Config {
+      steam: Some(steam_with(&dir, "found")),
+      ..config_in(&dir)
+    };
+    let read = read_steam_option_from(Runtime::Proton, Some(steam_with(&chosen, "chosen")));
+
+    let Msg::SteamOptionRead(read) = run_now(read, &config) else {
+      panic!("a Steam option read answers with what it read");
+    };
+
+    assert_eq!(read.current, Ok(Some("chosen".to_string())));
   }
 
   #[test]
@@ -2317,6 +2398,44 @@ mod tests {
   }
 
   #[test]
+  fn launch_arguments_reach_steam_after_the_loaders_own() {
+    let dir = TempDir::new().unwrap();
+    let config = launchable(&dir);
+    let arguments = vec!["-console".to_string(), "My Logs".to_string()];
+    let Command::Launch(launch) = launch_from(&dir, LaunchMode::Modded) else {
+      unreachable!("launch_from builds a launch");
+    };
+    let launch = Launch {
+      context: launch.context.with_extra_args(arguments),
+      ..launch
+    };
+
+    with_bepinex(&config);
+    run_now(Command::Launch(launch), &config);
+
+    let spawned = spawned_from(&default_profile(&config));
+    let argv = &spawned[0];
+    let position = |wanted: &str| argv.iter().position(|arg| arg.ends_with(wanted));
+
+    assert_eq!(spawned.len(), 1, "{spawned:?}");
+    assert!(
+      argv.windows(2).any(|pair| pair == ["-applaunch", "892970"]),
+      "{argv:?}"
+    );
+    assert!(
+      argv.windows(2).any(|pair| pair == ["-console", "My Logs"]),
+      "{argv:?}"
+    );
+    assert!(
+      matches!(
+        (position("BepInEx.Preloader.dll"), position("-console")),
+        (Some(loader), Some(user)) if loader < user
+      ),
+      "{argv:?}"
+    );
+  }
+
+  #[test]
   fn a_vanilla_launch_starts_the_game_without_the_loader_and_leaves_the_profile_alone() {
     let dir = TempDir::new().unwrap();
     let config = launchable(&dir);
@@ -2422,6 +2541,63 @@ mod tests {
 
     assert_eq!(saved, Msg::SettingsSaved(Ok(())));
     assert_eq!(loaded, Msg::SettingsLoaded(Ok(valheim_settings())));
+  }
+
+  #[test]
+  fn the_steam_folder_and_launch_arguments_load_back_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+    let mut settings = valheim_settings();
+
+    settings.steam_folder = Some(PathBuf::from("/mnt/games/Steam"));
+
+    if let Some(valheim) = settings.games.get_mut("valheim") {
+      valheim.launch_arguments = r#"-console -log "My Logs""#.to_string();
+    }
+
+    run_now(Command::SaveSettings(settings.clone()), &config);
+
+    assert_eq!(
+      run_now(Command::LoadSettings, &config),
+      Msg::SettingsLoaded(Ok(settings))
+    );
+  }
+
+  #[test]
+  fn settings_saved_in_quick_succession_keep_the_last_one_sent() {
+    let dir = TempDir::new().unwrap();
+    let config = config_in(&dir);
+    let file = config.settings.clone();
+    let (commands, inbox) = spawn(config);
+    let saves = 100;
+    let with_arguments = |n: usize| {
+      let mut settings = valheim_settings();
+
+      if let Some(valheim) = settings.games.get_mut("valheim") {
+        valheim.launch_arguments = format!("-save {n}");
+      }
+
+      settings
+    };
+
+    for n in 0..saves {
+      commands
+        .unbounded_send(Command::SaveSettings(with_arguments(n)))
+        .unwrap();
+    }
+
+    let answers: Vec<Msg> = futures::executor::block_on(inbox.take(saves).collect());
+    let text = std::fs::read_to_string(&file).unwrap();
+
+    assert!(
+      answers
+        .iter()
+        .all(|answer| *answer == Msg::SettingsSaved(Ok(())))
+    );
+    assert_eq!(
+      toml::from_str::<Settings>(&text).unwrap(),
+      with_arguments(saves - 1)
+    );
   }
 
   #[test]

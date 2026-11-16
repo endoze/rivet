@@ -50,14 +50,8 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
   });
   let valheim = Settings {
     last_game: Some("valheim".to_string()),
-    games: [(
-      "valheim".to_string(),
-      GameSettings {
-        folder: PathBuf::from("/games/Valheim"),
-        profile: None,
-      },
-    )]
-    .into(),
+    games: [("valheim".to_string(), GameSettings::new("/games/Valheim"))].into(),
+    ..Settings::default()
   };
 
   assert_eq!(sent.try_recv().ok(), Some(Command::LoadSettings));
@@ -222,14 +216,8 @@ fn open_default_profile() -> Command {
 fn valheim_settings() -> Settings {
   Settings {
     last_game: Some("valheim".to_string()),
-    games: [(
-      "valheim".to_string(),
-      GameSettings {
-        folder: PathBuf::from("/games/Valheim"),
-        profile: None,
-      },
-    )]
-    .into(),
+    games: [("valheim".to_string(), GameSettings::new("/games/Valheim"))].into(),
+    ..Settings::default()
   }
 }
 
@@ -1107,6 +1095,7 @@ fn picking_a_steam_game_finds_its_folder_with_no_user_action(cx: &mut TestAppCon
     Some(Command::FindInSteam {
       game: "valheim".to_string(),
       app_id: 892970,
+      steam: None,
     })
   );
 
@@ -1952,4 +1941,90 @@ fn a_refused_uninstall_shows_in_the_modal_and_dismissing_it_clears_it(cx: &mut T
   settle(cx, window);
 
   assert!(!dialog_open(cx, window), "dismissing kept the refusal open");
+}
+
+/// The settings `saves` last saved for valheim, failing when there are none.
+fn last_saved(saves: &[Command]) -> GameSettings {
+  saves
+    .iter()
+    .rev()
+    .find_map(|command| match command {
+      Command::SaveSettings(settings) => settings.games.get("valheim").cloned(),
+      _ => None,
+    })
+    .expect("the settings were not saved")
+}
+
+#[gpui_kit::test]
+fn settings_change_the_game_folder_and_save_typed_launch_arguments(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, shell) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let mut drain = move || std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>();
+  let mut settings = valheim_settings();
+  let moved = PathBuf::from("/moved/Valheim");
+
+  if let Some(valheim) = settings.games.get_mut("valheim") {
+    valheim.launch_arguments = "-console".to_string();
+  }
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(settings)))
+    .unwrap();
+  cx.run_until_parked();
+  drain();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("game-menu", cx);
+    window.render_frame(cx);
+    window.click("open-settings", cx);
+    window.render_frame(cx);
+    window.click("change-game-folder", cx);
+  })
+  .unwrap();
+
+  assert_eq!(
+    shell.read_with(cx, |shell, _| shell.state().screen.clone()),
+    Screen::Settings("valheim".to_string())
+  );
+  assert!(cx.did_prompt_for_paths());
+
+  cx.simulate_path_prompt_response(|_| Some(vec![moved.clone()]));
+  cx.run_until_parked();
+
+  assert_eq!(drain(), vec![Command::ListFolder(moved.clone())]);
+
+  answers
+    .unbounded_send(Msg::FolderListed {
+      folder: moved.clone(),
+      entries: Ok(vec!["valheim.x86_64".to_string()]),
+    })
+    .unwrap();
+  cx.run_until_parked();
+
+  assert_eq!(last_saved(&drain()).folder, moved);
+
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("launch-arguments", cx);
+    window.input(" -windowed", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| window.click("close-settings", cx))
+    .unwrap();
+  cx.run_until_parked();
+
+  assert_eq!(
+    shell.read_with(cx, |shell, _| shell.state().screen.clone()),
+    Screen::Game("valheim".to_string())
+  );
+  assert_eq!(last_saved(&drain()).launch_arguments, "-console -windowed");
 }

@@ -407,12 +407,10 @@ mod tests {
       last_game: Some(game.to_string()),
       games: [(
         game.to_string(),
-        GameSettings {
-          folder: PathBuf::from("/games").join(game),
-          profile: None,
-        },
+        GameSettings::new(PathBuf::from("/games").join(game)),
       )]
       .into(),
+      ..Settings::default()
     };
 
     update(&mut state, Msg::Started);

@@ -8,7 +8,7 @@ use crate::install::{
 use crate::manage::{SetEnabled, Uninstall};
 use crate::notice::Notice;
 use crate::updates::Update;
-use crate::{Command, Effect, State};
+use crate::{Command, Effect, State, settings_screen};
 
 /// Every operation running or waiting its turn. One leaves the queue as soon
 /// as it ends, and a notice tells the user how it went.
@@ -65,7 +65,8 @@ impl Work {
 pub enum Closing {
   /// Asking whether to wait for them or cancel them.
   Asking,
-  /// The window closes once no operation is running or waiting.
+  /// The window closes once no operation is running or waiting and every
+  /// settings save is written.
   Waiting,
 }
 
@@ -167,13 +168,19 @@ fn advance(state: &mut State) -> Vec<Effect> {
     return vec![Effect::Run(next.work.command())];
   }
 
-  if state.closing == Some(Closing::Waiting) {
-    state.closing = None;
+  close_when_done(state)
+}
 
-    return vec![Effect::CloseWindow];
+/// Closes the window when it is waiting to and no operation or settings save
+/// is left.
+pub(crate) fn close_when_done(state: &mut State) -> Vec<Effect> {
+  if state.closing != Some(Closing::Waiting) || state.is_busy() || state.saves > 0 {
+    return Vec::new();
   }
 
-  Vec::new()
+  state.closing = None;
+
+  vec![Effect::CloseWindow]
 }
 
 /// Where operation `id` is in the queue, when it is running.
@@ -323,18 +330,27 @@ pub(crate) fn cancel_pressed(state: &mut State, id: u64) -> Vec<Effect> {
   }
 }
 
-/// Closes the window at once when no operation is running or waiting, and
-/// otherwise asks whether to wait for them or cancel them.
+/// Saves what the settings screen holds unsaved, then closes the window once
+/// every settings save is written when no operation is running or waiting,
+/// and otherwise asks whether to wait for them or cancel them.
 pub(crate) fn close_requested(state: &mut State) -> Vec<Effect> {
-  if !state.is_busy() {
+  let saving = settings_screen::save_unsaved(state);
+
+  if state.is_busy() {
+    if state.closing.is_none() {
+      state.closing = Some(Closing::Asking);
+    }
+
+    return saving;
+  }
+
+  if saving.is_empty() && state.saves == 0 {
     return vec![Effect::CloseWindow];
   }
 
-  if state.closing.is_none() {
-    state.closing = Some(Closing::Asking);
-  }
+  state.closing = Some(Closing::Waiting);
 
-  Vec::new()
+  saving
 }
 
 /// Closes the window once the queue empties, cancelling what it holds first
@@ -379,7 +395,6 @@ mod tests {
   use crate::install::{DEFAULT_PROFILE, Installed, Stage};
   use crate::settings::{GameSettings, Settings};
   use crate::{Msg, test_ecosystem, test_installed, update};
-  use std::path::PathBuf;
 
   /// A state with valheim open on `selected`, holding `Owner-Solo` and
   /// `Owner-Other`, both enabled, with its profiles `Default` and `Modded`
@@ -391,11 +406,12 @@ mod tests {
       games: [(
         "valheim".to_string(),
         GameSettings {
-          folder: PathBuf::from("/games/valheim"),
           profile: (selected != DEFAULT_PROFILE).then(|| selected.to_string()),
+          ..GameSettings::new("/games/valheim")
         },
       )]
       .into(),
+      ..Settings::default()
     };
 
     update(&mut state, Msg::Started);
@@ -511,6 +527,7 @@ mod tests {
   /// Opens the `Modded` profile and asks to disable `Owner-Other` in it.
   fn disable_other_in_modded(state: &mut State) -> Vec<Effect> {
     update(state, Msg::ProfilePicked("Modded".to_string()));
+    update(state, Msg::SettingsSaved(Ok(())));
     update(state, opened("Modded"));
     update(state, Msg::DisablePressed("Owner-Other".to_string()))
   }

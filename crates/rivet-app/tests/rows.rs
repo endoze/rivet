@@ -8,7 +8,6 @@ use rivet_core::browse::Index;
 use rivet_core::install::{DEFAULT_PROFILE, InstalledPackage};
 use rivet_core::settings::{GameSettings, Settings};
 use rivet_core::{Command, Msg, State};
-use std::path::PathBuf;
 use thunderstore_engine::ecosystem::Ecosystem;
 use thunderstore_engine::models::{Package, PackageIndex};
 
@@ -162,14 +161,8 @@ fn open_valheim(
   });
   let settings = Settings {
     last_game: Some("valheim".to_string()),
-    games: [(
-      "valheim".to_string(),
-      GameSettings {
-        folder: PathBuf::from("/games/Valheim"),
-        profile: None,
-      },
-    )]
-    .into(),
+    games: [("valheim".to_string(), GameSettings::new("/games/Valheim"))].into(),
+    ..Settings::default()
   };
 
   for msg in [
