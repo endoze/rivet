@@ -4,17 +4,26 @@
 use crate::install::{Action, Installed, InstalledPackage, Profile};
 use crate::queue::{self, Work};
 use crate::{Command, Effect, State};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-/// The tab shown in a game. A game opens on [`Tab::Installed`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The tab shown in a game. A game opens on the one it was left on, saved
+/// by name in its settings, or else on [`Tab::Installed`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Tab {
   /// The game's package list.
   Browse,
   /// The open profile's packages.
   #[default]
   Installed,
+}
+
+impl Tab {
+  pub(crate) fn is_installed(&self) -> bool {
+    *self == Self::Installed
+  }
 }
 
 /// The Installed tab's search, order, and the change waiting on an answer.

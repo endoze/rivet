@@ -3,6 +3,7 @@
 
 use crate::install::DEFAULT_PROFILE;
 use crate::loader_files::LoaderFile;
+use crate::manage::Tab;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,9 @@ pub struct GameSettings {
   /// the game, so it is not made again on its own.
   #[serde(default, skip_serializing_if = "std::ops::Not::not")]
   pub r2modman_answered: bool,
+  /// The view the game was left on, which it opens on next.
+  #[serde(default, skip_serializing_if = "Tab::is_installed")]
+  pub tab: Tab,
 }
 
 impl GameSettings {
@@ -90,6 +94,7 @@ impl GameSettings {
       runtime: RuntimeChoice::Detect,
       loader_files: Vec::new(),
       r2modman_answered: false,
+      tab: Tab::Installed,
     }
   }
 }
@@ -239,6 +244,15 @@ impl Settings {
       .map(|settings| settings.folder.as_path())
   }
 
+  /// The view to open `game` on: the one it was left on, or
+  /// [`Tab::Installed`].
+  pub fn tab(&self, game: &str) -> Tab {
+    self
+      .games
+      .get(game)
+      .map_or(Tab::Installed, |settings| settings.tab)
+  }
+
   /// The profile to open `game` with: the one last selected, or
   /// [`DEFAULT_PROFILE`].
   ///
@@ -360,6 +374,28 @@ mod tests {
     assert!(
       serde_json::to_value(Settings::default()).unwrap()["interface_size"].is_null(),
       "an unchosen size is written to the file"
+    );
+  }
+
+  #[test]
+  fn a_game_opens_on_its_profile_until_find_mods_is_saved_by_name() {
+    let mut valheim = GameSettings::new("/games/valheim");
+
+    assert_eq!(valheim.tab, Tab::Installed);
+    assert_eq!(
+      serde_json::to_value(&valheim).unwrap().get("tab"),
+      None,
+      "the default view is written to the file"
+    );
+
+    valheim.tab = Tab::Browse;
+
+    let saved = serde_json::to_value(&valheim).unwrap();
+
+    assert_eq!(saved["tab"], "browse");
+    assert_eq!(
+      serde_json::from_value::<GameSettings>(saved).unwrap(),
+      valheim
     );
   }
 

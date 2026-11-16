@@ -590,6 +590,8 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
     effects.extend(readme::follow_list(state, when));
   }
 
+  effects.extend(remember_tab(state));
+
   state.saves += effects
     .iter()
     .filter(|effect| matches!(effect, Effect::Run(Command::SaveSettings(_))))
@@ -810,6 +812,25 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
   }
 }
 
+/// Records the tab shown in the open game as the one it opens on next, and
+/// saves it, when that differs from the one recorded. Whatever changed the
+/// tab, a click on a view or on a profile, the game reopens where it was
+/// left.
+fn remember_tab(state: &mut State) -> Option<Effect> {
+  let Screen::Game(game) = &state.screen else {
+    return None;
+  };
+  let settings = state.settings.games.get_mut(game)?;
+
+  if settings.tab == state.tab {
+    return None;
+  }
+
+  settings.tab = state.tab;
+
+  Some(Effect::Run(Command::SaveSettings(state.settings.clone())))
+}
+
 /// Shows `tab`, dropping the readme of the tab left so the next one follows
 /// the new list. Returns whether the tab changed.
 pub(crate) fn show_tab(state: &mut State, tab: Tab) -> bool {
@@ -997,7 +1018,7 @@ fn show_game(state: &mut State, game: String) -> Vec<Effect> {
   let launcher = launch::open(state, &game);
 
   switcher::open(state, &game);
-  show_tab(state, Tab::Installed);
+  show_tab(state, state.settings.tab(&game));
 
   state.screen = Screen::Game(game);
   state.browse = community.clone().map(Browse::new);
@@ -1467,20 +1488,117 @@ mod tests {
     assert_eq!(state.tab, Tab::Installed);
   }
 
+  /// Settings with valheim and riskofrain2 set up, valheim open last.
+  fn two_set_up() -> Settings {
+    let mut settings = settings_with("valheim", "/games/valheim");
+
+    settings.games.insert(
+      "riskofrain2".to_string(),
+      GameSettings::new("/games/riskofrain2"),
+    );
+
+    settings
+  }
+
   #[test]
-  fn switching_games_from_find_mods_lands_on_the_next_games_profile() {
+  fn switching_from_find_mods_to_a_game_with_no_saved_view_lands_on_its_profile() {
+    let mut state = started();
+
+    update(&mut state, Msg::SettingsLoaded(Ok(two_set_up())));
+    update(&mut state, Msg::TabChosen(Tab::Browse));
+    update(&mut state, Msg::SwitchGamePressed);
+    update(&mut state, Msg::GamePicked("riskofrain2".to_string()));
+
+    assert_eq!(state.screen, Screen::Game("riskofrain2".to_string()));
+    assert_eq!(state.tab, Tab::Installed);
+  }
+
+  #[test]
+  fn choosing_find_mods_saves_it_as_the_games_view() {
     let mut state = started();
 
     update(
       &mut state,
       Msg::SettingsLoaded(Ok(settings_with("valheim", "/games/valheim"))),
     );
+
+    let effects = update(&mut state, Msg::TabChosen(Tab::Browse));
+
+    assert_eq!(state.settings.games["valheim"].tab, Tab::Browse);
+    assert!(
+      effects.contains(&Effect::Run(Command::SaveSettings(state.settings.clone()))),
+      "the view was not saved: {effects:?}"
+    );
+  }
+
+  #[test]
+  fn choosing_the_view_already_saved_saves_nothing() {
+    let mut state = started();
+
+    update(
+      &mut state,
+      Msg::SettingsLoaded(Ok(settings_with("valheim", "/games/valheim"))),
+    );
+
+    let effects = update(&mut state, Msg::TabChosen(Tab::Installed));
+
+    assert!(
+      !effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::Run(Command::SaveSettings(_)))),
+      "{effects:?}"
+    );
+  }
+
+  #[test]
+  fn clicking_a_profile_from_find_mods_saves_its_mods_as_the_view() {
+    let mut state = started();
+
+    update(
+      &mut state,
+      Msg::SettingsLoaded(Ok(settings_with("valheim", "/games/valheim"))),
+    );
+    update(
+      &mut state,
+      Msg::ProfilesListed {
+        game: "valheim".to_string(),
+        names: Ok(vec![install::DEFAULT_PROFILE.to_string()]),
+      },
+    );
     update(&mut state, Msg::TabChosen(Tab::Browse));
+    update(
+      &mut state,
+      Msg::ProfilePicked(install::DEFAULT_PROFILE.to_string()),
+    );
+
+    assert_eq!(state.tab, Tab::Installed);
+    assert_eq!(state.settings.games["valheim"].tab, Tab::Installed);
+  }
+
+  #[test]
+  fn a_start_reopens_the_view_the_last_game_was_left_on() {
+    let mut state = started();
+    let mut settings = settings_with("valheim", "/games/valheim");
+
+    settings.games.get_mut("valheim").unwrap().tab = Tab::Browse;
+
+    update(&mut state, Msg::SettingsLoaded(Ok(settings)));
+
+    assert_eq!(state.tab, Tab::Browse);
+  }
+
+  #[test]
+  fn each_game_reopens_on_its_own_view() {
+    let mut state = started();
+
+    update(&mut state, Msg::SettingsLoaded(Ok(two_set_up())));
+    update(&mut state, Msg::TabChosen(Tab::Browse));
+    update(&mut state, Msg::SwitchGamePressed);
+    update(&mut state, Msg::GamePicked("riskofrain2".to_string()));
     update(&mut state, Msg::SwitchGamePressed);
     update(&mut state, Msg::GamePicked("valheim".to_string()));
 
-    assert_eq!(state.screen, Screen::Game("valheim".to_string()));
-    assert_eq!(state.tab, Tab::Installed);
+    assert_eq!(state.tab, Tab::Browse);
   }
 
   #[test]

@@ -52,16 +52,11 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
     })
     .expect("open test window")
   });
-  let valheim = Settings {
-    last_game: Some("valheim".to_string()),
-    games: [("valheim".to_string(), GameSettings::new("/games/Valheim"))].into(),
-    ..Settings::default()
-  };
 
   assert_eq!(sent.try_recv().ok(), Some(Command::LoadSettings));
 
   answers
-    .unbounded_send(Msg::SettingsLoaded(Ok(valheim)))
+    .unbounded_send(Msg::SettingsLoaded(Ok(valheim_on_find_mods())))
     .unwrap();
   cx.run_until_parked();
 
@@ -81,7 +76,6 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
     );
   }
 
-  answers.unbounded_send(Msg::TabChosen(Tab::Browse)).unwrap();
   answers
     .unbounded_send(Msg::CachedIndexRead {
       community: "valheim".to_string(),
@@ -166,8 +160,7 @@ fn searching_sorting_and_clearing_the_package_list(cx: &mut TestAppContext) {
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -279,8 +272,7 @@ fn the_toolbar_switches_views_without_moving_the_list(cx: &mut TestAppContext) {
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -390,8 +382,7 @@ fn clicking_a_profile_from_find_mods_shows_its_mods(cx: &mut TestAppContext) {
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -481,8 +472,7 @@ fn the_filter_menu_filters_both_views_by_category(cx: &mut TestAppContext) {
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(index_with_categories())),
@@ -641,6 +631,17 @@ fn valheim_settings() -> Settings {
   }
 }
 
+/// [`valheim_settings`] with Valheim left on Find mods, so it reopens there.
+fn valheim_on_find_mods() -> Settings {
+  let mut settings = valheim_settings();
+
+  if let Some(valheim) = settings.games.get_mut("valheim") {
+    valheim.tab = Tab::Browse;
+  }
+
+  settings
+}
+
 #[gpui_kit::test]
 fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext) {
   cx.update(gpui_kit::init);
@@ -655,8 +656,7 @@ fn installing_a_package_confirms_then_marks_it_installed(cx: &mut TestAppContext
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -765,8 +765,7 @@ fn closing_the_install_modal_any_way_installs_nothing(cx: &mut TestAppContext) {
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -830,8 +829,7 @@ fn closing_while_an_install_runs_asks_then_cancels_it_and_closes(cx: &mut TestAp
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -943,8 +941,7 @@ fn the_status_bar_shows_the_running_change_without_moving_the_tabs(cx: &mut Test
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -1199,8 +1196,7 @@ fn the_installed_tab_asks_before_disabling_a_dependency_and_the_disable_can_be_c
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::ProfileOpened {
       game: "valheim".to_string(),
       profile: DEFAULT_PROFILE.to_string(),
@@ -1394,8 +1390,7 @@ fn a_version_chosen_in_the_install_modal_is_the_one_installed(cx: &mut TestAppCo
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
@@ -2473,8 +2468,7 @@ fn selecting_a_package_in_either_tab_shows_its_readme_beside_the_list(cx: &mut T
   });
 
   for msg in [
-    Msg::SettingsLoaded(Ok(valheim_settings())),
-    Msg::TabChosen(Tab::Browse),
+    Msg::SettingsLoaded(Ok(valheim_on_find_mods())),
     Msg::CachedIndexRead {
       community: "valheim".to_string(),
       index: Ok(Some(mock_index())),
