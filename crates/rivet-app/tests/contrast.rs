@@ -48,15 +48,26 @@ fn the_shell_paints_only_palette_colors() {
 
 fn assert_readable(cx: &mut TestAppContext, mode: ThemeMode) {
   cx.update(gpui_kit::init);
+  cx.update(rivet_app::theme::init);
   cx.update(|cx| Theme::change(mode, None, cx));
 
-  let palette = cx.update(|cx| {
-    assert_eq!(cx.theme().is_dark(), mode.is_dark());
+  let (palette, primary, primary_text) = cx.update(|cx| {
+    let theme = cx.theme();
 
-    Palette::new(cx)
+    assert_eq!(theme.is_dark(), mode.is_dark());
+
+    (Palette::new(cx), theme.primary, theme.primary_foreground)
   });
+  let primary_button = contrast(primary_text, primary);
+
+  assert!(
+    primary_button >= AA,
+    "{mode:?}: text on a primary button is {primary_button:.2}:1, under {AA}:1"
+  );
+
   let texts = [("text", palette.text), ("muted text", palette.muted_text)];
   let backgrounds = [
+    ("the window", palette.background),
     ("the panel", palette.panel),
     ("a hovered row", palette.row_hover),
     ("the selected row", palette.row_selected),

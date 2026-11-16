@@ -2303,6 +2303,48 @@ fn settings_force_a_linux_game_to_run_under_proton(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn settings_mark_the_chosen_runtime_as_pressed(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let mut state = State::new(one_game());
+
+  state.host = Some(HostOs::Linux);
+
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(valheim_settings())))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("game-menu", cx);
+    window.render_frame(cx);
+    window.click("open-settings", cx);
+    window.render_frame(cx);
+    window.click("runtime-proton", cx);
+  })
+  .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+
+    let pressed =
+      ["runtime-detect", "runtime-native", "runtime-proton"].map(|id| window.find(id).checked());
+
+    assert_eq!(pressed, [Some(false), Some(false), Some(true)]);
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
 fn settings_remove_the_loader_files_launches_copied_into_the_game_folder(cx: &mut TestAppContext) {
   cx.update(gpui_kit::init);
 

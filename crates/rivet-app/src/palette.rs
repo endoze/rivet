@@ -17,7 +17,9 @@ pub struct Palette {
   pub text: Hsla,
   /// Secondary text: bylines, descriptions, and status lines.
   pub muted_text: Hsla,
-  /// The background of panels and of rows at rest.
+  /// The background of the window and of rows at rest.
+  pub background: Hsla,
+  /// The background of the sidebar, the detail pane, and the status bar.
   pub panel: Hsla,
   /// The background of a row under the pointer.
   pub row_hover: Hsla,
@@ -53,23 +55,25 @@ impl Palette {
   /// reach WCAG AA on a menu.
   pub fn new(cx: &App) -> Self {
     let theme = cx.theme();
-    let panel = theme.background;
-    let row_hover = panel.blend(theme.list_hover);
-    let row_selected = panel.blend(theme.secondary);
-    let code = panel.blend(theme.muted);
-    let toast = panel.blend(theme.popover);
+    let background = theme.background;
+    let panel = background.blend(theme.sidebar);
+    let row_hover = background.blend(theme.list_hover);
+    let row_selected = background.blend(theme.list_active);
+    let code = background.blend(theme.muted);
+    let toast = background.blend(theme.popover);
     let text = theme.foreground;
     let muted_text = reaching(
       AA,
-      panel.blend(theme.muted_foreground),
+      background.blend(theme.muted_foreground),
       text,
-      &[panel, row_hover, row_selected, code],
+      &[background, panel, row_hover, row_selected, code],
     );
     let accent = |color: Hsla| reaching(NON_TEXT, toast.blend(color), text, &[toast]);
 
     Self {
       text,
       muted_text,
+      background,
       panel,
       row_hover,
       row_selected,

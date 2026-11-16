@@ -2,14 +2,16 @@
 //! [`Effect`]s that need the window, and hands the rest to the commands
 //! thread.
 
+pub mod assets;
 mod icons;
 mod modal;
 pub mod palette;
 pub mod text;
+pub mod theme;
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
@@ -45,6 +47,7 @@ use rivet_core::updates::Badges;
 use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
 use std::path::PathBuf;
+use theme::Typography as _;
 use thunderstore_engine::profile::launch::{HostOs, LaunchMode};
 use thunderstore_engine::query::PackageRow;
 
@@ -367,7 +370,7 @@ impl Shell {
       .content(move |_, _, _| {
         v_flex()
           .id(id)
-          .text_sm()
+          .text_small()
           .children(detail.iter().map(|line| div().child(line.clone())))
           .test_support()
           .into_any_element()
@@ -454,7 +457,7 @@ impl Shell {
           .id("status-note")
           .min_w_0()
           .truncate()
-          .text_sm()
+          .text_small()
           .text_color(palette.muted_text)
           .child(note)
           .test_support()
@@ -465,7 +468,7 @@ impl Shell {
       div()
         .id("experimental")
         .flex_none()
-        .text_sm()
+        .text_small()
         .text_color(palette.warning)
         .child(text::EXPERIMENTAL)
         .test_support()
@@ -477,6 +480,7 @@ impl Shell {
       .px_4()
       .gap_3()
       .overflow_hidden()
+      .bg(palette.panel)
       .border_t_1()
       .border_color(palette.border)
       .child(
@@ -677,7 +681,7 @@ impl Shell {
       )
       .child(
         div()
-          .text_sm()
+          .text_small()
           .text_color(palette.muted_text)
           .child(text::LAUNCH_ARGUMENTS_HINT),
       );
@@ -685,8 +689,7 @@ impl Shell {
     let runtime_button = |id: &'static str, title: &'static str, choice: RuntimeChoice| {
       Button::new(id)
         .label(title)
-        .small()
-        .when(chosen == choice, |button| button.primary())
+        .selected(chosen == choice)
         .on_click(cx.listener(move |this, _, _, cx| {
           this.dispatch(Msg::RuntimeChosen(choice), cx);
         }))
@@ -699,25 +702,29 @@ impl Shell {
             .gap_2()
             .items_center()
             .child(label(text::RUNS_WITH))
-            .child(runtime_button(
-              "runtime-detect",
-              text::RUNTIME_DETECT,
-              RuntimeChoice::Detect,
-            ))
-            .child(runtime_button(
-              "runtime-native",
-              text::RUNTIME_NATIVE,
-              RuntimeChoice::Native,
-            ))
-            .child(runtime_button(
-              "runtime-proton",
-              text::RUNTIME_PROTON,
-              RuntimeChoice::Proton,
-            )),
+            .child(
+              ButtonGroup::new("runtime")
+                .small()
+                .child(runtime_button(
+                  "runtime-detect",
+                  text::RUNTIME_DETECT,
+                  RuntimeChoice::Detect,
+                ))
+                .child(runtime_button(
+                  "runtime-native",
+                  text::RUNTIME_NATIVE,
+                  RuntimeChoice::Native,
+                ))
+                .child(runtime_button(
+                  "runtime-proton",
+                  text::RUNTIME_PROTON,
+                  RuntimeChoice::Proton,
+                )),
+            ),
         )
         .child(
           div()
-            .text_sm()
+            .text_small()
             .text_color(palette.muted_text)
             .child(text::RUNTIME_HINT),
         )
@@ -750,7 +757,7 @@ impl Shell {
       )
       .child(
         div()
-          .text_sm()
+          .text_small()
           .text_color(palette.muted_text)
           .child(text::LOADER_FILES_HINT),
       );
@@ -1140,7 +1147,8 @@ fn profile_item(name: &str, count: Option<usize>, muted: Hsla) -> PopupMenuItem 
       .children(count.map(|count| {
         div()
           .id(SharedString::from(format!("mod-count-{name}")))
-          .text_sm()
+          .text_small()
+          .tabular()
           .text_color(muted)
           .child(text::mod_count(count))
           .test_support()
@@ -1159,6 +1167,7 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> Option<A
   }
 
   let palette = Palette::new(cx);
+  let mono = Theme::global(cx).mono_font_family.clone();
   let (id, status) = match &steam.found {
     Some(OptionStatus::Unknown(reason)) => {
       ("launch-option-unknown", text::steam_option_unknown(reason))
@@ -1175,7 +1184,7 @@ fn render_steam_option(steam: &SteamOption, cx: &mut Context<Shell>) -> Option<A
         div()
           .flex_1()
           .p_2()
-          .font_family("monospace")
+          .font_family(mono)
           .bg(palette.code)
           .child(SharedString::from(line)),
       )
@@ -1260,7 +1269,8 @@ fn render_running(
     .size_full()
     .min_w_0()
     .gap_3()
-    .text_sm()
+    .text_small()
+    .tabular()
     .child(
       div()
         .min_w_0()
@@ -1439,7 +1449,7 @@ fn installed_row(
       div()
         .id(SharedString::from(format!("{state_id}-{full_name}")))
         .flex_none()
-        .text_sm()
+        .text_small()
         .child(state_label)
         .test_support(),
     )
@@ -1478,7 +1488,8 @@ fn headline(name: String, byline: String, muted: Hsla) -> Div {
       div()
         .id("byline")
         .truncate()
-        .text_sm()
+        .text_small()
+        .tabular()
         .text_color(muted)
         .child(byline)
         .test_support(),
@@ -1508,7 +1519,7 @@ fn install_action(
     return div()
       .id(SharedString::from(format!("installed-{full_name}")))
       .flex_none()
-      .text_sm()
+      .text_small()
       .child(text::INSTALLED)
       .test_support()
       .into_any_element();
@@ -1689,7 +1700,7 @@ fn render_filters(
     .child(
       h_flex()
         .gap_2()
-        .child(div().text_sm().child(text::SORT_BY))
+        .child(div().text_small().child(text::SORT_BY))
         .children(sorts)
         .child(div().flex_1())
         .child(
@@ -1826,7 +1837,7 @@ fn package_row(
             .id("description")
             .line_clamp(2)
             .text_ellipsis()
-            .text_sm()
+            .text_small()
             .text_color(muted)
             .child(text::one_paragraph(row.description().unwrap_or_default()))
             .test_support(),

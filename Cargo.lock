@@ -6303,6 +6303,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "gpui-pre-reqwest-client",
+ "gpui-pre-wgpu",
  "rivet-commands",
  "rivet-core",
  "rivet-platform",

@@ -2,6 +2,7 @@
 //! and what each holds.
 
 use crate::palette::Palette;
+use crate::theme::Typography as _;
 use crate::{Shell, failure, send, text};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -388,7 +389,7 @@ fn installing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App
       )
       .child(
         div()
-          .text_sm()
+          .text_small()
           .text_color(palette.muted_text)
           .child(text::PIN_HINT),
       )

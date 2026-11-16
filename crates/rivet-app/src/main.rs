@@ -24,9 +24,10 @@ fn main() {
   };
 
   gpui_kit::application()
-    .with_assets(gpui_kit::assets::Assets)
+    .with_assets(rivet_app::assets::Assets)
     .run(move |cx| {
       gpui_kit::init(cx);
+      rivet_app::theme::init(cx);
 
       let images =
         ReqwestClient::user_agent(rivet_commands::USER_AGENT).expect("the image HTTP client");
