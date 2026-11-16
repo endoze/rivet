@@ -46,7 +46,7 @@ use rivet_core::notice::{Level, Notice};
 use rivet_core::picker::Step;
 use rivet_core::portability::{Exporting, Importing};
 use rivet_core::readme::{Package, Readme, Status};
-use rivet_core::settings::RuntimeChoice;
+use rivet_core::settings::{Appearance, RuntimeChoice};
 use rivet_core::settings_screen::{self, Target};
 use rivet_core::switcher::Naming;
 use rivet_core::updates::Badges;
@@ -177,6 +177,7 @@ impl Shell {
         this.dispatch(Msg::WindowFocused, cx);
       }
     });
+    let appearance = cx.observe_window_appearance(window, |_: &mut Self, _, cx| cx.notify());
     let shell = cx.weak_entity();
 
     window.on_window_should_close(cx, move |_, cx| {
@@ -222,6 +223,7 @@ impl Shell {
         installed_searched,
         arguments_typed,
         focused,
+        appearance,
       ],
       _inbox,
     };
@@ -785,6 +787,37 @@ impl Shell {
             .child(text::RUNTIME_HINT),
         )
     });
+    let appearance_button = |id: &'static str, title: &'static str, choice: Appearance| {
+      Button::new(id)
+        .label(title)
+        .selected(state.settings.appearance == choice)
+        .on_click(cx.listener(move |this, _, _, cx| {
+          this.dispatch(Msg::AppearanceChosen(choice), cx);
+        }))
+    };
+    let appearance = h_flex()
+      .gap_2()
+      .items_center()
+      .child(label(text::APPEARANCE))
+      .child(
+        ButtonGroup::new("appearance")
+          .small()
+          .child(appearance_button(
+            "appearance-system",
+            text::APPEARANCE_SYSTEM,
+            Appearance::System,
+          ))
+          .child(appearance_button(
+            "appearance-light",
+            text::APPEARANCE_LIGHT,
+            Appearance::Light,
+          ))
+          .child(appearance_button(
+            "appearance-dark",
+            text::APPEARANCE_DARK,
+            Appearance::Dark,
+          )),
+      );
     let loader_files = v_flex()
       .gap_1()
       .child(
@@ -864,6 +897,7 @@ impl Shell {
         steam_folder,
         Target::SteamFolder,
       )))
+      .child(section(text::DISPLAY.into()).child(appearance))
       .into_any_element()
   }
 
@@ -2502,6 +2536,8 @@ fn failure(palette: Palette, failure: text::Failure) -> impl IntoElement {
 
 impl Render for Shell {
   fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    theme::apply(self.state.settings.appearance, window, cx);
+
     if let Some(text) = self.fill_profile_name.take() {
       self.profile_name.update(cx, |input, cx| {
         input.set_value(text, window, cx);

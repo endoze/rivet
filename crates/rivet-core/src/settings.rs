@@ -19,6 +19,9 @@ pub struct Settings {
   /// uses the ones found.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub steam_folder: Option<PathBuf>,
+  /// Whether Rivet looks light or dark, or follows the system.
+  #[serde(skip_serializing_if = "Appearance::is_system")]
+  pub appearance: Appearance,
   /// Per-game settings, keyed by community slug.
   pub games: BTreeMap<String, GameSettings>,
 }
@@ -108,6 +111,24 @@ impl RuntimeChoice {
 
   fn is_detect(&self) -> bool {
     *self == Self::Detect
+  }
+}
+
+/// Whether Rivet looks light or dark. The theme in use is the light or dark
+/// member of its family, picked by this.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+  /// Light or dark as the system is, following it when it changes.
+  #[default]
+  System,
+  Light,
+  Dark,
+}
+
+impl Appearance {
+  fn is_system(&self) -> bool {
+    *self == Self::System
   }
 }
 
@@ -231,9 +252,27 @@ mod tests {
     .unwrap();
 
     assert_eq!(settings.steam_folder, None);
+    assert_eq!(settings.appearance, Appearance::System);
     assert_eq!(
       settings.games["valheim"],
       GameSettings::new("/games/valheim")
     );
+  }
+
+  #[test]
+  fn the_appearance_matches_the_system_until_one_is_chosen() {
+    assert_eq!(Settings::default().appearance, Appearance::System);
+  }
+
+  #[test]
+  fn a_chosen_appearance_is_saved_by_name_and_read_back() {
+    let settings = Settings {
+      appearance: Appearance::Dark,
+      ..Settings::default()
+    };
+    let saved = serde_json::to_value(&settings).unwrap();
+
+    assert_eq!(saved["appearance"], "dark");
+    assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
   }
 }

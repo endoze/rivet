@@ -144,6 +144,12 @@ pub const RUNTIME_PROTON: &str = "Proton";
 pub const RUNTIME_HINT: &str =
   "Detect picks Proton when the game folder holds only the Windows build. Takes effect at once.";
 
+pub const DISPLAY: &str = "Display";
+pub const APPEARANCE: &str = "Appearance";
+pub const APPEARANCE_SYSTEM: &str = "Match system";
+pub const APPEARANCE_LIGHT: &str = "Light";
+pub const APPEARANCE_DARK: &str = "Dark";
+
 pub const LOADER_FILES: &str = "Loader files";
 pub const REMOVE: &str = "Remove";
 

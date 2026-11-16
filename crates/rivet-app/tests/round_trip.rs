@@ -1,5 +1,5 @@
 use futures::channel::mpsc::unbounded;
-use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::{ActiveTheme as _, ThemeMode, WindowExt as _};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
   AnyWindowHandle, AppContext as _, TestAppContext, VisualTestContext, Window, WindowOptions, px,
@@ -9,7 +9,7 @@ use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
 use rivet_core::loader_files::{FileRemoval, LoaderFile};
 use rivet_core::readme::{self, Request};
-use rivet_core::settings::{GameSettings, RuntimeChoice, Settings};
+use rivet_core::settings::{Appearance, GameSettings, RuntimeChoice, Settings};
 use rivet_core::{Command, Msg, Screen, State};
 use std::path::PathBuf;
 use thunderstore_engine::ecosystem::Ecosystem;
@@ -2850,6 +2850,70 @@ fn settings_mark_the_chosen_runtime_as_pressed(cx: &mut TestAppContext) {
       ["runtime-detect", "runtime-native", "runtime-proton"].map(|id| window.find(id).checked());
 
     assert_eq!(pressed, [Some(false), Some(false), Some(true)]);
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_saved_appearance_applies_at_start_and_a_new_choice_applies_at_once(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, mut sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+  let mut drain = move || std::iter::from_fn(|| sent.try_recv().ok()).collect::<Vec<_>>();
+  let dark = Settings {
+    appearance: Appearance::Dark,
+    ..valheim_settings()
+  };
+  let mode = |cx: &mut TestAppContext| cx.update(|cx| cx.theme().mode);
+  let choose = |cx: &mut TestAppContext, id: &'static str| {
+    cx.update_window(window, |_, window, cx| {
+      window.click(id, cx);
+      window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+  };
+
+  answers
+    .unbounded_send(Msg::SettingsLoaded(Ok(dark)))
+    .unwrap();
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("open-settings", cx);
+    window.render_frame(cx);
+  })
+  .unwrap();
+  drain();
+
+  assert_eq!(mode(cx), ThemeMode::Dark, "the saved appearance");
+
+  choose(cx, "appearance-light");
+
+  assert_eq!(mode(cx), ThemeMode::Light);
+
+  choose(cx, "appearance-system");
+
+  assert_eq!(mode(cx), ThemeMode::Light, "the test window is light");
+
+  let saved = drain().into_iter().rev().find_map(|command| match command {
+    Command::SaveSettings(settings) => Some(settings.appearance),
+    _ => None,
+  });
+
+  assert_eq!(saved, Some(Appearance::System));
+  cx.update_window(window, |_, window, _| {
+    let pressed = ["appearance-system", "appearance-light", "appearance-dark"]
+      .map(|id| window.find(id).checked());
+
+    assert_eq!(pressed, [Some(true), Some(false), Some(false)]);
   })
   .unwrap();
 }

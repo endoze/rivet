@@ -39,9 +39,6 @@ fn main() {
 
       gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
         Theme::sync_system_appearance(Some(window), cx);
-        window
-          .observe_window_appearance(|window, cx| Theme::sync_system_appearance(Some(window), cx))
-          .detach();
 
         cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
       })

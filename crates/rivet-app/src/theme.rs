@@ -2,7 +2,8 @@
 //! both bundled into the binary.
 
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeConfig, ThemeMode};
-use gpui_kit::{App, FontFeatures, Styled, px};
+use gpui_kit::{App, FontFeatures, Styled, Window, WindowAppearance, px};
+use rivet_core::settings::Appearance;
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -126,6 +127,37 @@ pub fn init(cx: &mut App) {
   let mode = cx.theme().mode;
 
   Theme::change(mode, None, cx);
+}
+
+/// Whether the light or dark theme applies for `appearance` while the system
+/// looks like `system`.
+///
+/// ```
+/// use gpui_kit::WindowAppearance;
+/// use gpui_kit::component::ThemeMode;
+/// use rivet_app::theme;
+/// use rivet_core::settings::Appearance;
+///
+/// assert_eq!(theme::mode(Appearance::System, WindowAppearance::Dark), ThemeMode::Dark);
+/// assert_eq!(theme::mode(Appearance::Light, WindowAppearance::Dark), ThemeMode::Light);
+/// ```
+pub fn mode(appearance: Appearance, system: WindowAppearance) -> ThemeMode {
+  match appearance {
+    Appearance::System => system.into(),
+    Appearance::Light => ThemeMode::Light,
+    Appearance::Dark => ThemeMode::Dark,
+  }
+}
+
+/// Loads the theme `appearance` calls for, reading the system's appearance
+/// from `window`. Does nothing when that theme is already loaded, so it can
+/// run on every render.
+pub fn apply(appearance: Appearance, window: &Window, cx: &mut App) {
+  let mode = mode(appearance, window.appearance());
+
+  if cx.theme().mode != mode {
+    Theme::change(mode, None, cx);
+  }
 }
 
 /// The theme config for one appearance. Every color the component library

@@ -1,7 +1,8 @@
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
-use gpui_kit::{App, Hsla, TestAppContext, rgb, rgba};
+use gpui_kit::{App, Hsla, TestAppContext, WindowAppearance, rgb, rgba};
 use rivet_app::palette::Palette;
 use rivet_app::theme;
+use rivet_core::settings::Appearance;
 
 /// One appearance's row of the spec's design token table.
 struct Spec {
@@ -82,6 +83,38 @@ fn both_themes_set_text_in_ibm_plex(cx: &mut TestAppContext) {
       assert_eq!(theme.font_family, theme::SANS, "{mode:?}");
       assert_eq!(theme.mono_font_family, theme::MONO, "{mode:?}");
     });
+  }
+}
+
+#[test]
+fn match_system_follows_the_os_and_light_or_dark_ignores_it() {
+  let cases = [
+    (
+      Appearance::System,
+      WindowAppearance::Light,
+      ThemeMode::Light,
+    ),
+    (
+      Appearance::System,
+      WindowAppearance::VibrantLight,
+      ThemeMode::Light,
+    ),
+    (Appearance::System, WindowAppearance::Dark, ThemeMode::Dark),
+    (
+      Appearance::System,
+      WindowAppearance::VibrantDark,
+      ThemeMode::Dark,
+    ),
+    (Appearance::Light, WindowAppearance::Dark, ThemeMode::Light),
+    (Appearance::Dark, WindowAppearance::Light, ThemeMode::Dark),
+  ];
+
+  for (appearance, system, expected) in cases {
+    assert_eq!(
+      theme::mode(appearance, system),
+      expected,
+      "{appearance:?} on a {system:?} system"
+    );
   }
 }
 
