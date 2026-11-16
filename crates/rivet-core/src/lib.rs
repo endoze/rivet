@@ -386,7 +386,7 @@ pub enum Msg {
     game: String,
     profiles: Vec<r2modman::Found>,
   },
-  /// Import from r2modman was pressed in the profile menu.
+  /// Import from r2modman was pressed in the Import a profile menu.
   R2modmanPressed,
   /// The offer to import r2modman's profiles was declined.
   R2modmanDeclined,

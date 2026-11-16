@@ -1,9 +1,8 @@
 use futures::channel::mpsc::unbounded;
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::test::{ElementSnapshot, TestQueryExt as _, TestWindowExt as _};
+use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
-  AnyWindowHandle, AppContext as _, Role, TestAppContext, VisualTestContext, Window, WindowOptions,
-  px,
+  AnyWindowHandle, AppContext as _, TestAppContext, VisualTestContext, Window, WindowOptions, px,
 };
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
@@ -1165,8 +1164,6 @@ fn picking_a_game_and_its_folder_opens_the_game(cx: &mut TestAppContext) {
 
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-    window.click("game-menu", cx);
-    window.render_frame(cx);
     window.click("switch-game", cx);
   })
   .unwrap();
@@ -1407,7 +1404,7 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
       let tabs = window.find("tab-browse").bounds();
 
       window.click("copy-launch-option", cx);
-      window.click("launch-vanilla", cx);
+      window.within("sidebar").click("launch-vanilla", cx);
       window.render_frame(cx);
 
       tabs
@@ -1503,17 +1500,6 @@ fn a_native_steam_game_shows_its_launch_option_and_launches(cx: &mut TestAppCont
   .unwrap();
 }
 
-/// The menu row holding the element `id`, which carries the row's check.
-fn menu_row(window: &Window, id: &'static str) -> ElementSnapshot {
-  let inner = window.find(id);
-
-  window
-    .elements()
-    .into_iter()
-    .find(|row| row.role() == Some(Role::MenuItem) && inner.path().starts_with(row.path()))
-    .unwrap_or_else(|| panic!("{id} is not in a menu row"))
-}
-
 /// Draws the window, gives the shell time to open or close a dialog, and
 /// draws it again.
 fn settle(cx: &mut TestAppContext, window: AnyWindowHandle) {
@@ -1531,7 +1517,7 @@ fn dialog_open(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
 }
 
 #[gpui_kit::test]
-fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
+fn the_sidebar_picks_names_and_deletes_profiles(cx: &mut TestAppContext) {
   use rivet_core::switcher::ProfileChange;
 
   cx.update(gpui_kit::init);
@@ -1582,28 +1568,40 @@ fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) 
     "the default profile could be renamed"
   );
 
-  cx.update_window(window, |_, window, cx| {
-    window.press("escape", cx);
-    window.click("profile-menu", cx);
-    window.render_frame(cx);
+  let place = |window: &mut Window| {
+    [
+      "pick-profile-Default",
+      "pick-profile-Modded",
+      "new-profile",
+      "tab-browse",
+    ]
+    .map(|id| window.find(id).bounds())
+  };
+  let before = cx
+    .update_window(window, |_, window, cx| {
+      window.press("escape", cx);
+      window.render_frame(cx);
 
-    assert_eq!(
-      menu_row(window, "pick-profile-Default").checked(),
-      Some(true)
-    );
-    assert_ne!(
-      menu_row(window, "pick-profile-Modded").checked(),
-      Some(true)
-    );
-    assert!(window.try_find("mod-count-Default").is_some());
-    assert!(
-      window.try_find("mod-count-Modded").is_none(),
-      "a count was shown for a profile never read"
-    );
+      let sidebar = window.within("sidebar");
 
-    window.click("pick-profile-Modded", cx);
-  })
-  .unwrap();
+      assert_eq!(sidebar.find("pick-profile-Default").checked(), Some(true));
+      assert_ne!(sidebar.find("pick-profile-Modded").checked(), Some(true));
+      assert!(sidebar.try_find("mod-count-Default").is_some());
+      assert!(
+        sidebar.try_find("mod-count-Modded").is_none(),
+        "a count was shown for a profile never read"
+      );
+
+      let before = place(window);
+
+      window.click("pick-profile-Modded", cx);
+      window.render_frame(cx);
+
+      assert_eq!(place(window), before, "opening the profile moved the list");
+
+      before
+    })
+    .unwrap();
 
   assert!(
     drain().contains(&Command::OpenProfile {
@@ -1617,8 +1615,19 @@ fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) 
   cx.run_until_parked();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-    window.click("profile-menu", cx);
-    window.render_frame(cx);
+
+    assert_eq!(
+      window.find("pick-profile-Modded").checked(),
+      Some(true),
+      "the opened profile is not marked current"
+    );
+    assert_ne!(window.find("pick-profile-Default").checked(), Some(true));
+    assert!(
+      window.try_find("mod-count-Default").is_some(),
+      "the count of the profile left was dropped"
+    );
+    assert_eq!(place(window), before, "switching profile moved the list");
+
     window.click("new-profile", cx);
   })
   .unwrap();
@@ -1646,12 +1655,8 @@ fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) 
 
   assert!(!dialog_open(cx, window), "cancelling left the dialog open");
 
-  cx.update_window(window, |_, window, cx| {
-    window.click("profile-menu", cx);
-    window.render_frame(cx);
-    window.click("new-profile", cx);
-  })
-  .unwrap();
+  cx.update_window(window, |_, window, cx| window.click("new-profile", cx))
+    .unwrap();
   settle(cx, window);
 
   let tabs = cx
@@ -1758,6 +1763,69 @@ fn the_profile_header_picks_names_and_deletes_profiles(cx: &mut TestAppContext) 
     toasted(cx, window, "notice-error"),
     "the failed delete was not told"
   );
+}
+
+#[gpui_kit::test]
+fn the_sidebar_imports_a_profile_from_a_code_or_a_file(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let (commands, _sent) = unbounded::<Command>();
+  let (answers, inbox) = unbounded::<Msg>();
+  let (window, _) = cx.update(|cx| {
+    gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      cx.new(|cx| Shell::new(State::new(one_game()), commands, inbox, window, cx))
+    })
+    .expect("open test window")
+  });
+
+  for msg in [
+    Msg::SettingsLoaded(Ok(valheim_settings())),
+    Msg::CachedIndexRead {
+      community: "valheim".to_string(),
+      index: Ok(Some(mock_index())),
+    },
+    Msg::ProfileOpened {
+      game: "valheim".to_string(),
+      profile: DEFAULT_PROFILE.to_string(),
+      installed: Ok(Installed::new()),
+    },
+  ] {
+    answers.unbounded_send(msg).unwrap();
+  }
+
+  cx.run_until_parked();
+  cx.update_window(window, |_, window, cx| {
+    window.render_frame(cx);
+    window.click("import-profile", cx);
+    window.render_frame(cx);
+
+    assert!(window.try_find("import-file").is_some());
+    assert!(
+      window.try_find("import-r2modman").is_none(),
+      "r2modman was offered with no r2modman profiles"
+    );
+
+    window.click("import-code", cx);
+  })
+  .unwrap();
+  settle(cx, window);
+
+  assert!(dialog_open(cx, window), "importing a code opened no dialog");
+
+  cx.update_window(window, |_, window, cx| {
+    window.press("escape", cx);
+    window.render_frame(cx);
+  })
+  .unwrap();
+  settle(cx, window);
+  cx.update_window(window, |_, window, cx| {
+    window.click("import-profile", cx);
+    window.render_frame(cx);
+    window.click("import-file", cx);
+  })
+  .unwrap();
+
+  assert!(cx.did_prompt_for_paths(), "importing a file asked for none");
 }
 
 /// The readme fetch the shell sent last, if any.
@@ -2123,8 +2191,6 @@ fn settings_change_the_game_folder_and_save_typed_launch_arguments(cx: &mut Test
   drain();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-    window.click("game-menu", cx);
-    window.render_frame(cx);
     window.click("open-settings", cx);
     window.render_frame(cx);
     window.click("change-game-folder", cx);
@@ -2195,7 +2261,7 @@ fn game_screen_on(cx: &mut TestAppContext, host: HostOs) -> AnyWindowHandle {
 }
 
 #[gpui_kit::test]
-fn the_game_screen_puts_the_tabs_right_under_the_header_with_no_folder_line(
+fn the_game_screen_keeps_the_game_and_profiles_in_a_sidebar_beside_the_tabs(
   cx: &mut TestAppContext,
 ) {
   cx.update(gpui_kit::init);
@@ -2205,12 +2271,96 @@ fn the_game_screen_puts_the_tabs_right_under_the_header_with_no_folder_line(
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
 
-    let header = window.find("header").bounds();
+    let sidebar = window.find("sidebar").bounds();
     let tabs = window.find("tab-browse").bounds();
 
+    assert_eq!(
+      sidebar.size.width,
+      px(248.),
+      "the sidebar is not 248px wide"
+    );
     assert!(
-      tabs.top() - header.bottom() <= px(16.),
-      "something sits between the header and the tabs: {header:?} then {tabs:?}"
+      window.try_find("header").is_none(),
+      "the header row is back"
+    );
+    assert!(
+      tabs.left() >= sidebar.right(),
+      "the tabs are not beside the sidebar: {sidebar:?} then {tabs:?}"
+    );
+    assert!(
+      tabs.top() - sidebar.top() <= px(16.),
+      "something sits above the tabs: {sidebar:?} then {tabs:?}"
+    );
+
+    let within = window.within("sidebar");
+
+    for id in [
+      "game-name",
+      "switch-game",
+      "launch-modded",
+      "launch-vanilla",
+      "pick-profile-Default",
+      "new-profile",
+      "import-profile",
+      "profile-actions",
+      "open-settings",
+    ] {
+      assert!(within.try_find(id).is_some(), "{id} is not in the sidebar");
+    }
+
+    let row = within.find("open-settings").bounds().size.width;
+
+    for id in ["new-profile", "import-profile", "profile-actions"] {
+      assert_eq!(
+        within.find(id).bounds().size.width,
+        row,
+        "{id} does not fill its row"
+      );
+    }
+  })
+  .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_sidebar_says_how_the_game_runs_on_linux_only(cx: &mut TestAppContext) {
+  cx.update(gpui_kit::init);
+
+  let linux = game_screen_on(cx, HostOs::Linux);
+  let windows = game_screen_on(cx, HostOs::Windows);
+
+  let run_with = |window: &mut Window, cx: &mut gpui_kit::App, runtime: &'static str| {
+    window.render_frame(cx);
+    window.click("open-settings", cx);
+    window.render_frame(cx);
+    window.click(runtime, cx);
+    window.click("close-settings", cx);
+    window.render_frame(cx);
+  };
+
+  cx.update_window(linux, |_, window, cx| {
+    run_with(window, cx, "runtime-native");
+
+    assert!(
+      window.within("sidebar").try_find("runs-native").is_some(),
+      "the sidebar does not say the game runs natively"
+    );
+    assert!(window.try_find("runs-proton").is_none());
+
+    run_with(window, cx, "runtime-proton");
+
+    assert!(
+      window.within("sidebar").try_find("runs-proton").is_some(),
+      "the sidebar does not say the game runs under Proton"
+    );
+    assert!(window.try_find("runs-native").is_none());
+  })
+  .unwrap();
+  cx.update_window(windows, |_, window, cx| {
+    window.render_frame(cx);
+
+    assert!(
+      window.try_find("runs-native").is_none() && window.try_find("runs-proton").is_none(),
+      "the sidebar says how the game runs on Windows"
     );
   })
   .unwrap();
@@ -2280,8 +2430,6 @@ fn settings_force_a_linux_game_to_run_under_proton(cx: &mut TestAppContext) {
   drain();
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
-    window.click("game-menu", cx);
-    window.render_frame(cx);
     window.click("open-settings", cx);
     window.render_frame(cx);
     window.click("runtime-proton", cx);
@@ -2324,8 +2472,6 @@ fn settings_mark_the_chosen_runtime_as_pressed(cx: &mut TestAppContext) {
     .unwrap();
   cx.run_until_parked();
   cx.update_window(window, |_, window, cx| {
-    window.render_frame(cx);
-    window.click("game-menu", cx);
     window.render_frame(cx);
     window.click("open-settings", cx);
     window.render_frame(cx);
@@ -2376,8 +2522,6 @@ fn settings_remove_the_loader_files_launches_copied_into_the_game_folder(cx: &mu
   let place = |window: &mut Window| window.find("steam-folder").bounds();
   let before = cx
     .update_window(window, |_, window, cx| {
-      window.render_frame(cx);
-      window.click("game-menu", cx);
       window.render_frame(cx);
       window.click("open-settings", cx);
       window.render_frame(cx);

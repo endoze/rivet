@@ -22,7 +22,8 @@ pub const EXPERIMENTAL: &str = "Experimental Windows build";
 pub const PICKER_TITLE: &str = "Choose your game";
 pub const SEARCH_PLACEHOLDER: &str = "Search games";
 pub const NO_GAME_MATCHES: &str = "No game matches your search.";
-pub const SWITCH_GAME: &str = "Switch game";
+/// Beside the game's name in the sidebar, so it leaves "game" out.
+pub const SWITCH_GAME: &str = "Switch";
 pub const REFRESH: &str = "Refresh";
 pub const REFRESHING: &str = "Checking Thunderstore for new mods";
 pub const LOADING_PACKAGES: &str = "Loading mods";
@@ -710,9 +711,11 @@ pub const RENAME_PROFILE: &str = "Rename…";
 pub const DUPLICATE_PROFILE: &str = "Duplicate…";
 pub const DELETE_PROFILE: &str = "Delete…";
 pub const PROFILE_ACTIONS: &str = "Profile actions";
-/// Between the game and the profile in the header, read as "Valheim's
-/// Default profile".
-pub const HEADER_SEPARATOR: &str = "›";
+pub const PROFILES: &str = "Profiles";
+/// Opens a menu of the places a profile can be imported from.
+pub const IMPORT_PROFILE: &str = "Import a profile";
+pub const RUNS_NATIVELY: &str = "Runs natively";
+pub const RUNS_UNDER_PROTON: &str = "Runs under Proton";
 pub const DELETE: &str = "Delete";
 pub const SAVE: &str = "Save";
 pub const DELETE_WARNING: &str =
@@ -1092,14 +1095,14 @@ pub fn r2modman_unread(profile: &str, failure: &ReadFailure) -> Told {
     title: format!("The r2modman profile {profile} could not be read"),
     detail: vec![
       read_failure(failure).detail,
-      "Check that you can open its folder, then import it again from the profile menu.".to_string(),
+      "Check that you can open its folder, then import it again from Import a profile.".to_string(),
     ],
   }
 }
 
 pub const IMPORT_R2MODMAN: &str = "Import from r2modman…";
 pub const R2MODMAN_PROMPT: &str = "Import your r2modman profiles?";
-pub const R2MODMAN_LATER: &str = "You can import them later from the profile menu.";
+pub const R2MODMAN_LATER: &str = "You can import them later from Import a profile.";
 pub const R2MODMAN_WAITING: &str = "Import can start once the mod list has loaded.";
 pub const NOT_NOW: &str = "Not now";
 

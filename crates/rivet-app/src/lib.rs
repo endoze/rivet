@@ -19,8 +19,8 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
-  Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Theme, WindowExt as _, h_flex,
-  v_flex,
+  ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _, Theme,
+  WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -48,7 +48,7 @@ use rivet_core::{Command, Effect, Msg, Screen, State};
 use std::ops::Range;
 use std::path::PathBuf;
 use theme::Typography as _;
-use thunderstore_engine::profile::launch::{HostOs, LaunchMode};
+use thunderstore_engine::profile::launch::{HostOs, LaunchMode, Runtime};
 use thunderstore_engine::query::PackageRow;
 
 /// The root view. It owns the state and is the only place `update` is called.
@@ -563,14 +563,16 @@ impl Shell {
     std::mem::take(&mut self.close_window)
   }
 
+  /// A game: the sidebar, and beside it the banners that need action, the
+  /// tabs, the list, and the readme.
   fn render_game(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
-
-    v_flex()
-      .size_full()
+    let main = v_flex()
+      .flex_1()
+      .min_w_0()
+      .h_full()
       .p_4()
       .gap_3()
-      .child(self.render_header(game, cx))
       .children(self.render_profile_notes(cx))
       .children(self.render_launch_notes(cx))
       .children(
@@ -609,7 +611,13 @@ impl Shell {
             Tab::Installed => Some(self.render_installed(cx)),
           })
           .child(render_readme(self.state.readme.as_ref(), cx)),
-      )
+      );
+
+    div()
+      .flex()
+      .size_full()
+      .child(self.render_sidebar(game, cx))
+      .child(main)
       .into_any_element()
   }
 
@@ -903,187 +911,261 @@ impl Shell {
       .into_any_element()
   }
 
-  /// The bar along the top of a game: the game, with switching to another,
-  /// the selected profile with the others to pick from, the actions on the
-  /// selected profile, and the launch buttons.
-  fn render_header(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
+  /// The column along the left of a game, [`SIDEBAR_WIDTH`] wide whatever
+  /// it shows: the game with switching to another, how it runs on Linux, the
+  /// launch buttons, the game's profiles with the ways to add one, then the
+  /// actions on the current profile and the game's settings. The line saying
+  /// how the game runs keeps its height while that is found out, so nothing
+  /// under it moves.
+  fn render_sidebar(&self, game: &str, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
     let shell = cx.weak_entity();
-    let can_launch = self.state.can_launch();
-    let game_menu = Button::new("game-menu")
-      .label(self.game_name(game))
-      .ghost()
-      .dropdown_caret(true)
-      .dropdown_menu({
-        let shell = shell.clone();
+    let state = &self.state;
+    let can_launch = state.can_launch();
+    let runtime = (state.host == Some(HostOs::Linux)).then(|| {
+      let runs = state
+        .launcher
+        .as_ref()
+        .and_then(|launcher| launcher.runtime)
+        .map(|runtime| match runtime {
+          Runtime::Proton => ("runs-proton", text::RUNS_UNDER_PROTON),
+          _ => ("runs-native", text::RUNS_NATIVELY),
+        });
 
-        move |menu, _, _| {
-          let settings = send(&shell, Msg::SettingsPressed);
-          let shell = shell.clone();
-
-          menu
-            .item(menu_item("open-settings", text::SETTINGS, None).on_click(settings))
-            .item(menu_item("switch-game", text::SWITCH_GAME, None).on_click(
-              move |_, window, cx| {
-                shell
-                  .update(cx, |this, cx| {
-                    this.dispatch(Msg::SwitchGamePressed, cx);
-                    this.empty_package_search(window, cx);
-                  })
-                  .ok();
-              },
-            ))
-        }
-      });
-    let profile_menus = self.render_profile_menus(&shell).map(|menus| {
-      h_flex()
-        .gap_1()
-        .items_center()
-        .child(
-          div()
-            .text_color(palette.muted_text)
-            .child(text::HEADER_SEPARATOR),
-        )
-        .children(menus)
+      div()
+        .h_5()
+        .mt_1()
+        .text_small()
+        .text_color(palette.muted_text)
+        .children(runs.map(|(id, label)| div().id(id).child(label).test_support()))
     });
-
-    h_flex()
-      .id("header")
-      .gap_1()
-      .items_center()
-      .child(game_menu)
-      .children(profile_menus)
-      .child(div().flex_1())
+    let heading = v_flex()
+      .flex_none()
+      .px_4()
+      .pt(px(18.))
+      .pb_4()
+      .border_b_1()
+      .border_color(palette.border)
       .child(
         h_flex()
           .gap_2()
           .child(
-            Button::new("launch-modded")
-              .label(text::LAUNCH_MODDED)
-              .primary()
-              .disabled(!can_launch)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::LaunchPressed(LaunchMode::Modded), cx);
-              })),
+            div()
+              .id("game-name")
+              .flex_1()
+              .min_w_0()
+              .truncate()
+              .text_size(px(GAME_NAME_SIZE))
+              .font_weight(FontWeight::BOLD)
+              .child(self.game_name(game))
+              .test_support(),
           )
           .child(
-            Button::new("launch-vanilla")
-              .label(text::LAUNCH_VANILLA)
-              .disabled(!can_launch)
-              .on_click(cx.listener(|this, _, _, cx| {
-                this.dispatch(Msg::LaunchPressed(LaunchMode::Vanilla), cx);
+            Button::new("switch-game")
+              .label(text::SWITCH_GAME)
+              .ghost()
+              .small()
+              .on_click(cx.listener(|this, _, window, cx| {
+                this.dispatch(Msg::SwitchGamePressed, cx);
+                this.empty_package_search(window, cx);
               })),
           ),
       )
+      .children(runtime)
+      .child(
+        Button::new("launch-modded")
+          .label(text::LAUNCH_MODDED)
+          .primary()
+          .w_full()
+          .mt_3p5()
+          .disabled(!can_launch)
+          .on_click(cx.listener(|this, _, _, cx| {
+            this.dispatch(Msg::LaunchPressed(LaunchMode::Modded), cx);
+          })),
+      )
+      .child(
+        Button::new("launch-vanilla")
+          .label(text::LAUNCH_VANILLA)
+          .w_full()
+          .mt_1p5()
+          .disabled(!can_launch)
+          .on_click(cx.listener(|this, _, _, cx| {
+            this.dispatch(Msg::LaunchPressed(LaunchMode::Vanilla), cx);
+          })),
+      );
+    let profiles = v_flex()
+      .id("profiles")
+      .flex_1()
+      .min_h_0()
+      .overflow_y_scroll()
+      .px_2()
+      .pt_3p5()
+      .pb_1p5()
+      .child(
+        div()
+          .px_2()
+          .pb_1p5()
+          .text_small()
+          .font_weight(FontWeight::SEMIBOLD)
+          .text_color(palette.muted_text)
+          .child(text::PROFILES),
+      )
+      .children(self.render_profile_items(cx))
+      .child(
+        sidebar_item("new-profile", text::NEW_PROFILE)
+          .disabled(!state.can_switch_profile())
+          .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Create))),
+      )
+      .child(self.render_import_menu(&shell));
+    let foot = v_flex()
+      .flex_none()
+      .p_2()
+      .border_t_1()
+      .border_color(palette.border)
+      .child(self.render_profile_actions(&shell))
+      .child(
+        sidebar_item("open-settings", text::SETTINGS).on_click(send(&shell, Msg::SettingsPressed)),
+      );
+
+    v_flex()
+      .id("sidebar")
+      .flex_none()
+      .w(px(SIDEBAR_WIDTH))
+      .h_full()
+      .bg(palette.panel)
+      .border_r_1()
+      .border_color(palette.border)
+      .child(heading)
+      .child(profiles)
+      .child(foot)
       .test_support()
       .into_any_element()
   }
 
-  /// The profile dropdown, which picks a profile or starts a new one, and
-  /// the menu of actions on the selected profile. `None` until a profile is
-  /// selected.
-  fn render_profile_menus(&self, shell: &WeakEntity<Self>) -> Option<[AnyElement; 2]> {
+  /// The open game's profiles, each with its mod count when known, the
+  /// current one selected, pressed for accessibility, and marked with a dot
+  /// in the primary color. Clicking one picks it.
+  fn render_profile_items(&self, cx: &mut Context<Self>) -> Vec<Button> {
     let state = &self.state;
-
-    state.switcher.as_ref()?;
-
-    let selected = state.profile.as_ref()?.name.clone();
+    let palette = Palette::new(cx);
+    let primary = cx.theme().primary;
+    let current = state.profile.as_ref().map(|profile| profile.name.as_str());
     let can_switch = state.can_switch_profile();
+
+    state
+      .profile_names()
+      .into_iter()
+      .map(|name| {
+        let is_current = current == Some(name);
+        let picked = name.to_string();
+        let dot = if is_current { primary } else { palette.border };
+        let count = state.mod_count(name).map(|count| {
+          div()
+            .id(SharedString::from(format!("mod-count-{name}")))
+            .flex_none()
+            .text_small()
+            .tabular()
+            .text_color(palette.muted_text)
+            .aria_label(text::mod_count(count))
+            .child(count.to_string())
+            .test_support()
+        });
+
+        Button::new(SharedString::from(format!("pick-profile-{name}")))
+          .ghost()
+          .w_full()
+          .accessibility_label(picked.clone())
+          .selected(is_current)
+          .toggled(is_current)
+          .disabled(!can_switch)
+          .child(
+            div()
+              .flex_none()
+              .size(px(PROFILE_DOT_SIZE))
+              .rounded_full()
+              .bg(dot),
+          )
+          .child(div().flex_1().min_w_0().truncate().child(picked.clone()))
+          .children(count)
+          .on_click(cx.listener(move |this, _, _, cx| {
+            this.dispatch(Msg::ProfilePicked(picked.clone()), cx);
+          }))
+      })
+      .collect()
+  }
+
+  /// Import a profile, with its menu of the places to import from: a code, a
+  /// file, and r2modman when it holds profiles for the open game.
+  fn render_import_menu(&self, shell: &WeakEntity<Self>) -> impl IntoElement + use<> {
+    let state = &self.state;
+    let can_import = state.can_import_profile();
+    let can_offer_r2modman = state.can_offer_r2modman();
+    let shell = shell.clone();
+
+    sidebar_item("import-profile", text::IMPORT_PROFILE).dropdown_menu(move |menu, _, _| {
+      menu
+        .item(
+          menu_item("import-code", text::IMPORT_CODE, None)
+            .disabled(!can_import)
+            .on_click(send(&shell, Msg::ImportCodePressed)),
+        )
+        .item(
+          menu_item("import-file", text::IMPORT_FILE, None)
+            .disabled(!can_import)
+            .on_click(send(&shell, Msg::ImportFilePressed)),
+        )
+        .when(can_offer_r2modman, |menu| {
+          menu.item(
+            menu_item("import-r2modman", text::IMPORT_R2MODMAN, None)
+              .on_click(send(&shell, Msg::R2modmanPressed)),
+          )
+        })
+    })
+  }
+
+  /// Profile actions, with its menu of what can be done to the current
+  /// profile, opening upward from the foot of the sidebar.
+  fn render_profile_actions(&self, shell: &WeakEntity<Self>) -> impl IntoElement + use<> {
+    let state = &self.state;
     let can_rename_or_delete = state.can_rename_or_delete_profile();
     let can_duplicate = state.can_duplicate_profile();
     let can_export = state.can_export_profile();
-    let can_import = state.can_import_profile();
-    let can_offer_r2modman = state.can_offer_r2modman();
-    let profiles: Vec<(String, Option<usize>)> = state
-      .profile_names()
-      .into_iter()
-      .map(|name| (name.to_string(), state.mod_count(name)))
-      .collect();
-    let picker = Button::new("profile-menu")
-      .label(selected.clone())
-      .ghost()
-      .dropdown_caret(true)
-      .dropdown_menu({
-        let shell = shell.clone();
+    let shell = shell.clone();
 
-        move |menu, _, cx| {
-          let muted = Palette::new(cx).muted_text;
+    sidebar_item("profile-actions", text::PROFILE_ACTIONS).dropdown_menu_with_anchor(
+      Anchor::BottomLeft,
+      move |menu: PopupMenu, _, cx| {
+        let danger = can_rename_or_delete.then(|| Palette::new(cx).danger_text);
 
-          profiles
-            .iter()
-            .fold(menu, |menu, (name, count)| {
-              menu.item(
-                profile_item(name, *count, muted)
-                  .checked(*name == selected)
-                  .disabled(!can_switch)
-                  .on_click(send(&shell, Msg::ProfilePicked(name.clone()))),
-              )
-            })
-            .separator()
-            .item(
-              menu_item("new-profile", text::NEW_PROFILE, None)
-                .disabled(!can_switch)
-                .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Create))),
-            )
-            .item(
-              menu_item("import-code", text::IMPORT_CODE, None)
-                .disabled(!can_import)
-                .on_click(send(&shell, Msg::ImportCodePressed)),
-            )
-            .item(
-              menu_item("import-file", text::IMPORT_FILE, None)
-                .disabled(!can_import)
-                .on_click(send(&shell, Msg::ImportFilePressed)),
-            )
-            .when(can_offer_r2modman, |menu| {
-              menu.item(
-                menu_item("import-r2modman", text::IMPORT_R2MODMAN, None)
-                  .on_click(send(&shell, Msg::R2modmanPressed)),
-              )
-            })
-        }
-      });
-    let actions = Button::new("profile-actions")
-      .icon(IconName::Ellipsis)
-      .ghost()
-      .tooltip(text::PROFILE_ACTIONS)
-      .dropdown_menu({
-        let shell = shell.clone();
-
-        move |menu: PopupMenu, _, cx| {
-          let danger = can_rename_or_delete.then(|| Palette::new(cx).danger_text);
-
-          menu
-            .item(
-              menu_item("rename-profile", text::RENAME_PROFILE, None)
-                .disabled(!can_rename_or_delete)
-                .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Rename))),
-            )
-            .item(
-              menu_item("duplicate-profile", text::DUPLICATE_PROFILE, None)
-                .disabled(!can_duplicate)
-                .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Duplicate))),
-            )
-            .item(
-              menu_item("export-code", text::EXPORT_CODE, None)
-                .disabled(!can_export)
-                .on_click(send(&shell, Msg::ExportCodePressed)),
-            )
-            .item(
-              menu_item("export-file", text::EXPORT_FILE, None)
-                .disabled(!can_export)
-                .on_click(send(&shell, Msg::ExportFilePressed)),
-            )
-            .separator()
-            .item(
-              menu_item("delete-profile", text::DELETE_PROFILE, danger)
-                .disabled(!can_rename_or_delete)
-                .on_click(send(&shell, Msg::DeleteProfilePressed)),
-            )
-        }
-      });
-
-    Some([picker.into_any_element(), actions.into_any_element()])
+        menu
+          .item(
+            menu_item("rename-profile", text::RENAME_PROFILE, None)
+              .disabled(!can_rename_or_delete)
+              .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Rename))),
+          )
+          .item(
+            menu_item("duplicate-profile", text::DUPLICATE_PROFILE, None)
+              .disabled(!can_duplicate)
+              .on_click(send(&shell, Msg::ProfileNamePressed(Naming::Duplicate))),
+          )
+          .item(
+            menu_item("export-code", text::EXPORT_CODE, None)
+              .disabled(!can_export)
+              .on_click(send(&shell, Msg::ExportCodePressed)),
+          )
+          .item(
+            menu_item("export-file", text::EXPORT_FILE, None)
+              .disabled(!can_export)
+              .on_click(send(&shell, Msg::ExportFilePressed)),
+          )
+          .separator()
+          .item(
+            menu_item("delete-profile", text::DELETE_PROFILE, danger)
+              .disabled(!can_rename_or_delete)
+              .on_click(send(&shell, Msg::DeleteProfilePressed)),
+          )
+      },
+    )
   }
 
   /// Why the profiles could not be listed, or `None` when they were.
@@ -1132,29 +1214,13 @@ fn menu_item(id: &'static str, label: &'static str, color: Option<Hsla>) -> Popu
   })
 }
 
-/// A profile in the profile dropdown: its name, and how many packages it
-/// holds when that is known.
-fn profile_item(name: &str, count: Option<usize>, muted: Hsla) -> PopupMenuItem {
-  let name = name.to_string();
-
-  PopupMenuItem::element(move |_, _| {
-    h_flex()
-      .id(SharedString::from(format!("pick-profile-{name}")))
-      .w_full()
-      .gap_4()
-      .justify_between()
-      .child(name.clone())
-      .children(count.map(|count| {
-        div()
-          .id(SharedString::from(format!("mod-count-{name}")))
-          .text_small()
-          .tabular()
-          .text_color(muted)
-          .child(text::mod_count(count))
-          .test_support()
-      }))
-      .test_support()
-  })
+/// A full-width row of the sidebar reading `label` from its left edge.
+fn sidebar_item(id: &'static str, label: &'static str) -> Button {
+  Button::new(id)
+    .label(label)
+    .ghost()
+    .w_full()
+    .child(div().flex_1())
 }
 
 /// The line to paste into Steam's launch options, with a copy button, and
@@ -1548,6 +1614,9 @@ const STATUS_BAR_HEIGHT: f32 = 36.0;
 const ICON_SIZE: f32 = 48.0;
 /// Wide enough for the longest label on the settings screen.
 const SETTINGS_LABEL_WIDTH: f32 = 140.0;
+const SIDEBAR_WIDTH: f32 = 248.0;
+const GAME_NAME_SIZE: f32 = 22.0;
+const PROFILE_DOT_SIZE: f32 = 7.0;
 
 /// Whether the readme shown is `full_name`'s.
 fn is_selected(readme: Option<&Readme>, full_name: &str) -> bool {
@@ -1699,6 +1768,7 @@ fn render_filters(
     )
     .child(
       h_flex()
+        .flex_wrap()
         .gap_2()
         .child(div().text_small().child(text::SORT_BY))
         .children(sorts)
