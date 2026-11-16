@@ -1518,7 +1518,7 @@ pub fn readme_failed(reason: &str) -> String {
 pub const RIVET: &str = "Rivet";
 pub const UPDATE_AUTOMATICALLY: &str = "Update Rivet automatically";
 pub const UPDATE_AUTOMATICALLY_HINT: &str =
-  "Checks GitHub for a newer Rivet each time it starts, and downloads it.";
+  "Checks GitHub for a newer Rivet each time it starts, and offers to download it.";
 pub const CHECK_FOR_UPDATES: &str = "Check for updates";
 pub const RESTART_TO_UPDATE: &str = "Restart to update";
 pub const OPEN_RELEASE: &str = "Open release";
@@ -1561,6 +1561,7 @@ pub fn update_stage(stage: &UpdateStage) -> Option<String> {
     UpdateStage::CheckFailed(CheckFailure::NoBuild(version)) => {
       format!("Rivet {version} is out, but not for this computer.")
     }
+    UpdateStage::Offered(found) => format!("Rivet {} is out.", found.version),
     UpdateStage::Downloading { download, .. } => {
       format!("Rivet {} found. Downloading it.", download.found.version)
     }
@@ -1570,6 +1571,28 @@ pub fn update_stage(stage: &UpdateStage) -> Option<String> {
   };
 
   Some(said)
+}
+
+/// The title of the modal offering a newer Rivet, such as `Update to Rivet
+/// 0.3.0?`.
+pub fn rivet_offered(version: &str) -> String {
+  format!("Update to Rivet {version}?")
+}
+
+/// What going ahead with a newer Rivet does, given the version `running`.
+///
+/// ```
+/// use rivet_app::text::rivet_offer_detail;
+///
+/// assert_eq!(
+///   rivet_offer_detail("0.2.0"),
+///   "You have Rivet 0.2.0. The update downloads in the background, then Rivet asks you to restart."
+/// );
+/// ```
+pub fn rivet_offer_detail(running: &str) -> String {
+  format!(
+    "You have Rivet {running}. The update downloads in the background, then Rivet asks you to restart."
+  )
 }
 
 /// A newer Rivet's download in the status bar, with how far it has got,

@@ -64,7 +64,7 @@ Press **Settings** in the sidebar to:
 - choose whether the game runs natively or through Proton (Linux)
 - pick a light or dark look, a theme, and the interface size
 - remove the mod loader files Rivet copied into the game's folder, to put the game back the way it was
-- turn on **Update Rivet automatically**, or press **Check for updates**, to download the newest Rivet. Press **Restart to update** when it's ready.
+- turn on **Update Rivet automatically**, or press **Check for updates**, to look for a newer Rivet. Rivet asks before downloading it. Press **Restart to update** when it's ready.
 
 ![Valheim's settings: the game folder, launch arguments, how the game runs, loader files, the Steam folder, the look of Rivet, and the Rivet section with Update Rivet automatically and Check for updates](docs/screenshots/settings.png)
 

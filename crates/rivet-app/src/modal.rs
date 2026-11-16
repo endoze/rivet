@@ -18,6 +18,7 @@ use rivet_core::install::Confirmation;
 use rivet_core::manage::{Folders, Pending, Scope};
 use rivet_core::portability::{Importing, Source};
 use rivet_core::queue::{CloseChoice, Closing};
+use rivet_core::self_update::Stage;
 use rivet_core::{Msg, State};
 
 /// What the window's one modal is showing.
@@ -38,19 +39,24 @@ pub(crate) enum Modal {
   /// the packages that need it too, whether to delete folders no package
   /// records, or why it cannot go ahead.
   Pending,
+  /// Offers to download the newer Rivet a check found.
+  Updating,
   /// Offers to import r2modman's profiles of the open game.
   R2modman,
 }
 
 /// The modal `state` asks for, given the one `shown` now. When several are
 /// pending, closing comes first, then naming, deleting, importing,
-/// installing, the Installed tab's question, and last the offer to import
-/// r2modman's profiles, which the user did not ask for.
+/// installing, the Installed tab's question, the offer of a newer Rivet, and
+/// last the offer to import r2modman's profiles, which the user did not ask
+/// for.
 ///
 /// Checking an uninstall opens no modal, since the check usually ends before
 /// anyone could read it, but it keeps the Installed tab's question open while
 /// it runs after one. Reading a profile code keeps the import's modal open
-/// the same way.
+/// the same way. An offer of a newer Rivet, which arrives from GitHub, waits
+/// for the r2modman offer already open rather than swapping it out under a
+/// click.
 pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal> {
   let switcher = state.switcher.as_ref();
   let pending = match &state.manage.pending {
@@ -63,6 +69,12 @@ pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal>
     Some(Importing::Reading(Source::Code(_))) => shown == Some(Modal::Importing),
     _ => false,
   };
+  let r2modman = state
+    .r2modman
+    .as_ref()
+    .is_some_and(|r2modman| r2modman.offer.is_some());
+  let updating = matches!(state.self_update.stage, Stage::Offered(_))
+    && !(r2modman && shown == Some(Modal::R2modman));
 
   if state.closing.is_some() {
     Some(Modal::Closing)
@@ -76,11 +88,9 @@ pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal>
     Some(Modal::Installing)
   } else if pending {
     Some(Modal::Pending)
-  } else if state
-    .r2modman
-    .as_ref()
-    .is_some_and(|r2modman| r2modman.offer.is_some())
-  {
+  } else if updating {
+    Some(Modal::Updating)
+  } else if r2modman {
     Some(Modal::R2modman)
   } else {
     None
@@ -117,6 +127,7 @@ impl Shell {
         }
         Some(Modal::Installing) => window.open_dialog(cx, installing(shell)),
         Some(Modal::Pending) => window.open_dialog(cx, pending(shell)),
+        Some(Modal::Updating) => window.open_dialog(cx, updating(shell)),
         Some(Modal::R2modman) => window.open_dialog(cx, r2modman(shell)),
         None => {}
       }
@@ -359,6 +370,40 @@ fn deleting(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) 
           .label(text::DELETE)
           .danger()
           .on_click(send(&shell, Msg::DeleteProfileConfirmed)),
+      ],
+    };
+
+    frame.fill(dialog, &shell)
+  }
+}
+
+/// The modal offering the newer Rivet a check found, beside the version
+/// running.
+fn updating(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
+  move |dialog, _, cx| {
+    let offered = shell.upgrade().and_then(|shell| {
+      let update = &shell.read(cx).state.self_update;
+
+      match &update.stage {
+        Stage::Offered(found) => Some((found.version.clone(), update.running.clone())),
+        _ => None,
+      }
+    });
+    let Some((version, running)) = offered else {
+      return dialog;
+    };
+    let frame = Frame {
+      title: text::rivet_offered(&version),
+      id: "rivet-update-dialog",
+      body: vec![text::rivet_offer_detail(&running).into_any_element()],
+      cancel: "decline-rivet-update",
+      cancel_label: text::NOT_NOW,
+      dismissed: Msg::UpdateRivetDismissed,
+      actions: vec![
+        Button::new("accept-rivet-update")
+          .label(text::UPDATE)
+          .primary()
+          .on_click(send(&shell, Msg::UpdateRivetConfirmed)),
       ],
     };
 
@@ -689,6 +734,7 @@ mod tests {
   use super::*;
   use rivet_core::install::{Confirmation, Planned};
   use rivet_core::r2modman::{Found, R2modman};
+  use rivet_core::self_update::Found as UpdateFound;
   use rivet_core::switcher::{NameForm, Naming, Switcher};
   use thunderstore_engine::ecosystem::Ecosystem;
 
@@ -903,6 +949,61 @@ mod tests {
     assert_eq!(
       wanted_modal(&asking, Some(Modal::Pending)),
       Some(Modal::Pending)
+    );
+  }
+
+  /// `state` with a check offering Rivet 0.3.0.
+  fn offered(mut state: State) -> State {
+    let asset = |name: &str| rivet_core::self_update::Asset {
+      name: name.to_string(),
+      url: format!("https://github.com/endoze/rivet/releases/download/v0.3.0/{name}"),
+    };
+
+    state.self_update.stage = rivet_core::self_update::Stage::Offered(UpdateFound {
+      version: "0.3.0".to_string(),
+      page: "https://github.com/endoze/rivet/releases/tag/v0.3.0".to_string(),
+      build: asset("rivet-linux-x86_64"),
+      checksum: asset("rivet-linux-x86_64.sha256"),
+    });
+
+    state
+  }
+
+  #[test]
+  fn a_newer_rivet_offered_wants_its_modal() {
+    assert_eq!(
+      wanted_modal(&offered(pending(false, false, false)), None),
+      Some(Modal::Updating)
+    );
+  }
+
+  #[test]
+  fn the_update_offer_waits_for_what_the_user_asked_and_comes_before_r2modman() {
+    let mut asking = offered(pending(false, false, false));
+
+    asking.manage.pending = Some(Pending::Refused {
+      packages: vec!["Owner-ModA".to_string()],
+      reason: "read-only".to_string(),
+    });
+
+    assert_eq!(
+      wanted_modal(&offered(pending(false, false, true)), None),
+      Some(Modal::Installing)
+    );
+    assert_eq!(wanted_modal(&asking, None), Some(Modal::Pending));
+    assert_eq!(
+      wanted_modal(&offered(offering(false, false, false)), None),
+      Some(Modal::Updating)
+    );
+  }
+
+  #[test]
+  fn an_update_offer_arriving_waits_for_the_open_r2modman_offer() {
+    let both = offered(offering(false, false, false));
+
+    assert_eq!(
+      wanted_modal(&both, Some(Modal::R2modman)),
+      Some(Modal::R2modman)
     );
   }
 

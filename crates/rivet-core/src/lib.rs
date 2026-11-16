@@ -440,6 +440,10 @@ pub enum Msg {
   CheckForUpdatesPressed,
   /// GitHub's releases of Rivet were listed, or why they could not be.
   RivetReleasesFetched(Result<Vec<Release>, String>),
+  /// The user chose to download the newer Rivet a check offered.
+  UpdateRivetConfirmed,
+  /// The user turned down the newer Rivet a check offered.
+  UpdateRivetDismissed,
   /// A newer Rivet's download got `received` bytes of `total`.
   RivetDownloadProgress {
     received: u64,
@@ -865,6 +869,8 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::UpdateAutomaticallyChosen(on) => self_update::automatically_chosen(state, on),
     Msg::CheckForUpdatesPressed => self_update::check_pressed(state),
     Msg::RivetReleasesFetched(releases) => self_update::releases_fetched(state, releases),
+    Msg::UpdateRivetConfirmed => self_update::confirmed(state),
+    Msg::UpdateRivetDismissed => self_update::dismissed(state),
     Msg::RivetDownloadProgress { received, total } => {
       self_update::download_progress(state, received, total)
     }
