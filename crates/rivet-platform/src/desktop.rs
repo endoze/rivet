@@ -59,6 +59,7 @@ pub fn entry(launcher: &Launcher) -> io::Result<String> {
      Type=Application\n\
      Name={name}\n\
      Comment={comment}\n\
+     TryExec={try_exec}\n\
      Exec={exec}\n\
      Icon={id}\n\
      Terminal=false\n\
@@ -67,6 +68,7 @@ pub fn entry(launcher: &Launcher) -> io::Result<String> {
     id = launcher.id,
     name = launcher.name,
     comment = launcher.comment,
+    try_exec = string_value(executable),
     exec = quoted(executable),
     categories = launcher.categories,
   ))
@@ -89,6 +91,24 @@ fn quoted(path: &str) -> String {
   argument.push('"');
 
   argument
+}
+
+/// `text` as a desktop entry string value, such as `TryExec`. Only the
+/// spec's string escapes apply, not the `Exec` quoting rules.
+fn string_value(text: &str) -> String {
+  let mut value = String::new();
+
+  for c in text.chars() {
+    match c {
+      '\\' => value.push_str("\\\\"),
+      '\n' => value.push_str("\\n"),
+      '\t' => value.push_str("\\t"),
+      '\r' => value.push_str("\\r"),
+      c => value.push(c),
+    }
+  }
+
+  value
 }
 
 /// The user's `$XDG_DATA_HOME`, usually `~/.local/share`, where desktops look
@@ -188,6 +208,7 @@ mod tests {
        Type=Application\n\
        Name=App\n\
        Comment=An app\n\
+       TryExec=/opt/app\n\
        Exec=\"/opt/app\"\n\
        Icon=org.example.App\n\
        Terminal=false\n\
@@ -202,6 +223,23 @@ mod tests {
 
     assert!(
       entry.contains(r#"Exec="/my apps/\\"q\\"\\$\\`\\\\100%%""#),
+      "{entry}"
+    );
+  }
+
+  #[test]
+  fn try_exec_names_the_executable_as_a_plain_path() {
+    let entry = entry(&launcher(Path::new("/my apps/app"))).unwrap();
+
+    assert!(entry.contains("\nTryExec=/my apps/app\n"), "{entry}");
+  }
+
+  #[test]
+  fn try_exec_escapes_only_what_a_string_value_reserves() {
+    let entry = entry(&launcher(Path::new("/a\\b\nc\td\re\"$`%"))).unwrap();
+
+    assert!(
+      entry.contains("\nTryExec=/a\\\\b\\nc\\td\\re\"$`%\n"),
       "{entry}"
     );
   }
