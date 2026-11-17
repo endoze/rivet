@@ -8,7 +8,14 @@ use rivet_core::{Command, State};
 use std::sync::Arc;
 use thunderstore_engine::ecosystem::Ecosystem;
 
+/// The app ID Rivet's window reports, which Linux desktops match to its
+/// launcher and icon.
+const APP_ID: &str = "io.github.endoze.rivet";
+
 fn main() {
+  #[cfg(target_os = "linux")]
+  install_launcher();
+
   let config = rivet_commands::Config {
     settings: rivet_platform::paths::settings_file()
       .expect("the platform reports no config location"),
@@ -48,11 +55,50 @@ fn main() {
         })
         .ok();
 
-      gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+      let options = WindowOptions {
+        app_id: Some(APP_ID.to_string()),
+        ..WindowOptions::default()
+      };
+
+      gpui_kit::open_window(options, cx, |window, cx| {
         Theme::sync_system_appearance(Some(window), cx);
 
         cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
       })
       .expect("failed to open window");
     });
+}
+
+/// Lists Rivet in the desktop's app menu, with its icon, pointing at this
+/// executable. A failure costs only the menu entry, so it is ignored.
+#[cfg(target_os = "linux")]
+fn install_launcher() {
+  use rivet_platform::desktop::{self, Launcher};
+
+  // `cargo run` would otherwise point the menu at a development build.
+  if cfg!(debug_assertions) {
+    return;
+  }
+
+  let (Some(data_home), Ok(executable)) = (desktop::data_home(), std::env::current_exe()) else {
+    return;
+  };
+  let launcher = Launcher {
+    id: APP_ID,
+    name: "Rivet",
+    comment: "Mod manager for Thunderstore games",
+    categories: "Game;",
+    executable: &executable,
+    icons: &[
+      (16, include_bytes!("../assets/icon/rivet-16.png")),
+      (24, include_bytes!("../assets/icon/rivet-24.png")),
+      (32, include_bytes!("../assets/icon/rivet-32.png")),
+      (48, include_bytes!("../assets/icon/rivet-48.png")),
+      (64, include_bytes!("../assets/icon/rivet-64.png")),
+      (128, include_bytes!("../assets/icon/rivet-128.png")),
+      (256, include_bytes!("../assets/icon/rivet-256.png")),
+    ],
+  };
+
+  desktop::install(&data_home, &desktop::data_dirs(), &launcher).ok();
 }
