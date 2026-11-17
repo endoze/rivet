@@ -1,6 +1,7 @@
 //! Keeping Rivet current: listing its releases on GitHub, downloading a
 //! build beside the running program, and putting it in place.
 
+use crate::handoff::REPLACING;
 use crate::{Cancels, Config, USER_AGENT, failure};
 use futures::channel::mpsc::UnboundedSender;
 use rivet_core::Msg;
@@ -329,8 +330,9 @@ fn hex(bytes: &[u8]) -> String {
 
 /// Puts the build in `file` in place of the running program, keeping the old
 /// build aside, records the update to version `to` for the next start, and
-/// starts the new build. When it can't be started, or fails as it starts,
-/// the old build goes back in place and nothing is recorded.
+/// starts the new build with [`REPLACING`], so it waits for this Rivet to
+/// close rather than handing over to it. When it can't be started, or fails
+/// as it starts, the old build goes back in place and nothing is recorded.
 pub(crate) async fn replace(config: &Config, file: PathBuf, to: String) -> Result<(), String> {
   let executable = config
     .updater
@@ -360,7 +362,11 @@ pub(crate) async fn replace(config: &Config, file: PathBuf, to: String) -> Resul
     executable::replace(&executable, &file, &backup)
       .map_err(|error| discard(failure(&executable, error)))?;
 
-    if let Err(error) = start(std::process::Command::new(&executable)) {
+    let mut command = std::process::Command::new(&executable);
+
+    command.arg(REPLACING);
+
+    if let Err(error) = start(command) {
       executable::restore(&executable, &backup).ok();
 
       return Err(discard(format!("the new Rivet did not start: {error}")));
@@ -429,10 +435,12 @@ async fn delete_old(backup: &Path) {
 #[cfg(test)]
 mod tests {
   use crate::Config;
+  use crate::handoff::REPLACING;
   use crate::tests::{config_in, run_any, run_now, run_reporting};
   use rivet_core::self_update::{Asset, Download, DownloadFailure, Found, Release, Settled};
   use rivet_core::{Command, Msg};
   use rivet_platform::executable::{backup_of, staged_of};
+  use std::ffi::OsString;
   use std::path::{Path, PathBuf};
   use std::sync::Mutex;
   use tempfile::TempDir;
@@ -692,13 +700,17 @@ mod tests {
     assert!(!staged_of(&executable(&config)).exists());
   }
 
-  static SPAWNED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+  /// Each command line [`record_spawn`] was given: the program, then its
+  /// arguments.
+  static SPAWNED: Mutex<Vec<Vec<OsString>>> = Mutex::new(Vec::new());
 
   fn record_spawn(command: std::process::Command) -> std::io::Result<()> {
-    SPAWNED
-      .lock()
-      .unwrap()
-      .push(PathBuf::from(command.get_program()));
+    let line = std::iter::once(command.get_program())
+      .chain(command.get_args())
+      .map(OsString::from)
+      .collect();
+
+    SPAWNED.lock().unwrap().push(line);
 
     Ok(())
   }
@@ -744,7 +756,13 @@ mod tests {
     assert_eq!(replaced, Msg::RivetReplaced(Ok(())));
     assert_eq!(std::fs::read(&program).unwrap(), b"new build");
     assert_eq!(std::fs::read(&backup).unwrap(), b"old build");
-    assert!(SPAWNED.lock().unwrap().contains(&program));
+    assert!(
+      SPAWNED
+        .lock()
+        .unwrap()
+        .contains(&vec![program.into(), REPLACING.into()]),
+      "the new build was not started as the old one's replacement"
+    );
 
     let settled = run_now(settle("0.3.0"), &config);
     let again = run_now(settle("0.3.0"), &config);

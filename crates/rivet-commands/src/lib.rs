@@ -1,6 +1,7 @@
 //! Runs [`Command`]s on a Tokio thread of their own and answers each with a
 //! [`Msg`], so the UI thread never waits on disk or network.
 
+pub mod handoff;
 mod portability;
 mod self_update;
 

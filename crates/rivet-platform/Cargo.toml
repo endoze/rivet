@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 dirs.workspace = true
+interprocess.workspace = true
 thunderstore-engine = { workspace = true, features = ["rustls-tls"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -15,6 +16,7 @@ windows = { workspace = true, features = [
   "Win32_System_Com",
   "Win32_UI_Shell",
 ] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
 tempfile.workspace = true

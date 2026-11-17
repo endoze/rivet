@@ -3,6 +3,7 @@
 
 pub mod browse;
 pub mod details;
+pub mod handoff;
 pub mod install;
 pub mod launch;
 pub mod loader_files;
@@ -21,6 +22,7 @@ pub mod switcher;
 pub mod updates;
 
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
+use handoff::Request;
 use install::{Confirmation, Install, Installed, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use loader_files::{Copied, FileRemoval, LoaderFile};
@@ -460,6 +462,9 @@ pub enum Msg {
   RivetReplaced(Result<(), String>),
   /// A [`Command::SettleRivetUpdate`] ended.
   RivetUpdateSettled(Settled),
+  /// A later launch of Rivet found this one running and handed over its
+  /// request.
+  HandedOff(Request),
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -480,6 +485,10 @@ pub enum Effect {
   OpenUrl(String),
   /// Close the window. Needs the window, so the shell runs it. Not answered.
   CloseWindow,
+  /// Bring the window to the front, or where the desktop won't allow that,
+  /// ask it to draw the user's attention to the window. Needs the window, so
+  /// the shell runs it. Not answered.
+  FocusWindow,
   /// Ask the user where to save an export, suggesting this file name. Needs
   /// the window, so the shell runs it. Answered with
   /// [`Msg::ExportFileChosen`].
@@ -879,6 +888,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::RestartToUpdatePressed => self_update::restart_pressed(state),
     Msg::RivetReplaced(result) => self_update::replaced(state, result),
     Msg::RivetUpdateSettled(settled) => self_update::settled(settled),
+    Msg::HandedOff(_) => vec![Effect::FocusWindow],
   }
 }
 

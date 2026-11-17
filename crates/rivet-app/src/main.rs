@@ -1,9 +1,13 @@
 #![windows_subsystem = "windows"]
 
+use futures::channel::mpsc::unbounded;
+use futures::stream::select;
 use gpui_kit::component::Theme;
 use gpui_kit::{AppContext as _, WindowOptions};
 use reqwest_client::ReqwestClient;
 use rivet_app::Shell;
+use rivet_commands::handoff::{self, Endpoint, Start};
+use rivet_core::handoff::Request;
 use rivet_core::self_update::platform_asset;
 use rivet_core::{Command, State};
 use rivet_platform::executable::Running;
@@ -15,6 +19,12 @@ use thunderstore_engine::ecosystem::Ecosystem;
 const APP_ID: &str = "io.github.endoze.rivet";
 
 fn main() {
+  let owner = match hand_off() {
+    Some(Start::HandedOff) => return,
+    Some(Start::First(owner)) => Some(owner),
+    Some(Start::Alone) | None => None,
+  };
+
   let running = rivet_platform::executable::running();
 
   #[cfg(target_os = "linux")]
@@ -61,6 +71,13 @@ fn main() {
       state.self_update.asset = asset.map(str::to_string);
 
       let (commands, inbox) = rivet_commands::spawn(config);
+      let (handed_over, handed) = unbounded();
+      let mut serving = owner.map(|owner| handoff::serve(owner, handed_over));
+
+      // Releasing the endpoint as the window closes, rather than as the
+      // process ends, lets a new build the updater started take over sooner.
+      cx.on_window_closed(move |_, _| drop(serving.take()))
+        .detach();
 
       commands
         .unbounded_send(Command::SettleRivetUpdate {
@@ -76,10 +93,28 @@ fn main() {
       gpui_kit::open_window(options, cx, |window, cx| {
         Theme::sync_system_appearance(Some(window), cx);
 
-        cx.new(|cx| Shell::new(state, commands, inbox, window, cx))
+        cx.new(|cx| Shell::new(state, commands, select(inbox, handed), window, cx))
       })
       .expect("failed to open window");
     });
+}
+
+/// Hands this launch to the Rivet already running, or claims the endpoint
+/// later launches hand theirs to. A launch the updater started waits for
+/// the Rivet it replaces to close instead. `None` when the platform reports
+/// no folder for the endpoint.
+fn hand_off() -> Option<Start> {
+  let endpoint = Endpoint::new(&rivet_platform::paths::endpoint_folder()?, APP_ID);
+
+  if std::env::args_os().any(|argument| argument == handoff::REPLACING) {
+    return Some(handoff::take_over(&endpoint));
+  }
+
+  let request = Request {
+    activation_token: std::env::var("XDG_ACTIVATION_TOKEN").ok(),
+  };
+
+  Some(handoff::start(&endpoint, &request))
 }
 
 /// Lists Rivet in the desktop's app menu, with its icon, pointing at

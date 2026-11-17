@@ -19,6 +19,7 @@ dirs = "6"
 embed-resource = "3"
 futures = "0.3"
 gpui-kit = "=0.9.1"
+interprocess = "2.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 # The image client must match the gpui-pre snapshot gpui-kit bundles.
 reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.12" }

@@ -32,6 +32,13 @@ pub fn data_folder() -> Option<PathBuf> {
   dirs::data_local_dir().map(|data| apart(data.join(APP_FOLDER), "data"))
 }
 
+/// The folder for the endpoint a running Rivet is reached at, one only this
+/// user can reach: `$XDG_RUNTIME_DIR` on Linux, or else the
+/// [`data_folder`]. `None` when the platform reports neither.
+pub fn endpoint_folder() -> Option<PathBuf> {
+  dirs::runtime_dir().or_else(data_folder)
+}
+
 /// `folder`, or on Windows its subfolder `name`: Windows has one local
 /// location for both cache and data, so each needs a folder of its own.
 fn apart(folder: PathBuf, name: &str) -> PathBuf {
