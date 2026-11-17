@@ -91,6 +91,12 @@ pub enum Notice {
   },
   /// A file to import could not be read, so nothing was imported.
   ImportUnread(ReadFailure),
+  /// A profile export opened from outside Rivet was not imported, since no
+  /// game that takes imports is open. A shared profile names no game.
+  ImportNeedsGame(PathBuf),
+  /// A profile export opened from outside Rivet was not imported, since
+  /// another import was under way.
+  ImportBusy(PathBuf),
   /// The files launches copied into a game's folder were removed, except
   /// those listed: `changed` were changed since and left in place, and
   /// `failed` could not be removed, each with the reason.
@@ -186,7 +192,7 @@ impl Notice {
       | Notice::RivetReplaceFailed(_)
       | Notice::RivetUpdateFailed { .. } => Level::Error,
       Notice::RivetUnwritable { .. } => Level::Warning,
-      Notice::RestartRefused => Level::Info,
+      Notice::RestartRefused | Notice::ImportNeedsGame(_) | Notice::ImportBusy(_) => Level::Info,
       Notice::OperationFailed { .. }
       | Notice::ProfileChangeFailed { .. }
       | Notice::LaunchFailed { .. }

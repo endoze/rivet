@@ -3,7 +3,9 @@
 
 use futures::channel::mpsc::UnboundedSender;
 use rivet_core::Msg;
-use rivet_core::handoff::Request;
+use rivet_core::handoff::{Open, Request};
+use std::ffi::OsString;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub use rivet_platform::instance::{Endpoint, Owner, Serving};
@@ -33,6 +35,35 @@ pub enum Start {
   /// The endpoint could be neither reached nor claimed. This one runs
   /// without it.
   Alone,
+}
+
+/// The request of a start given `arguments`, without the program's own
+/// name, in `working_folder`. It opens the first argument other than
+/// [`REPLACING`]. A file given by a relative path is sent as an absolute
+/// one, since the running Rivet works in another folder. An argument that
+/// is not UTF-8 opens nothing.
+pub fn request(
+  arguments: impl IntoIterator<Item = OsString>,
+  working_folder: &Path,
+  activation_token: Option<String>,
+) -> Request {
+  let open = arguments
+    .into_iter()
+    .find(|argument| argument != REPLACING)
+    .and_then(|argument| argument.into_string().ok())
+    .map(|argument| match Open::of(&argument) {
+      Open::File(path) if path.is_relative() => working_folder
+        .join(path)
+        .into_os_string()
+        .into_string()
+        .unwrap_or(argument),
+      _ => argument,
+    });
+
+  Request {
+    activation_token,
+    open,
+  }
 }
 
 /// Hands `request` to the Rivet that owns `endpoint`, or claims the

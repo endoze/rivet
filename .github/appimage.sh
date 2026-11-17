@@ -46,20 +46,33 @@ appdir="$work/Rivet.AppDir"
 install -Dm755 "$binary" "$appdir/usr/bin/rivet"
 ln -s usr/bin/rivet "$appdir/AppRun"
 
-# Matches the entry Rivet writes for itself (rivet_platform::desktop::entry),
-# except that Exec names the binary inside the AppImage. Integration tools
-# such as AppImageLauncher and Gear Lever copy it and point Exec at the file.
-install -d "$appdir/usr/share/applications"
+# Matches the entry and mime package Rivet writes for itself
+# (rivet_platform::desktop::entry and mime_package), except that Exec names
+# the binary inside the AppImage. Integration tools such as AppImageLauncher
+# and Gear Lever copy the entry and point Exec at the file. AppImageLauncher
+# installs the mime package too; Rivet writes its own either way.
+install -d "$appdir/usr/share/applications" "$appdir/usr/share/mime/packages"
 cat > "$appdir/usr/share/applications/$id.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Rivet
 Comment=Mod manager for Thunderstore games
-Exec=rivet
+Exec=rivet %u
 Icon=$id
 Terminal=false
 Categories=Game;
+MimeType=application/x-r2z;
 StartupWMClass=$id
+EOF
+cat > "$appdir/usr/share/mime/packages/$id.xml" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-r2z">
+    <comment>Mod profile export</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.r2z"/>
+  </mime-type>
+</mime-info>
 EOF
 ln -s "usr/share/applications/$id.desktop" "$appdir/$id.desktop"
 

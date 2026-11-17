@@ -32,8 +32,10 @@ tempfile = "3"
 thunderstore-engine = { version = "0.4.2", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync"] }
 toml = "1"
-# The version gpui builds, so its Windows bindings are shared, not built twice.
+url = "2.5"
+# The versions gpui builds, so its Windows bindings are shared, not built twice.
 windows = "0.62"
+windows-registry = "0.6"
 zip = "8.6"
 
 # Full debug info for gpui makes each test binary near 1 GB. Line tables

@@ -6365,6 +6365,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thunderstore-engine",
+ "url",
 ]
 
 [[package]]
@@ -6376,6 +6377,7 @@ dependencies = [
  "tempfile",
  "thunderstore-engine",
  "windows 0.62.2",
+ "windows-registry 0.6.1",
  "windows-sys 0.61.2",
 ]
 

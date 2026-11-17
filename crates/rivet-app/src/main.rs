@@ -9,7 +9,7 @@ use rivet_app::Shell;
 use rivet_commands::handoff::{self, Endpoint, Start};
 use rivet_core::handoff::Request;
 use rivet_core::self_update::platform_asset;
-use rivet_core::{Command, State};
+use rivet_core::{Command, Msg, State};
 use rivet_platform::executable::Running;
 use std::sync::Arc;
 use thunderstore_engine::ecosystem::Ecosystem;
@@ -18,8 +18,16 @@ use thunderstore_engine::ecosystem::Ecosystem;
 /// launcher and icon.
 const APP_ID: &str = "io.github.endoze.rivet";
 
+/// What file managers call a `.r2z` file.
+const PROFILE_EXPORT: &str = "Mod profile export";
+
 fn main() {
-  let owner = match hand_off() {
+  let request = handoff::request(
+    std::env::args_os().skip(1),
+    &std::env::current_dir().unwrap_or_default(),
+    std::env::var("XDG_ACTIVATION_TOKEN").ok(),
+  );
+  let owner = match hand_off(&request) {
     Some(Start::HandedOff) => return,
     Some(Start::First(owner)) => Some(owner),
     Some(Start::Alone) | None => None,
@@ -33,7 +41,10 @@ fn main() {
   }
 
   #[cfg(windows)]
-  install_shortcut();
+  {
+    install_shortcut();
+    open_profile_exports();
+  }
 
   let asset = platform_asset(running.as_ref().is_some_and(Running::is_appimage));
   let config = rivet_commands::Config {
@@ -72,6 +83,9 @@ fn main() {
 
       let (commands, inbox) = rivet_commands::spawn(config);
       let (handed_over, handed) = unbounded();
+
+      handed_over.unbounded_send(Msg::Launched(request)).ok();
+
       let mut serving = owner.map(|owner| handoff::serve(owner, handed_over));
 
       // Releasing the endpoint as the window closes, rather than as the
@@ -99,29 +113,33 @@ fn main() {
     });
 }
 
-/// Hands this launch to the Rivet already running, or claims the endpoint
+/// Hands `request` to the Rivet already running, or claims the endpoint
 /// later launches hand theirs to. A launch the updater started waits for
 /// the Rivet it replaces to close instead. `None` when the platform reports
 /// no folder for the endpoint.
-fn hand_off() -> Option<Start> {
+fn hand_off(request: &Request) -> Option<Start> {
   let endpoint = Endpoint::new(&rivet_platform::paths::endpoint_folder()?, APP_ID);
 
   if std::env::args_os().any(|argument| argument == handoff::REPLACING) {
     return Some(handoff::take_over(&endpoint));
   }
 
-  let request = Request {
-    activation_token: std::env::var("XDG_ACTIVATION_TOKEN").ok(),
-  };
-
-  Some(handoff::start(&endpoint, &request))
+  Some(handoff::start(&endpoint, request))
 }
 
 /// Lists Rivet in the desktop's app menu, with its icon, pointing at
-/// `executable`. A failure costs only the menu entry, so it is ignored.
+/// `executable`, as the app that opens `.r2z` files. A failure costs only
+/// the menu entry or the file type, so it is ignored.
 #[cfg(target_os = "linux")]
 fn install_launcher(executable: &std::path::Path) {
-  use rivet_platform::desktop::{self, Launcher};
+  use rivet_platform::desktop::{self, FileType, Launcher};
+
+  const FILE_TYPES: &[FileType] = &[FileType {
+    mime: "application/x-r2z",
+    comment: PROFILE_EXPORT,
+    extension: "r2z",
+    sub_class_of: "application/zip",
+  }];
 
   // `cargo run` would otherwise point the menu at a development build.
   if cfg!(debug_assertions) {
@@ -146,9 +164,16 @@ fn install_launcher(executable: &std::path::Path) {
       (128, include_bytes!("../assets/icon/rivet-128.png")),
       (256, include_bytes!("../assets/icon/rivet-256.png")),
     ],
+    file_types: FILE_TYPES,
   };
 
-  desktop::install(&data_home, &desktop::data_dirs(), &launcher).ok();
+  if desktop::install(&data_home, &desktop::data_dirs(), &launcher).unwrap_or(false) {
+    // The desktop's tools can take a second, which the window need not wait for.
+    std::thread::spawn(move || {
+      desktop::refresh(&data_home);
+      desktop::claim_defaults(APP_ID, FILE_TYPES);
+    });
+  }
 }
 
 /// Lists Rivet in the Start Menu, with its icon, pointing at this
@@ -172,4 +197,28 @@ fn install_shortcut() {
   };
 
   start_menu::install(&app_data, &shortcut).ok();
+}
+
+/// Makes this executable the program that opens `.r2z` files. A failure
+/// costs only that, so it is ignored.
+#[cfg(windows)]
+fn open_profile_exports() {
+  use rivet_platform::file_types::{self, Association};
+
+  // `cargo run` would otherwise open the files with a development build.
+  if cfg!(debug_assertions) {
+    return;
+  }
+
+  let Ok(executable) = std::env::current_exe() else {
+    return;
+  };
+  let association = Association {
+    extension: ".r2z",
+    prog_id: "Rivet.r2z",
+    description: PROFILE_EXPORT,
+    executable: &executable,
+  };
+
+  file_types::install(&association).ok();
 }

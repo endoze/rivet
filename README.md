@@ -51,6 +51,8 @@ Your mods' settings files are kept when a mod updates.
 
 Right-click a profile and choose **Share as code** to get a short code a friend can paste into Rivet or r2modman, or **Share as file** to save a `.r2z` file. To bring in someone else's profile, press **Import** in the sidebar and paste their code or choose their file. It's added as a new profile with the same mods at the same versions.
 
+You can also double-click a `.r2z` file to import it into the game open in Rivet. A shared profile doesn't say which game it's for, so open that game first. Rivet offers itself as the app for `.r2z` files each time it starts.
+
 If you have r2modman profiles for a game, Rivet offers to copy them in when you open that game. It copies them and never changes r2modman's own files. You can also do it later from **Import**.
 
 ## Linux and Steam

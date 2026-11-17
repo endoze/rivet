@@ -22,7 +22,7 @@ pub mod switcher;
 pub mod updates;
 
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
-use handoff::Request;
+use handoff::{Open, Request};
 use install::{Confirmation, Install, Installed, Outcome, Profile, Progress};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use loader_files::{Copied, FileRemoval, LoaderFile};
@@ -110,6 +110,9 @@ pub struct State {
   pub r2modman: Option<R2modman>,
   /// Keeping Rivet itself current.
   pub self_update: SelfUpdate,
+  /// What a launch of Rivet was started with, waiting until Rivet is ready
+  /// to act on it.
+  pub opening: Option<Open>,
 }
 
 impl State {
@@ -145,6 +148,7 @@ impl State {
       importing: None,
       r2modman: None,
       self_update: SelfUpdate::default(),
+      opening: None,
     }
   }
 }
@@ -465,6 +469,9 @@ pub enum Msg {
   /// A later launch of Rivet found this one running and handed over its
   /// request.
   HandedOff(Request),
+  /// The request this launch of Rivet was started with. What it opens waits
+  /// until Rivet is ready for it.
+  Launched(Request),
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -649,6 +656,7 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
   }
 
   effects.extend(remember_tab(state));
+  effects.extend(handoff::open_when_ready(state));
 
   state.saves += effects
     .iter()
@@ -888,7 +896,8 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::RestartToUpdatePressed => self_update::restart_pressed(state),
     Msg::RivetReplaced(result) => self_update::replaced(state, result),
     Msg::RivetUpdateSettled(settled) => self_update::settled(settled),
-    Msg::HandedOff(_) => vec![Effect::FocusWindow],
+    Msg::HandedOff(request) => handoff::handed_off(state, request),
+    Msg::Launched(request) => handoff::launched(state, request),
   }
 }
 

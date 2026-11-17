@@ -4,6 +4,8 @@ use futures::executor::block_on;
 use rivet_commands::handoff::{self, Endpoint, Serving, Start};
 use rivet_core::Msg;
 use rivet_core::handoff::Request;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -28,12 +30,55 @@ fn a_second_start_hands_its_request_to_the_first() {
   let (_serving, mut received) = first(&dir);
   let request = Request {
     activation_token: Some("token".to_string()),
+    open: Some("/home/me/Shared.r2z".to_string()),
   };
 
   let second = handoff::start(&endpoint(&dir), &request);
 
   assert!(matches!(second, Start::HandedOff), "{second:?}");
   assert_eq!(block_on(received.next()), Some(Msg::HandedOff(request)));
+}
+
+fn arguments(arguments: &[&str]) -> Vec<OsString> {
+  arguments.iter().map(OsString::from).collect()
+}
+
+#[test]
+fn a_start_sends_the_file_it_was_started_with_as_an_absolute_path() {
+  let working_folder = Path::new("/home/me/Downloads");
+
+  let request = handoff::request(arguments(&["Shared.r2z"]), working_folder, None);
+
+  assert_eq!(
+    request.open.map(PathBuf::from),
+    Some(working_folder.join("Shared.r2z"))
+  );
+}
+
+#[test]
+fn a_start_sends_a_uri_as_given() {
+  let link = "ror2mm://v1/install/thunderstore.io/Owner/Mod/1.0.0/";
+
+  let request = handoff::request(arguments(&[link]), Path::new("/home/me"), None);
+
+  assert_eq!(request.open.as_deref(), Some(link));
+}
+
+#[test]
+fn a_start_the_updater_made_opens_nothing() {
+  let request = handoff::request(
+    arguments(&[handoff::REPLACING]),
+    Path::new("/home/me"),
+    Some("token".to_string()),
+  );
+
+  assert_eq!(
+    request,
+    Request {
+      activation_token: Some("token".to_string()),
+      open: None,
+    }
+  );
 }
 
 /// Leaves in `dir` what a Rivet that crashed leaves: its lock file, no

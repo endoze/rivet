@@ -1134,6 +1134,18 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
         detail: vec![failure.detail, failure.next],
       }
     }
+    Notice::ImportNeedsGame(file) => Told {
+      title: format!("Open a game to import {}", file_name(file)),
+      detail: vec![
+        "A shared profile goes into the game that's open. Open the game it's for, then open the file again.".to_string(),
+      ],
+    },
+    Notice::ImportBusy(file) => Told {
+      title: format!("{} wasn't imported", file_name(file)),
+      detail: vec![
+        "Another import is under way. Finish or close it, then open the file again.".to_string(),
+      ],
+    },
     Notice::LoaderFilesRemoved {
       game,
       changed,
@@ -1178,6 +1190,15 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       detail: vec!["The version before it is running instead.".to_string()],
     },
   }
+}
+
+/// The last part of `path`, or all of it when it has none.
+fn file_name(path: &Path) -> String {
+  path
+    .file_name()
+    .unwrap_or(path.as_os_str())
+    .to_string_lossy()
+    .into_owned()
 }
 
 /// A removal of the loader files launches copied into `game`'s folder,

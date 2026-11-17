@@ -424,7 +424,7 @@ pub(crate) fn free_name(taken: &[String], name: &str) -> String {
 }
 
 /// Reads what `source` shares, through the open game's community.
-fn read(state: &mut State, source: Source) -> Vec<Effect> {
+pub(crate) fn read(state: &mut State, source: Source) -> Vec<Effect> {
   let Some(browse) = state.browse.as_ref() else {
     return Vec::new();
   };
