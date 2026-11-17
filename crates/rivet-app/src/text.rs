@@ -4,6 +4,7 @@
 use rivet_core::SettingsError;
 use rivet_core::browse::{SortDirection, SortKey};
 use rivet_core::install::{Action, FailedPackage, Planned, Progress, Stage};
+use rivet_core::install_link::InstallLink;
 use rivet_core::launch::LaunchFailure;
 use rivet_core::manage::{Removal, Sort};
 use rivet_core::notice::Notice;
@@ -341,6 +342,19 @@ pub const STARTING_INSTALL: &str = "Starting";
 pub fn confirm_install(package: &Planned) -> String {
   format!("Install {} {}?", package.full_name, package.version)
 }
+
+/// The question an install link asks, such as `Install Owner-Mod 1.0.0?`.
+pub fn confirm_link_install(link: &InstallLink) -> String {
+  format!("Install {} {}?", link.full_name(), link.version)
+}
+
+pub const GAME: &str = "Game";
+pub const PROFILE: &str = "Profile";
+pub const CHOOSE_GAME: &str = "Choose a game";
+pub const LINK_GAMES_LEAD: &str =
+  "Thunderstore lists this mod for more than one of your games. Choose the one to install it into.";
+pub const LINK_LEAD: &str =
+  "It comes with everything it needs. Rivet switches to the game and profile you choose.";
 
 /// One package in the confirmation list, such as `Owner-Lib 1.0.0`.
 pub fn planned(package: &Planned) -> String {
@@ -1189,6 +1203,93 @@ pub fn notice(notice: &Notice, game_name: impl Fn(&str) -> String) -> Told {
       title: format!("The update to Rivet {to} did not start"),
       detail: vec!["The version before it is running instead.".to_string()],
     },
+    Notice::InstallLinkUnread(link) => Told {
+      title: "This install link can't be read".to_string(),
+      detail: vec![
+        link.clone(),
+        "Nothing was installed. Press Install with Mod Manager on the mod's Thunderstore page again."
+          .to_string(),
+      ],
+    },
+    Notice::InstallLinkUnknown(package) => Told {
+      title: format!("Thunderstore has no mod called {package}"),
+      detail: vec!["It may have been removed. Nothing was installed.".to_string()],
+    },
+    Notice::InstallLinkUnreachable(reason) => Told {
+      title: "Thunderstore could not be reached".to_string(),
+      detail: vec![
+        reason.clone(),
+        "Rivet asks Thunderstore which game the mod is for. Check your connection, then open the link again."
+          .to_string(),
+      ],
+    },
+    Notice::InstallLinkNeedsGame {
+      package,
+      communities,
+    } => install_link_needs_game(package, communities, game_name),
+    Notice::InstallLinkVersionMissing { package, version } => Told {
+      title: format!("{package} {version} wasn't installed"),
+      detail: vec![
+        "The mod list doesn't have this version yet. Press Refresh, then open the link again."
+          .to_string(),
+      ],
+    },
+    Notice::InstallLinkIncomplete { package, missing } => Told {
+      title: format!("{package} wasn't installed"),
+      detail: vec![missing_dependencies(missing).detail],
+    },
+    Notice::InstallLinkDropped { package, profile } => Told {
+      title: format!("{package} wasn't installed"),
+      detail: vec![format!(
+        "The {profile} profile closed before it finished loading. Open the link again."
+      )],
+    },
+  }
+}
+
+/// An install link for a package no game set up in Rivet lists, naming
+/// the games it is for when there are only a few.
+///
+/// ```
+/// use rivet_app::text::install_link_needs_game;
+///
+/// let told = install_link_needs_game(
+///   "Owner-Mod",
+///   &["lethal-company".to_string()],
+///   |_| "Lethal Company".to_string(),
+/// );
+///
+/// assert_eq!(told.title, "Owner-Mod is for Lethal Company");
+/// assert_eq!(
+///   told.detail,
+///   ["Set the game up in Rivet, then open the link again."]
+/// );
+///
+/// let many: Vec<String> = (0..5).map(|game| game.to_string()).collect();
+///
+/// assert_eq!(
+///   install_link_needs_game("Owner-Mod", &many, str::to_string).title,
+///   "Owner-Mod is for a game Rivet hasn't set up"
+/// );
+/// ```
+pub fn install_link_needs_game(
+  package: &str,
+  communities: &[String],
+  game_name: impl Fn(&str) -> String,
+) -> Told {
+  let title = match communities {
+    [] => format!("{package} is for a game Rivet hasn't set up"),
+    games if games.len() <= 3 => {
+      let names: Vec<String> = games.iter().map(|game| game_name(game)).collect();
+
+      format!("{package} is for {}", names.join(" or "))
+    }
+    _ => format!("{package} is for a game Rivet hasn't set up"),
+  };
+
+  Told {
+    title,
+    detail: vec!["Set the game up in Rivet, then open the link again.".to_string()],
   }
 }
 
@@ -1540,6 +1641,8 @@ pub const RIVET: &str = "Rivet";
 pub const UPDATE_AUTOMATICALLY: &str = "Update Rivet automatically";
 pub const UPDATE_AUTOMATICALLY_HINT: &str =
   "Checks GitHub for a newer Rivet each time it starts, and offers to download it.";
+pub const INSTALL_LINKS: &str = "Open Thunderstore install links in Rivet";
+pub const INSTALL_LINKS_HINT: &str = "Thunderstore's Install with Mod Manager button opens the mod in Rivet. Turned on, Rivet takes the links back from r2modman each time it starts.";
 pub const CHECK_FOR_UPDATES: &str = "Check for updates";
 pub const RESTART_TO_UPDATE: &str = "Restart to update";
 pub const OPEN_RELEASE: &str = "Open release";

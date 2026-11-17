@@ -2,6 +2,7 @@
 //! [`Msg`], so the UI thread never waits on disk or network.
 
 pub mod handoff;
+mod install_link;
 mod portability;
 mod self_update;
 
@@ -13,6 +14,7 @@ use rivet_core::browse::{Fetch, Index};
 use rivet_core::install::{
   FailedPackage, Install, Installed, InstalledPackage, Outcome, Progress, Stage,
 };
+use rivet_core::install_link::Claim;
 use rivet_core::launch::{Launch, LaunchFailure, SteamOptionRead};
 use rivet_core::loader_files::{Copied, FileRemoval, LoaderFile};
 use rivet_core::manage::{SetEnabled, Uninstall};
@@ -71,6 +73,9 @@ pub struct Config {
   /// Where Rivet looks for a newer release of itself, and the program an
   /// update replaces.
   pub updater: Updater,
+  /// Registers Rivet for install links as the [`Claim`] says, returning
+  /// whether Rivet opens them afterwards.
+  pub install_links: fn(Claim) -> Result<bool, String>,
 }
 
 /// The cancel flags of operations, by operation id. Clones share the flags.
@@ -355,6 +360,20 @@ pub async fn run(
       profiles: portability::find_r2modman_profiles(config, folders).await,
       game,
     },
+    Command::FindListings(link) => Msg::ListingsFound {
+      communities: install_link::find_listings(config, &link).await,
+      link,
+    },
+    Command::RegisterInstallLinks(claim) => {
+      let register = config.install_links;
+
+      Msg::InstallLinksRegistered(
+        tokio::task::spawn_blocking(move || register(claim))
+          .await
+          .map_err(|error| error.to_string())
+          .flatten(),
+      )
+    }
   };
 
   Some(answer)
@@ -1340,6 +1359,7 @@ mod tests {
       spawn: |_| panic!("a test tried to start a game"),
       cancels: Cancels::default(),
       updater: Updater::default(),
+      install_links: |_| panic!("a test tried to register for install links"),
     }
   }
 

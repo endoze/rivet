@@ -24,6 +24,9 @@ pub struct Launcher<'a> {
   pub icons: &'a [(u32, &'a [u8])],
   /// The kinds of file the program opens.
   pub file_types: &'a [FileType<'a>],
+  /// The URL schemes whose links the program opens, without their colon,
+  /// such as `ror2mm`.
+  pub schemes: &'a [&'a str],
 }
 
 /// A kind of file, known to desktops by its MIME type.
@@ -59,6 +62,7 @@ pub struct FileType<'a> {
 ///   executable: Path::new("/opt/app"),
 ///   icons: &[],
 ///   file_types: &[],
+///   schemes: &[],
 /// };
 ///
 /// assert!(entry(&launcher).unwrap().contains("Exec=\"/opt/app\" %u\n"));
@@ -74,6 +78,12 @@ pub fn entry(launcher: &Launcher) -> io::Result<String> {
     .file_types
     .iter()
     .map(|file_type| format!("{};", file_type.mime))
+    .chain(
+      launcher
+        .schemes
+        .iter()
+        .map(|scheme| format!("x-scheme-handler/{scheme};")),
+    )
     .collect();
 
   Ok(format!(
@@ -320,7 +330,7 @@ fn integrated(applications: &Path, own: &str, id: &str) -> bool {
 }
 
 /// The value of the first `key=value` line for `key` in a desktop entry.
-fn value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
   text
     .lines()
     .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
@@ -370,6 +380,7 @@ mod tests {
         extension: "appsave",
         sub_class_of: "application/zip",
       }],
+      schemes: &["app"],
     }
   }
 
@@ -388,7 +399,7 @@ mod tests {
        Icon=org.example.App\n\
        Terminal=false\n\
        Categories=Game;\n\
-       MimeType=application/x-app-save;\n\
+       MimeType=application/x-app-save;x-scheme-handler/app;\n\
        StartupWMClass=org.example.App\n"
     );
   }

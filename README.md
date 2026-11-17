@@ -28,6 +28,8 @@ On Windows, if "Windows protected your PC" appears, choose **More info**, then *
 3. **Install.** Press **Install** on a mod. Rivet shows you any other mods that come with it, then installs them all.
 4. **Play.** Press **Launch modded** in the left sidebar. **Launch vanilla** starts the game with no mods and leaves your mods untouched.
 
+You can also press **Install with Mod Manager** on a mod's Thunderstore page. Rivet asks which of your games and profiles to install it into, switches to them, and installs that version with the mods it needs. An older version than the newest stays where it is when you update everything. Rivet opens these links when no other app does. If r2modman opens them, turn on **Open Thunderstore install links in Rivet** in **Settings**.
+
 ## Profiles
 
 A profile is one set of mods for a game. Every game starts with a profile called Default. Make more to keep separate setups, such as one for playing with friends and one for trying new mods.
@@ -71,6 +73,7 @@ Press **Settings** in the sidebar to:
 - pick a light or dark look, a theme, and the interface size
 - remove the mod loader files Rivet copied into the game's folder, to put the game back the way it was
 - turn on **Update Rivet automatically**, or press **Check for updates**, to look for a newer Rivet. Rivet asks before downloading it. Press **Restart to update** when it's ready.
+- turn on **Open Thunderstore install links in Rivet** so the **Install with Mod Manager** button on Thunderstore opens in Rivet rather than r2modman. r2modman takes the links back each time it starts, and Rivet takes them back each time it starts while this is on.
 
 ![Valheim's settings: the game folder, launch arguments, how the game runs, loader files, the Steam folder, the look of Rivet, and the Rivet section with Update Rivet automatically and Check for updates](docs/screenshots/settings.png)
 

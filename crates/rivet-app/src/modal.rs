@@ -15,6 +15,7 @@ use gpui_kit::{
   ParentElement as _, SharedString, Styled as _, TestSupportExt as _, WeakEntity, Window, div,
 };
 use rivet_core::install::Confirmation;
+use rivet_core::install_link::Linking;
 use rivet_core::manage::{Folders, Pending, Scope};
 use rivet_core::portability::{Importing, Source};
 use rivet_core::queue::{CloseChoice, Closing};
@@ -35,6 +36,8 @@ pub(crate) enum Modal {
   Importing,
   /// Asks to confirm an install, listing what comes with it.
   Installing,
+  /// Asks which game and profile an install link's package goes into.
+  Linking,
   /// Asks about an uninstall or disable in the Installed tab: whether to take
   /// the packages that need it too, whether to delete folders no package
   /// records, or why it cannot go ahead.
@@ -47,9 +50,9 @@ pub(crate) enum Modal {
 
 /// The modal `state` asks for, given the one `shown` now. When several are
 /// pending, closing comes first, then naming, deleting, importing,
-/// installing, the Installed tab's question, the offer of a newer Rivet, and
-/// last the offer to import r2modman's profiles, which the user did not ask
-/// for.
+/// installing, an install link, the Installed tab's question, the offer of a
+/// newer Rivet, and last the offer to import r2modman's profiles, which the
+/// user did not ask for.
 ///
 /// Checking an uninstall opens no modal, since the check usually ends before
 /// anyone could read it, but it keeps the Installed tab's question open while
@@ -86,6 +89,8 @@ pub(crate) fn wanted_modal(state: &State, shown: Option<Modal>) -> Option<Modal>
     Some(Modal::Importing)
   } else if state.confirmation.is_some() {
     Some(Modal::Installing)
+  } else if matches!(state.install_link, Some(Linking::Choosing(_))) {
+    Some(Modal::Linking)
   } else if pending {
     Some(Modal::Pending)
   } else if updating {
@@ -126,6 +131,7 @@ impl Shell {
           window.open_dialog(cx, importing(shell, code, input));
         }
         Some(Modal::Installing) => window.open_dialog(cx, installing(shell)),
+        Some(Modal::Linking) => window.open_dialog(cx, linking(shell)),
         Some(Modal::Pending) => window.open_dialog(cx, pending(shell)),
         Some(Modal::Updating) => window.open_dialog(cx, updating(shell)),
         Some(Modal::R2modman) => window.open_dialog(cx, r2modman(shell)),
@@ -531,6 +537,146 @@ fn version_menu(shell: &WeakEntity<Shell>, confirmation: &Confirmation) -> impl 
 /// Tall enough for about ten versions; a package with more scrolls.
 const VERSION_MENU_HEIGHT: f32 = 320.0;
 
+/// The modal asking where an install link's package goes: the game, when
+/// several of the user's games list it, then the profile, starting from the
+/// one the game last opened.
+fn linking(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -> Dialog {
+  move |dialog, _, cx| {
+    let Some(shell_entity) = shell.upgrade() else {
+      return dialog;
+    };
+    let state = &shell_entity.read(cx).state;
+    let Some(Linking::Choosing(choice)) = state.install_link.clone() else {
+      return dialog;
+    };
+    let game_name = |game: &str| {
+      state
+        .ecosystem
+        .game(game)
+        .map_or(game, |definition| definition.display_name())
+        .to_string()
+    };
+    let chosen = choice.target.as_ref().map(|target| target.game.clone());
+    let game: AnyElement = match choice.games.as_slice() {
+      [only] => game_name(only).into_any_element(),
+      games => {
+        let label = chosen
+          .as_deref()
+          .map_or_else(|| text::CHOOSE_GAME.to_string(), game_name);
+        let choices = games
+          .iter()
+          .map(|game| Choosing {
+            id: format!("link-game-{game}"),
+            label: game_name(game),
+            checked: chosen.as_ref() == Some(game),
+            msg: Msg::LinkGameChosen(game.clone()),
+          })
+          .collect();
+
+        choice_menu(&shell, "link-game", label, choices).into_any_element()
+      }
+    };
+    let row = |label: &'static str, control: AnyElement| {
+      h_flex()
+        .gap_2()
+        .items_center()
+        .child(label)
+        .child(control)
+        .into_any_element()
+    };
+    let profile = choice.target.as_ref().map(|target| {
+      let choices = target
+        .profiles
+        .iter()
+        .map(|profile| Choosing {
+          id: format!("link-profile-{profile}"),
+          label: profile.clone(),
+          checked: *profile == target.profile,
+          msg: Msg::LinkProfileChosen(profile.clone()),
+        })
+        .collect();
+
+      row(
+        text::PROFILE,
+        choice_menu(&shell, "link-profile", target.profile.clone(), choices).into_any_element(),
+      )
+    });
+    let lead = match choice.target {
+      Some(_) => text::LINK_LEAD,
+      None => text::LINK_GAMES_LEAD,
+    };
+    let frame = Frame {
+      title: text::confirm_link_install(&choice.link),
+      id: "install-link-dialog",
+      body: [
+        Some(lead.into_any_element()),
+        Some(row(text::GAME, game)),
+        profile,
+      ]
+      .into_iter()
+      .flatten()
+      .collect(),
+      cancel: "dismiss-install-link",
+      cancel_label: text::CANCEL,
+      dismissed: Msg::LinkInstallDismissed,
+      actions: vec![
+        Button::new("confirm-install-link")
+          .label(text::INSTALL)
+          .primary()
+          .disabled(chosen.is_none() || state.is_restarting())
+          .on_click(send(&shell, Msg::LinkInstallConfirmed)),
+      ],
+    };
+
+    frame.fill(dialog, &shell)
+  }
+}
+
+/// One item of a [`choice_menu`].
+struct Choosing {
+  /// Finds the item in tests.
+  id: String,
+  label: String,
+  checked: bool,
+  /// Sent when the item is clicked.
+  msg: Msg,
+}
+
+/// A button showing `label` that opens a menu of `choices`, the chosen one
+/// checked.
+fn choice_menu(
+  shell: &WeakEntity<Shell>,
+  id: &'static str,
+  label: String,
+  choices: Vec<Choosing>,
+) -> impl IntoElement {
+  let shell = shell.clone();
+
+  Button::new(id)
+    .label(label)
+    .small()
+    .dropdown_caret(true)
+    .dropdown_menu(move |menu: PopupMenu, window, _| {
+      choices.iter().fold(
+        menu
+          .scrollable(true)
+          .max_h(spec(VERSION_MENU_HEIGHT).to_pixels(window.rem_size())),
+        |menu, choice| {
+          let id = SharedString::from(choice.id.clone());
+          let label = SharedString::from(choice.label.clone());
+
+          menu.item(
+            PopupMenuItem::element(move |_, _| {
+              div().id(id.clone()).child(label.clone()).test_support()
+            })
+            .checked(choice.checked)
+            .on_click(send(&shell, choice.msg.clone())),
+          )
+        },
+      )
+    })
+}
+
 /// The modal asking about an uninstall or disable in the Installed tab. Its
 /// content follows the question as it changes, so choosing to take the
 /// dependants, checking the uninstall, and asking about folders all happen in
@@ -733,6 +879,7 @@ fn closing(shell: WeakEntity<Shell>) -> impl Fn(Dialog, &mut Window, &mut App) -
 mod tests {
   use super::*;
   use rivet_core::install::{Confirmation, Planned};
+  use rivet_core::install_link::{Choice, InstallLink, Linking};
   use rivet_core::r2modman::{Found, R2modman};
   use rivet_core::self_update::Found as UpdateFound;
   use rivet_core::switcher::{NameForm, Naming, Switcher};
@@ -1005,6 +1152,69 @@ mod tests {
       wanted_modal(&both, Some(Modal::R2modman)),
       Some(Modal::R2modman)
     );
+  }
+
+  fn link() -> InstallLink {
+    InstallLink::parse("ror2mm://v1/install/thunderstore.io/Owner/ModA/1.0.0/").unwrap()
+  }
+
+  /// `state` with an install link at `linking`'s step.
+  fn linking(mut state: State, linking: Linking) -> State {
+    state.install_link = Some(linking);
+
+    state
+  }
+
+  fn choosing() -> Linking {
+    Linking::Choosing(Choice {
+      link: link(),
+      games: vec!["valheim".to_string(), "riskofrain2".to_string()],
+      target: None,
+    })
+  }
+
+  #[test]
+  fn an_install_link_wants_its_modal_only_while_asking_where_to_install() {
+    let idle = || pending(false, false, false);
+
+    assert_eq!(
+      wanted_modal(&linking(idle(), choosing()), None),
+      Some(Modal::Linking)
+    );
+    assert_eq!(
+      wanted_modal(&linking(idle(), Linking::Finding(link())), None),
+      None
+    );
+    assert_eq!(
+      wanted_modal(
+        &linking(
+          idle(),
+          Linking::Installing {
+            link: link(),
+            game: "valheim".to_string(),
+            profile: "Default".to_string(),
+          }
+        ),
+        None
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn an_install_link_waits_for_an_install_and_comes_before_the_installed_tab_question() {
+    let mut asking = linking(pending(false, false, false), choosing());
+
+    asking.manage.pending = Some(Pending::Refused {
+      packages: vec!["Owner-ModA".to_string()],
+      reason: "read-only".to_string(),
+    });
+
+    assert_eq!(
+      wanted_modal(&linking(pending(false, false, true), choosing()), None),
+      Some(Modal::Installing)
+    );
+    assert_eq!(wanted_modal(&asking, None), Some(Modal::Linking));
   }
 
   #[test]

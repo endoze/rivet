@@ -21,6 +21,9 @@ const APP_ID: &str = "io.github.endoze.rivet";
 /// What file managers call a `.r2z` file.
 const PROFILE_EXPORT: &str = "Mod profile export";
 
+/// The URL scheme of Thunderstore's install links.
+const INSTALL_LINKS: &str = "ror2mm";
+
 fn main() {
   let request = handoff::request(
     std::env::args_os().skip(1),
@@ -64,6 +67,7 @@ fn main() {
       executable: running.as_ref().map(|running| running.file().to_path_buf()),
       ..rivet_commands::Updater::default()
     },
+    install_links: register_install_links,
   };
 
   gpui_kit::application()
@@ -155,6 +159,7 @@ fn install_launcher(executable: &std::path::Path) {
     comment: "Mod manager for Thunderstore games",
     categories: "Game;",
     executable,
+    schemes: &[INSTALL_LINKS],
     icons: &[
       (16, include_bytes!("../assets/icon/rivet-16.png")),
       (24, include_bytes!("../assets/icon/rivet-24.png")),
@@ -174,6 +179,55 @@ fn install_launcher(executable: &std::path::Path) {
       desktop::claim_defaults(APP_ID, FILE_TYPES);
     });
   }
+}
+
+/// Makes this executable the app that opens Thunderstore's install links,
+/// or releases them, as `claim` says. Returns whether Rivet opens them
+/// afterwards.
+fn register_install_links(claim: rivet_core::install_link::Claim) -> Result<bool, String> {
+  use rivet_core::install_link::Claim as Core;
+  use rivet_platform::url_scheme::Claim;
+
+  let claim = match claim {
+    Core::IfUnclaimed => Claim::IfUnclaimed,
+    Core::Always => Claim::Always,
+    Core::Release => Claim::Release,
+  };
+
+  // `cargo run` would otherwise send the links to a development build.
+  if cfg!(debug_assertions) {
+    return Err("a development build does not register for install links".to_string());
+  }
+
+  register_scheme(claim)
+}
+
+#[cfg(target_os = "linux")]
+fn register_scheme(claim: rivet_platform::url_scheme::Claim) -> Result<bool, String> {
+  use rivet_platform::mime_apps::{self, Folders};
+
+  let folders = Folders::from_env().ok_or("there is no home folder")?;
+  let mime = format!("x-scheme-handler/{INSTALL_LINKS}");
+
+  mime_apps::register(&folders, claim, &mime, APP_ID).map_err(|error| error.to_string())
+}
+
+#[cfg(windows)]
+fn register_scheme(claim: rivet_platform::url_scheme::Claim) -> Result<bool, String> {
+  use rivet_platform::url_scheme::{self, Scheme};
+
+  let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+  let scheme = Scheme {
+    scheme: INSTALL_LINKS,
+    executable: &executable,
+  };
+
+  url_scheme::register(claim, &scheme).map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn register_scheme(_: rivet_platform::url_scheme::Claim) -> Result<bool, String> {
+  Err("install links are registered only on Linux and Windows".to_string())
 }
 
 /// Lists Rivet in the Start Menu, with its icon, pointing at this

@@ -2,6 +2,7 @@
 
 use crate::browse::Status;
 use crate::install::ProfileStatus;
+use crate::install_link::{self, InstallLink};
 use crate::notice::Notice;
 use crate::portability::{self, Source};
 use crate::{Effect, Screen, State};
@@ -30,6 +31,10 @@ pub struct Request {
 pub enum Open {
   /// A `.r2z` profile export to import.
   File(PathBuf),
+  /// A Thunderstore install link.
+  Link(InstallLink),
+  /// A `ror2mm:` link that is not an install link Rivet can read, as given.
+  BadLink(String),
   /// Anything else, as given, which Rivet ignores.
   Other(String),
 }
@@ -52,6 +57,17 @@ impl Open {
   /// assert_eq!(Open::of("notes.txt"), Open::Other("notes.txt".to_string()));
   /// ```
   pub fn of(argument: &str) -> Self {
+    let link = argument
+      .get(..LINK_SCHEME.len())
+      .is_some_and(|scheme| scheme.eq_ignore_ascii_case(LINK_SCHEME));
+
+    if link {
+      return match InstallLink::parse(argument) {
+        Some(link) => Open::Link(link),
+        None => Open::BadLink(argument.to_string()),
+      };
+    }
+
     // A Windows path such as `C:\a.r2z` parses as a URI with a one-letter
     // scheme.
     let path = match Url::parse(argument) {
@@ -66,6 +82,9 @@ impl Open {
     }
   }
 }
+
+/// The scheme of Thunderstore's install links, which r2modman also opens.
+const LINK_SCHEME: &str = "ror2mm:";
 
 fn is_profile_export(path: &Path) -> bool {
   path
@@ -107,6 +126,8 @@ pub(crate) fn open_when_ready(state: &mut State) -> Vec<Effect> {
 
   match open {
     Open::File(path) => import_file(state, path),
+    Open::Link(link) => install_link::opened(state, link),
+    Open::BadLink(link) => vec![Effect::Notify(Notice::InstallLinkUnread(link))],
     Open::Other(_) => Vec::new(),
   }
 }
@@ -120,7 +141,7 @@ fn is_ready(state: &State, open: &Open) -> bool {
 
   match open {
     Open::File(_) => !is_game_loading(state),
-    Open::Other(_) => true,
+    Open::Link(_) | Open::BadLink(_) | Open::Other(_) => true,
   }
 }
 
@@ -161,6 +182,7 @@ fn import_file(state: &mut State, path: PathBuf) -> Vec<Effect> {
 mod tests {
   use super::*;
   use crate::install::DEFAULT_PROFILE;
+  use crate::install_link::InstallLink;
   use crate::notice::Notice;
   use crate::portability::{Importing, Source};
   use crate::settings::{GameSettings, Settings};
@@ -298,8 +320,8 @@ mod tests {
         Open::Other("/home/me/notes.txt".to_string()),
       ),
       (
-        "ror2mm://v1/install/thunderstore.io/Owner/Mod/1.0.0/",
-        Open::Other("ror2mm://v1/install/thunderstore.io/Owner/Mod/1.0.0/".to_string()),
+        "https://thunderstore.io/c/valheim/",
+        Open::Other("https://thunderstore.io/c/valheim/".to_string()),
       ),
     ];
 
@@ -346,19 +368,101 @@ mod tests {
     }
   }
 
+  fn package_link() -> InstallLink {
+    InstallLink {
+      owner: "Owner".to_string(),
+      name: "Mod".to_string(),
+      version: "1.0.0".to_string(),
+    }
+  }
+
+  const PACKAGE_LINK: &str = "ror2mm://v1/install/thunderstore.io/Owner/Mod/1.0.0/";
+
   #[test]
-  fn a_link_handed_over_only_brings_the_window_to_the_front() {
+  fn what_a_launch_opens_is_read_as_an_install_link_for_the_ror2mm_scheme() {
+    let cases = [
+      (PACKAGE_LINK, Open::Link(package_link())),
+      (
+        "ROR2MM://v1/install/thunderstore.io/Owner/Mod/1.0.0",
+        Open::Link(package_link()),
+      ),
+      (
+        "ror2mm://v1/install/thunderstore.io/Owner/Mod/",
+        Open::BadLink("ror2mm://v1/install/thunderstore.io/Owner/Mod/".to_string()),
+      ),
+    ];
+
+    for (argument, open) in cases {
+      assert_eq!(Open::of(argument), open, "{argument}");
+    }
+  }
+
+  #[test]
+  fn a_link_handed_over_asks_thunderstore_which_games_list_its_package() {
     let mut state = ready_in("valheim");
 
-    let effects = update(
-      &mut state,
-      Msg::HandedOff(opening(
-        "ror2mm://v1/install/thunderstore.io/Owner/Mod/1.0.0/",
-      )),
+    let effects = update(&mut state, Msg::HandedOff(opening(PACKAGE_LINK)));
+
+    assert_eq!(
+      effects,
+      vec![
+        Effect::FocusWindow,
+        Effect::Run(Command::FindListings(package_link()))
+      ]
     );
+    assert_eq!(state.opening, None);
+  }
+
+  #[test]
+  fn a_link_that_does_not_read_is_named_in_a_notice_and_does_nothing_else() {
+    let mut state = ready_in("valheim");
+    let bad = "ror2mm://v1/install/thunderstore.io/Owner/Mod/";
+
+    let effects = update(&mut state, Msg::HandedOff(opening(bad)));
+
+    assert_eq!(
+      effects,
+      vec![
+        Effect::FocusWindow,
+        Effect::Notify(Notice::InstallLinkUnread(bad.to_string()))
+      ]
+    );
+    assert_eq!(state.install_link, None);
+  }
+
+  #[test]
+  fn a_link_handed_over_while_rivet_restarts_to_update_asks_nothing() {
+    let mut state = ready_in("valheim");
+
+    state.self_update.stage = crate::self_update::Stage::Restarting {
+      version: "0.3.0".to_string(),
+      file: PathBuf::from("/opt/rivet/rivet.new"),
+      replacing: true,
+    };
+
+    let effects = update(&mut state, Msg::HandedOff(opening(PACKAGE_LINK)));
 
     assert_eq!(effects, vec![Effect::FocusWindow]);
-    assert_eq!(state.opening, None);
+    assert_eq!(state.install_link, None);
+  }
+
+  #[test]
+  fn a_link_passed_at_first_launch_waits_until_settings_have_loaded() {
+    let mut state = State::new(test_ecosystem());
+
+    update(&mut state, Msg::Started);
+
+    assert_eq!(
+      update(&mut state, Msg::Launched(opening(PACKAGE_LINK))),
+      vec![]
+    );
+
+    let effects = update(&mut state, Msg::SettingsLoaded(Ok(Settings::default())));
+
+    assert!(
+      effects.contains(&Effect::Run(Command::FindListings(package_link()))),
+      "{effects:?}"
+    );
   }
 
   #[test]

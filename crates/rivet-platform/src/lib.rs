@@ -9,7 +9,10 @@ pub mod desktop;
 pub mod executable;
 pub mod file_types;
 pub mod instance;
+#[cfg(target_os = "linux")]
+pub mod mime_apps;
 pub mod paths;
 pub mod r2modman;
 pub mod start_menu;
 pub mod steam;
+pub mod url_scheme;

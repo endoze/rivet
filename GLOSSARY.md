@@ -26,3 +26,7 @@ _Avoid_: Lock, freeze
 **Operation**:
 One user-requested change to a profile: an install, update, uninstall, enable, disable, or import. A profile runs one operation at a time and queues the rest.
 _Avoid_: Task, job, action
+
+**Install link**:
+A `ror2mm://` link from Thunderstore's "Install with Mod Manager" button, naming one version of a package to install. r2modman opens the same links.
+_Avoid_: Protocol link, deep link

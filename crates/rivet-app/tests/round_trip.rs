@@ -8,6 +8,7 @@ use gpui_kit::{
 use rivet_app::Shell;
 use rivet_core::browse::{Fetch, Index, Refresh};
 use rivet_core::install::{DEFAULT_PROFILE, Installed, InstalledPackage, Outcome, Progress, Stage};
+use rivet_core::install_link::Claim;
 use rivet_core::loader_files::{FileRemoval, LoaderFile};
 use rivet_core::manage::Tab;
 use rivet_core::readme::{self, Request};
@@ -75,6 +76,11 @@ fn the_package_list_shows_its_rows_and_refreshes_on_demand(cx: &mut TestAppConte
       })
     );
   }
+
+  assert_eq!(
+    sent.try_recv().ok(),
+    Some(Command::RegisterInstallLinks(Claim::IfUnclaimed))
+  );
 
   answers
     .unbounded_send(Msg::CachedIndexRead {
@@ -1817,6 +1823,12 @@ fn picking_a_game_and_its_folder_opens_the_game(cx: &mut TestAppContext) {
     .unbounded_send(Msg::SettingsLoaded(Ok(Settings::default())))
     .unwrap();
   cx.run_until_parked();
+
+  assert_eq!(
+    sent.try_recv().ok(),
+    Some(Command::RegisterInstallLinks(Claim::IfUnclaimed))
+  );
+
   cx.update_window(window, |_, window, cx| {
     window.render_frame(cx);
     window.click("valheim", cx);

@@ -61,7 +61,7 @@ Exec=rivet %u
 Icon=$id
 Terminal=false
 Categories=Game;
-MimeType=application/x-r2z;
+MimeType=application/x-r2z;x-scheme-handler/ror2mm;
 StartupWMClass=$id
 EOF
 cat > "$appdir/usr/share/mime/packages/$id.xml" <<EOF
