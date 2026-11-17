@@ -16,6 +16,9 @@ fn main() {
   #[cfg(target_os = "linux")]
   install_launcher();
 
+  #[cfg(windows)]
+  install_shortcut();
+
   let config = rivet_commands::Config {
     settings: rivet_platform::paths::settings_file()
       .expect("the platform reports no config location"),
@@ -101,4 +104,27 @@ fn install_launcher() {
   };
 
   desktop::install(&data_home, &desktop::data_dirs(), &launcher).ok();
+}
+
+/// Lists Rivet in the Start Menu, with its icon, pointing at this
+/// executable. A failure costs only the shortcut, so it is ignored.
+#[cfg(windows)]
+fn install_shortcut() {
+  use rivet_platform::start_menu::{self, Shortcut};
+
+  // `cargo run` would otherwise point the Start Menu at a development build.
+  if cfg!(debug_assertions) {
+    return;
+  }
+
+  let (Some(app_data), Ok(executable)) = (start_menu::app_data(), std::env::current_exe()) else {
+    return;
+  };
+  let shortcut = Shortcut {
+    name: "Rivet",
+    description: "Mod manager for Thunderstore games",
+    executable: &executable,
+  };
+
+  start_menu::install(&app_data, &shortcut).ok();
 }

@@ -13,6 +13,8 @@ Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases
 
 On Linux, make the file executable before you run it the first time: tick **Allow executing file as program** in its **Properties**, or run `chmod +x rivet-linux-x86_64`. On Windows, if "Windows protected your PC" appears, choose **More info**, then **Run anyway**.
 
+On Windows, Rivet adds itself to the Start Menu the first time it runs. If you move the `.exe`, start it once from its new place and the shortcut follows.
+
 ## Your first mods
 
 1. **Choose your game.** Search the list and pick it. If it's a Steam game, Rivet finds where it's installed. If not, Rivet asks you to choose the game's folder.
