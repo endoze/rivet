@@ -11,6 +11,8 @@ If you've used r2modman, Rivet works the same way and can bring your r2modman pr
 
 Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases): `rivet-windows-x86_64.exe` for Windows or `rivet-linux-x86_64` for Linux. Each comes with a `.sha256` file to check the download against. The Linux build runs on Debian 12, Ubuntu 24.04, SteamOS, Arch, Fedora, and other systems with glibc 2.36 or newer.
 
+On Linux, make the file executable before you run it the first time: tick **Allow executing file as program** in its **Properties**, or run `chmod +x rivet-linux-x86_64`. On Windows, if "Windows protected your PC" appears, choose **More info**, then **Run anyway**.
+
 ## Your first mods
 
 1. **Choose your game.** Search the list and pick it. If it's a Steam game, Rivet finds where it's installed. If not, Rivet asks you to choose the game's folder.
