@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-11-17
+
+### Features
+
+- Give rivet an app icon on windows and linux
+
+
 ## [0.2.0] - 2026-11-16
 
 ### Features
