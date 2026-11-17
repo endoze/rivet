@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="600" height="600" role="img" aria-labelledby="title">
+  <title id="title">Rivet</title>
+  <defs>
+    <linearGradient id="steel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b4bcc3"/>
+      <stop offset=".45" stop-color="#d5dade"/>
+      <stop offset=".55" stop-color="#a9b1b8"/>
+      <stop offset="1" stop-color="#8d959d"/>
+    </linearGradient>
+    <linearGradient id="dark-steel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7f878f"/>
+      <stop offset=".5" stop-color="#9aa2a9"/>
+      <stop offset="1" stop-color="#6b737a"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".35" stop-color="#fff" stop-opacity=".2"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e6eaed"/>
+      <stop offset="1" stop-color="#98a0a7"/>
+    </linearGradient>
+    <pattern id="tread" width="28" height="28" patternUnits="userSpaceOnUse">
+      <rect x="-8" y="-2" width="16" height="4" rx="2" fill="#4a5258" opacity=".55" transform="translate(8.5 9) rotate(45)"/>
+      <rect x="-8" y="-2" width="16" height="4" rx="2" fill="url(#lens)" transform="translate(7 7) rotate(45)"/>
+      <rect x="-8" y="-2" width="16" height="4" rx="2" fill="#4a5258" opacity=".55" transform="translate(22.5 23) rotate(-45)"/>
+      <rect x="-8" y="-2" width="16" height="4" rx="2" fill="url(#lens)" transform="translate(21 21) rotate(-45)"/>
+    </pattern>
+    <filter id="brushed" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.004 0.9" numOctaves="2" seed="3"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <radialGradient id="dome" cx=".38" cy=".32" r=".7">
+      <stop offset="0" stop-color="#9aa1a8"/>
+      <stop offset=".25" stop-color="#4a5056"/>
+      <stop offset=".7" stop-color="#1e2124"/>
+      <stop offset="1" stop-color="#0b0c0d"/>
+    </radialGradient>
+    <radialGradient id="dome-steel" cx=".38" cy=".32" r=".7">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset=".25" stop-color="#d9dee2"/>
+      <stop offset=".7" stop-color="#7d868e"/>
+      <stop offset="1" stop-color="#454c53"/>
+    </radialGradient>
+    <radialGradient id="drop">
+      <stop offset=".55" stop-color="#000" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <g id="rivet">
+      <circle cx="3" cy="3.5" r="12" fill="url(#drop)"/>
+      <circle r="9.5" fill="#3a4047"/>
+      <circle r="8.6" fill="url(#dome)"/>
+    </g>
+    <g id="rivet-steel">
+      <circle cx="3" cy="3.5" r="12" fill="url(#drop)"/>
+      <circle r="9.5" fill="#3a4047"/>
+      <circle r="8.6" fill="url(#dome-steel)"/>
+    </g>
+  </defs>
+
+  <rect x="8" y="8" width="584" height="584" rx="28" fill="url(#dark-steel)" stroke="#4f575e" stroke-width="2"/>
+  <rect x="8" y="8" width="584" height="584" rx="28" fill="url(#tread)"/>
+  <rect x="8" y="8" width="584" height="584" rx="28" fill="url(#sheen)"/>
+  <rect x="14" y="14" width="572" height="572" rx="23" fill="none" stroke="#fff" stroke-opacity=".35" stroke-width="1.5"/>
+
+  <use href="#rivet-steel" transform="translate(32 32) scale(.75)"/>
+  <use href="#rivet-steel" transform="translate(568 32) scale(.75)"/>
+  <use href="#rivet-steel" transform="translate(32 568) scale(.75)"/>
+  <use href="#rivet-steel" transform="translate(568 568) scale(.75)"/>
+
+  <rect x="44" y="206" width="520" height="200" rx="12" fill="#000" opacity=".45" filter="url(#soft)"/>
+  <rect x="40" y="200" width="520" height="200" rx="12" fill="url(#steel)" stroke="#5d656c" stroke-width="2"/>
+  <rect x="40" y="200" width="520" height="200" rx="12" fill="#000" filter="url(#brushed)" opacity=".18"/>
+  <rect x="40" y="200" width="520" height="200" rx="12" fill="url(#sheen)"/>
+  <rect x="45" y="205" width="510" height="190" rx="8" fill="none" stroke="#fff" stroke-opacity=".45" stroke-width="1.5"/>
+
+  <use href="#rivet-steel" transform="translate(56 216) scale(.45)"/>
+  <use href="#rivet-steel" transform="translate(544 216) scale(.45)"/>
+  <use href="#rivet-steel" transform="translate(56 384) scale(.45)"/>
+  <use href="#rivet-steel" transform="translate(544 384) scale(.45)"/>
+
+  <g transform="translate(69.6 253.92) scale(.64)">
+    <g id="letter-r">
+      <use href="#rivet" x="0" y="0"/><use href="#rivet" x="24" y="0"/><use href="#rivet" x="48" y="0"/><use href="#rivet" x="72" y="0"/>
+      <use href="#rivet" x="0" y="24"/><use href="#rivet" x="96" y="24"/>
+      <use href="#rivet" x="0" y="48"/><use href="#rivet" x="96" y="48"/>
+      <use href="#rivet" x="0" y="72"/><use href="#rivet" x="24" y="72"/><use href="#rivet" x="48" y="72"/><use href="#rivet" x="72" y="72"/>
+      <use href="#rivet" x="0" y="96"/><use href="#rivet" x="48" y="96"/>
+      <use href="#rivet" x="0" y="120"/><use href="#rivet" x="72" y="120"/>
+      <use href="#rivet" x="0" y="144"/><use href="#rivet" x="96" y="144"/>
+    </g>
+
+    <g id="letter-i" transform="translate(168 0)">
+      <use href="#rivet" x="0" y="0"/><use href="#rivet" x="24" y="0"/><use href="#rivet" x="48" y="0"/>
+      <use href="#rivet" x="24" y="24"/>
+      <use href="#rivet" x="24" y="48"/>
+      <use href="#rivet" x="24" y="72"/>
+      <use href="#rivet" x="24" y="96"/>
+      <use href="#rivet" x="24" y="120"/>
+      <use href="#rivet" x="0" y="144"/><use href="#rivet" x="24" y="144"/><use href="#rivet" x="48" y="144"/>
+    </g>
+
+    <g id="letter-v" transform="translate(288 0)">
+      <use href="#rivet" x="0" y="0"/><use href="#rivet" x="96" y="0"/>
+      <use href="#rivet" x="0" y="24"/><use href="#rivet" x="96" y="24"/>
+      <use href="#rivet" x="0" y="48"/><use href="#rivet" x="96" y="48"/>
+      <use href="#rivet" x="0" y="72"/><use href="#rivet" x="96" y="72"/>
+      <use href="#rivet" x="0" y="96"/><use href="#rivet" x="96" y="96"/>
+      <use href="#rivet" x="24" y="120"/><use href="#rivet" x="72" y="120"/>
+      <use href="#rivet" x="48" y="144"/>
+    </g>
+
+    <g id="letter-e" transform="translate(456 0)">
+      <use href="#rivet" x="0" y="0"/><use href="#rivet" x="24" y="0"/><use href="#rivet" x="48" y="0"/><use href="#rivet" x="72" y="0"/><use href="#rivet" x="96" y="0"/>
+      <use href="#rivet" x="0" y="24"/>
+      <use href="#rivet" x="0" y="48"/>
+      <use href="#rivet" x="0" y="72"/><use href="#rivet" x="24" y="72"/><use href="#rivet" x="48" y="72"/><use href="#rivet" x="72" y="72"/>
+      <use href="#rivet" x="0" y="96"/>
+      <use href="#rivet" x="0" y="120"/>
+      <use href="#rivet" x="0" y="144"/><use href="#rivet" x="24" y="144"/><use href="#rivet" x="48" y="144"/><use href="#rivet" x="72" y="144"/><use href="#rivet" x="96" y="144"/>
+    </g>
+
+    <g id="letter-t" transform="translate(624 0)">
+      <use href="#rivet" x="0" y="0"/><use href="#rivet" x="24" y="0"/><use href="#rivet" x="48" y="0"/><use href="#rivet" x="72" y="0"/><use href="#rivet" x="96" y="0"/>
+      <use href="#rivet" x="48" y="24"/>
+      <use href="#rivet" x="48" y="48"/>
+      <use href="#rivet" x="48" y="72"/>
+      <use href="#rivet" x="48" y="96"/>
+      <use href="#rivet" x="48" y="120"/>
+      <use href="#rivet" x="48" y="144"/>
+    </g>
+  </g>
+</svg>

@@ -6301,6 +6301,7 @@ dependencies = [
 name = "rivet-app"
 version = "0.2.0"
 dependencies = [
+ "embed-resource",
  "futures",
  "gpui-kit",
  "gpui-pre-reqwest-client",

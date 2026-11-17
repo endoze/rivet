@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
+  <title id="title">Rivet</title>
+  <defs>
+    <linearGradient id="steel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b4bcc3"/>
+      <stop offset=".45" stop-color="#d5dade"/>
+      <stop offset=".55" stop-color="#a9b1b8"/>
+      <stop offset="1" stop-color="#8d959d"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".35" stop-color="#fff" stop-opacity=".2"/>
+      <stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="brushed" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.01 0.9" numOctaves="2" seed="3"/>
+      <feColorMatrix type="saturate" values="0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <radialGradient id="dome" cx=".38" cy=".32" r=".7">
+      <stop offset="0" stop-color="#9aa1a8"/>
+      <stop offset=".25" stop-color="#4a5056"/>
+      <stop offset=".7" stop-color="#1e2124"/>
+      <stop offset="1" stop-color="#0b0c0d"/>
+    </radialGradient>
+    <radialGradient id="drop">
+      <stop offset=".55" stop-color="#000" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <g id="rivet">
+      <circle cx="3" cy="3.5" r="12" fill="url(#drop)"/>
+      <circle r="9.5" fill="#3a4047"/>
+      <circle r="8.6" fill="url(#dome)"/>
+    </g>
+  </defs>
+
+  <rect x="4" y="4" width="248" height="248" rx="36" fill="url(#steel)" stroke="#5d656c" stroke-width="2"/>
+  <rect x="4" y="4" width="248" height="248" rx="36" fill="#000" filter="url(#brushed)" opacity=".18"/>
+  <rect x="4" y="4" width="248" height="248" rx="36" fill="url(#sheen)"/>
+  <rect x="9" y="9" width="238" height="238" rx="31" fill="none" stroke="#fff" stroke-opacity=".4" stroke-width="2"/>
+
+  <g id="letter-r" transform="translate(72 44) scale(1.1667)">
+    <use href="#rivet" x="0" y="0"/><use href="#rivet" x="24" y="0"/><use href="#rivet" x="48" y="0"/><use href="#rivet" x="72" y="0"/>
+    <use href="#rivet" x="0" y="24"/><use href="#rivet" x="96" y="24"/>
+    <use href="#rivet" x="0" y="48"/><use href="#rivet" x="96" y="48"/>
+    <use href="#rivet" x="0" y="72"/><use href="#rivet" x="24" y="72"/><use href="#rivet" x="48" y="72"/><use href="#rivet" x="72" y="72"/>
+    <use href="#rivet" x="0" y="96"/><use href="#rivet" x="48" y="96"/>
+    <use href="#rivet" x="0" y="120"/><use href="#rivet" x="72" y="120"/>
+    <use href="#rivet" x="0" y="144"/><use href="#rivet" x="96" y="144"/>
+  </g>
+</svg>

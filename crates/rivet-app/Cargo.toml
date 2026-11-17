@@ -15,6 +15,9 @@ rivet-platform.workspace = true
 rivet-core.workspace = true
 thunderstore-engine.workspace = true
 
+[build-dependencies]
+embed-resource.workspace = true
+
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
