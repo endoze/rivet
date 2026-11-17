@@ -140,11 +140,14 @@ fn data_dirs_in(value: Option<OsString>) -> Vec<PathBuf> {
 ///
 /// Writes nothing when a package installed an entry with the same ID in one
 /// of `data_dirs`, as returned by [`data_dirs`], so the package's entry is
-/// the one the menu shows.
+/// the one the menu shows. When an AppImage integration tool listed the
+/// program under a name of its own, the entry this wrote before is removed
+/// and nothing is written, so the menu doesn't show it twice.
 ///
 /// # Errors
 ///
-/// Why a file could not be written. Files written before it stay in place.
+/// Why a file could not be written or removed. Files written before it stay
+/// in place.
 pub fn install(data_home: &Path, data_dirs: &[PathBuf], launcher: &Launcher) -> io::Result<()> {
   let entry_name = format!("{}.desktop", launcher.id);
   let packaged = data_dirs
@@ -154,6 +157,13 @@ pub fn install(data_home: &Path, data_dirs: &[PathBuf], launcher: &Launcher) -> 
 
   if packaged {
     return Ok(());
+  }
+
+  let applications = data_home.join("applications");
+  let entry_file = applications.join(&entry_name);
+
+  if integrated(&applications, &entry_name, launcher.id) {
+    return remove_if_present(&entry_file);
   }
 
   for (size, png) in launcher.icons {
@@ -166,9 +176,48 @@ pub fn install(data_home: &Path, data_dirs: &[PathBuf], launcher: &Launcher) -> 
     write_if_changed(&icon, png)?;
   }
 
-  let entry_file = data_home.join("applications").join(entry_name);
-
   write_if_changed(&entry_file, entry(launcher)?.as_bytes())
+}
+
+/// Whether an AppImage integration tool, such as AppImageLauncher or Gear
+/// Lever, listed the app in `applications`. Each copies the AppImage's own
+/// entry under a name of its choosing, keeping its `StartupWMClass`, and sets
+/// `TryExec` to the AppImage. An entry whose AppImage is gone is hidden by
+/// desktops, so it doesn't count.
+fn integrated(applications: &Path, own: &str, id: &str) -> bool {
+  let Ok(files) = std::fs::read_dir(applications) else {
+    return false;
+  };
+
+  files
+    .flatten()
+    .map(|file| file.path())
+    .filter(|path| {
+      path
+        .extension()
+        .is_some_and(|extension| extension == "desktop")
+        && path.file_name().is_some_and(|name| name != own)
+    })
+    .filter_map(|path| std::fs::read_to_string(path).ok())
+    .any(|text| {
+      value(&text, "StartupWMClass") == Some(id)
+        && value(&text, "TryExec").is_some_and(|file| Path::new(file).is_file())
+    })
+}
+
+/// The value of the first `key=value` line for `key` in a desktop entry.
+fn value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+  text
+    .lines()
+    .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+    .map(str::trim)
+}
+
+fn remove_if_present(path: &Path) -> io::Result<()> {
+  match std::fs::remove_file(path) {
+    Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+    _ => Ok(()),
+  }
 }
 
 fn write_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
@@ -306,6 +355,100 @@ mod tests {
 
     assert!(!home.path().join("applications").exists());
     assert!(!home.path().join("icons").exists());
+  }
+
+  /// Writes `name` under `home`'s launchers, as an AppImage integration tool
+  /// copies the AppImage's entry: same window class, renamed, and pointing
+  /// at the AppImage at `appimage`.
+  fn integrated(home: &Path, name: &str, appimage: &Path) {
+    let path = home.join("applications").join(name);
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+      &path,
+      format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=App\n\
+         Exec={appimage} %U\n\
+         TryExec={appimage}\n\
+         Icon=appimagekit_0123_org.example.App\n\
+         StartupWMClass=org.example.App\n\
+         X-AppImage-Version=1.0.0\n",
+        appimage = appimage.display()
+      ),
+    )
+    .unwrap();
+  }
+
+  #[test]
+  fn install_leaves_the_menu_to_an_appimage_integration_tool_entry() {
+    let names = [
+      "appimagekit_5d41402abc4b2a76b9719d911017c592-App.desktop",
+      "app.desktop",
+    ];
+
+    for name in names {
+      let home = tempfile::tempdir().unwrap();
+      let appimage = home.path().join("App.AppImage");
+      let own = home.path().join("applications/org.example.App.desktop");
+
+      std::fs::write(&appimage, "").unwrap();
+      install(home.path(), &[], &launcher(&appimage)).unwrap();
+      integrated(home.path(), name, &appimage);
+      install(home.path(), &[], &launcher(&appimage)).unwrap();
+
+      assert!(
+        !own.exists(),
+        "{name}: Rivet's own entry was kept beside it"
+      );
+      assert!(home.path().join("applications").join(name).exists());
+    }
+  }
+
+  #[test]
+  fn install_ignores_an_integration_tool_entry_whose_appimage_is_gone() {
+    let home = tempfile::tempdir().unwrap();
+
+    integrated(
+      home.path(),
+      "app.desktop",
+      &home.path().join("Deleted.AppImage"),
+    );
+    install(home.path(), &[], &launcher(Path::new("/opt/app"))).unwrap();
+
+    assert!(
+      home
+        .path()
+        .join("applications/org.example.App.desktop")
+        .exists()
+    );
+  }
+
+  #[test]
+  fn install_ignores_other_apps_entries() {
+    let home = tempfile::tempdir().unwrap();
+    let other = home.path().join("applications/other.desktop");
+    let existing = home.path().join("Other.AppImage");
+
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&existing, "").unwrap();
+    std::fs::write(
+      &other,
+      format!(
+        "[Desktop Entry]\nTryExec={}\nStartupWMClass=org.example.AppTwo\n",
+        existing.display()
+      ),
+    )
+    .unwrap();
+    install(home.path(), &[], &launcher(Path::new("/opt/app"))).unwrap();
+
+    assert!(
+      home
+        .path()
+        .join("applications/org.example.App.desktop")
+        .exists()
+    );
   }
 
   #[test]

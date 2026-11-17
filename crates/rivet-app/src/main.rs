@@ -4,7 +4,9 @@ use gpui_kit::component::Theme;
 use gpui_kit::{AppContext as _, WindowOptions};
 use reqwest_client::ReqwestClient;
 use rivet_app::Shell;
+use rivet_core::self_update::platform_asset;
 use rivet_core::{Command, State};
+use rivet_platform::executable::Running;
 use std::sync::Arc;
 use thunderstore_engine::ecosystem::Ecosystem;
 
@@ -13,12 +15,17 @@ use thunderstore_engine::ecosystem::Ecosystem;
 const APP_ID: &str = "io.github.endoze.rivet";
 
 fn main() {
+  let running = rivet_platform::executable::running();
+
   #[cfg(target_os = "linux")]
-  install_launcher();
+  if let Some(running) = &running {
+    install_launcher(running.file());
+  }
 
   #[cfg(windows)]
   install_shortcut();
 
+  let asset = platform_asset(running.as_ref().is_some_and(Running::is_appimage));
   let config = rivet_commands::Config {
     settings: rivet_platform::paths::settings_file()
       .expect("the platform reports no config location"),
@@ -33,7 +40,7 @@ fn main() {
     spawn: rivet_commands::spawn_detached,
     cancels: rivet_commands::Cancels::default(),
     updater: rivet_commands::Updater {
-      executable: std::env::current_exe().ok(),
+      executable: running.as_ref().map(|running| running.file().to_path_buf()),
       ..rivet_commands::Updater::default()
     },
   };
@@ -49,7 +56,10 @@ fn main() {
 
       cx.set_http_client(Arc::new(images));
 
-      let state = State::new(config.ecosystem.clone());
+      let mut state = State::new(config.ecosystem.clone());
+
+      state.self_update.asset = asset.map(str::to_string);
+
       let (commands, inbox) = rivet_commands::spawn(config);
 
       commands
@@ -72,10 +82,10 @@ fn main() {
     });
 }
 
-/// Lists Rivet in the desktop's app menu, with its icon, pointing at this
-/// executable. A failure costs only the menu entry, so it is ignored.
+/// Lists Rivet in the desktop's app menu, with its icon, pointing at
+/// `executable`. A failure costs only the menu entry, so it is ignored.
 #[cfg(target_os = "linux")]
-fn install_launcher() {
+fn install_launcher(executable: &std::path::Path) {
   use rivet_platform::desktop::{self, Launcher};
 
   // `cargo run` would otherwise point the menu at a development build.
@@ -83,7 +93,7 @@ fn install_launcher() {
     return;
   }
 
-  let (Some(data_home), Ok(executable)) = (desktop::data_home(), std::env::current_exe()) else {
+  let Some(data_home) = desktop::data_home() else {
     return;
   };
   let launcher = Launcher {
@@ -91,7 +101,7 @@ fn install_launcher() {
     name: "Rivet",
     comment: "Mod manager for Thunderstore games",
     categories: "Game;",
-    executable: &executable,
+    executable,
     icons: &[
       (16, include_bytes!("../assets/icon/rivet-16.png")),
       (24, include_bytes!("../assets/icon/rivet-24.png")),
