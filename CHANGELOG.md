@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0](https://github.com/endoze/rivet/compare/v0.3.0...v0.4.0) - 2026-11-18
+
+### Added
+
+- open thunderstore install links in rivet
+- open .r2z profile exports in rivet
+- hand a second launch to the running rivet
+- publish a Linux AppImage that updates itself
+- add rivet to the windows start menu on start
+- *(platform)* hide the linux menu entry once rivet is deleted
+
 ## [0.3.0] - 2026-11-17
 
 ### Features
