@@ -9,9 +9,14 @@ Rivet is a free mod manager for games with mods on [Thunderstore](https://thunde
 
 If you've used r2modman, Rivet works the same way and can bring your r2modman profiles across.
 
-Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases): `rivet-windows-x86_64.exe` for Windows, or `rivet-linux-x86_64.AppImage` for Linux. Each comes with a `.sha256` file to check the download against.
+Download the latest Rivet:
 
-On Linux, make the file executable before you run it the first time: tick **Allow executing file as program** in its **Properties**, or run `chmod +x rivet-linux-x86_64.AppImage`. The AppImage doesn't need the `libfuse2` package older AppImages ask for. `rivet-linux-x86_64` is the same program as a bare binary, if you'd rather not use an AppImage. Both run on Debian 12, Ubuntu 24.04, SteamOS, Arch, Fedora, and other systems with glibc 2.36 or newer.
+- **Linux:** [rivet-linux-x86_64.AppImage](https://github.com/endoze/rivet/releases/latest/download/rivet-linux-x86_64.AppImage)
+- **Windows:** [rivet-windows-x86_64.exe](https://github.com/endoze/rivet/releases/latest/download/rivet-windows-x86_64.exe)
+
+Each has a `.sha256` file beside it on the [Releases page](https://github.com/endoze/rivet/releases) to check the download against.
+
+On Linux, make the file executable before you run it the first time: tick **Allow executing file as program** in its **Properties**, or run `chmod +x rivet-linux-x86_64.AppImage`. The AppImage doesn't need the `libfuse2` package older AppImages ask for. [`rivet-linux-x86_64`](https://github.com/endoze/rivet/releases/latest/download/rivet-linux-x86_64) is the same program as a bare binary, if you'd rather not use an AppImage. Both run on Debian 12, Ubuntu 24.04, SteamOS, Arch, Fedora, and other systems with glibc 2.36 or newer.
 
 On Windows, if "Windows protected your PC" appears, choose **More info**, then **Run anyway**. Rivet adds itself to the Start Menu the first time it runs. If you move the `.exe`, start it once from its new place and the shortcut follows.
 
