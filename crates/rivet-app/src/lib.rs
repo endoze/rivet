@@ -11,8 +11,8 @@ mod self_update;
 pub mod text;
 pub mod theme;
 
-use futures::StreamExt as _;
-use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
+use futures::channel::mpsc::UnboundedSender;
+use futures::{Stream, StreamExt as _};
 use gpui_kit::component::avatar::Avatar;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -30,8 +30,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-  Anchor, AnyElement, App, AppContext as _, Bounds, ClickEvent, ClipboardItem, Context,
-  DEFAULT_WINDOW_SIZE, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
+  Anchor, AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, ClickEvent, ClipboardItem,
+  Context, DEFAULT_WINDOW_SIZE, Div, ElementId, Entity, FontWeight, Hsla, InteractiveElement as _,
   IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render, SharedString, Size, Stateful,
   StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Task,
   TestSupportExt as _, WeakEntity, Window, div, img, uniform_list,
@@ -81,6 +81,9 @@ pub struct Shell {
   /// Set when the window should close, which it does on the next render or
   /// as the answer to its close button, since closing needs the window.
   close_window: bool,
+  /// The window the shell draws in, brought to the front from outside a
+  /// render.
+  window: AnyWindowHandle,
   /// Notices shown as toasts on the next render, since showing one needs the
   /// window.
   notices: Vec<Notice>,
@@ -108,7 +111,7 @@ impl Shell {
   pub fn new(
     state: State,
     commands: UnboundedSender<Command>,
-    mut inbox: UnboundedReceiver<Msg>,
+    mut inbox: impl Stream<Item = Msg> + Unpin + 'static,
     window: &mut Window,
     cx: &mut Context<Self>,
   ) -> Self {
@@ -217,6 +220,7 @@ impl Shell {
       launch_arguments,
       fill_launch_arguments: None,
       close_window: false,
+      window: window.window_handle(),
       notices: Vec::new(),
       modal: None,
       installed_search,
@@ -297,6 +301,7 @@ impl Shell {
         Effect::FillLaunchArguments(text) => self.fill_launch_arguments = Some(text),
         Effect::OpenUrl(url) => cx.open_url(&url),
         Effect::CloseWindow => self.close_window = true,
+        Effect::FocusWindow => self.focus_window(cx),
         Effect::CopyToClipboard(text) => {
           cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
@@ -306,6 +311,18 @@ impl Shell {
     }
 
     cx.notify();
+  }
+
+  /// Brings the window to the front. Not on the next render, which a
+  /// minimized window may never draw.
+  fn focus_window(&mut self, cx: &mut Context<Self>) {
+    let window = self.window;
+
+    cx.defer(move |cx| {
+      window
+        .update(cx, |_, window, _| window.activate_window())
+        .ok();
+    });
   }
 
   /// Dispatches `msg` once `delay` has passed, unless the shell is gone.

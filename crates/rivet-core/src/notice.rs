@@ -91,6 +91,12 @@ pub enum Notice {
   },
   /// A file to import could not be read, so nothing was imported.
   ImportUnread(ReadFailure),
+  /// A profile export opened from outside Rivet was not imported, since no
+  /// game that takes imports is open. A shared profile names no game.
+  ImportNeedsGame(PathBuf),
+  /// A profile export opened from outside Rivet was not imported, since
+  /// another import was under way.
+  ImportBusy(PathBuf),
   /// The files launches copied into a game's folder were removed, except
   /// those listed: `changed` were changed since and left in place, and
   /// `failed` could not be removed, each with the reason.
@@ -139,6 +145,36 @@ pub enum Notice {
   /// The update to this version did not start, so the version before it
   /// runs.
   RivetUpdateFailed { to: String },
+  /// A `ror2mm:` link opened from outside Rivet, as given, is not an install
+  /// link Rivet can read, so nothing was installed.
+  InstallLinkUnread(String),
+  /// Thunderstore has no package by this `Owner-Name`, which an install
+  /// link named.
+  InstallLinkUnknown(String),
+  /// Thunderstore could not be asked which games an install link's package
+  /// is for, with the reason.
+  InstallLinkUnreachable(String),
+  /// No game set up in Rivet that it installs mods for lists an install
+  /// link's package, by `Owner-Name`. `communities` are those Thunderstore
+  /// lists it in.
+  InstallLinkNeedsGame {
+    package: String,
+    communities: Vec<String>,
+  },
+  /// The chosen game's package list does not have the version of a package,
+  /// by `Owner-Name`, that an install link named, so nothing was installed.
+  InstallLinkVersionMissing { package: String, version: String },
+  /// A package an install link named, by `Owner-Name`, needs packages the
+  /// chosen game's package list lacks, by `Owner-Name`, so nothing was
+  /// installed.
+  InstallLinkIncomplete {
+    package: String,
+    missing: Vec<String>,
+  },
+  /// A package an install link named, by `Owner-Name`, was confirmed for a
+  /// profile that was left or failed to open before it loaded, so nothing
+  /// was installed.
+  InstallLinkDropped { package: String, profile: String },
 }
 
 impl Notice {
@@ -186,20 +222,27 @@ impl Notice {
       | Notice::RivetReplaceFailed(_)
       | Notice::RivetUpdateFailed { .. } => Level::Error,
       Notice::RivetUnwritable { .. } => Level::Warning,
-      Notice::RestartRefused => Level::Info,
+      Notice::RestartRefused | Notice::ImportNeedsGame(_) | Notice::ImportBusy(_) => Level::Info,
       Notice::OperationFailed { .. }
       | Notice::ProfileChangeFailed { .. }
       | Notice::LaunchFailed { .. }
       | Notice::ExportFailed { .. }
       | Notice::ImportUnread(_)
       | Notice::UnpinFailed { .. }
-      | Notice::R2modmanUnread { .. } => Level::Error,
+      | Notice::R2modmanUnread { .. }
+      | Notice::InstallLinkUnread(_)
+      | Notice::InstallLinkUnknown(_)
+      | Notice::InstallLinkUnreachable(_)
+      | Notice::InstallLinkVersionMissing { .. }
+      | Notice::InstallLinkIncomplete { .. } => Level::Error,
+      Notice::InstallLinkNeedsGame { .. } => Level::Info,
       Notice::LoaderFilesRemoved { failed, .. } if !failed.is_empty() => Level::Error,
       Notice::LoaderFilesRemoved { changed, .. } if !changed.is_empty() => Level::Warning,
       Notice::LoaderFilesRemoved { .. } => Level::Success,
-      Notice::IndexStale(_) | Notice::PinsUnread(_) | Notice::ImportIncomplete { .. } => {
-        Level::Warning
-      }
+      Notice::IndexStale(_)
+      | Notice::PinsUnread(_)
+      | Notice::ImportIncomplete { .. }
+      | Notice::InstallLinkDropped { .. } => Level::Warning,
       Notice::OperationCancelled { .. } | Notice::LaunchLineCopied | Notice::PinnedSkipped(_) => {
         Level::Info
       }

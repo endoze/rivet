@@ -44,6 +44,11 @@ pub struct Settings {
   /// and offers to download it.
   #[serde(skip_serializing_if = "std::ops::Not::not")]
   pub update_automatically: bool,
+  /// Whether the user chose to have Thunderstore's install links open in
+  /// Rivet. `None` until they choose, when Rivet opens them only if no other
+  /// app does.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub install_links: Option<bool>,
 }
 
 /// Settings for one game. Build one with [`GameSettings::new`], so a field

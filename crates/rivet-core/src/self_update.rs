@@ -12,19 +12,25 @@ use thunderstore_engine::profile::modlist::SemVer;
 pub const RUNNING: &str = env!("CARGO_PKG_VERSION");
 
 /// The name of this platform's build among a release's assets, or `None`
-/// where Rivet publishes no build. Its checksum is the asset of the same name
-/// ending in `.sha256`.
+/// where Rivet publishes no build. A copy running as an AppImage updates to
+/// the AppImage, and any other to the bare build. Its checksum is the asset
+/// of the same name ending in `.sha256`.
 ///
 /// ```
 /// use rivet_core::self_update::platform_asset;
 ///
 /// if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-///   assert_eq!(platform_asset(), Some("rivet-linux-x86_64"));
+///   assert_eq!(platform_asset(false), Some("rivet-linux-x86_64"));
+///   assert_eq!(platform_asset(true), Some("rivet-linux-x86_64.AppImage"));
 /// }
 /// ```
-pub fn platform_asset() -> Option<&'static str> {
+pub fn platform_asset(appimage: bool) -> Option<&'static str> {
   if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-    Some("rivet-linux-x86_64")
+    if appimage {
+      Some("rivet-linux-x86_64.AppImage")
+    } else {
+      Some("rivet-linux-x86_64")
+    }
   } else if cfg!(all(windows, target_arch = "x86_64")) {
     Some("rivet-windows-x86_64.exe")
   } else {
@@ -155,8 +161,9 @@ pub enum Stage {
 pub struct SelfUpdate {
   /// The version running, [`RUNNING`] outside tests.
   pub running: String,
-  /// This platform's build among a release's assets, [`platform_asset`]
-  /// outside tests.
+  /// This copy's build among a release's assets, [`platform_asset`] outside
+  /// tests. The default is the bare build's; a copy running as an AppImage
+  /// sets the AppImage's as it starts.
   pub asset: Option<String>,
   pub stage: Stage,
   /// How many downloads have been started, so each gets its own id.
@@ -167,7 +174,7 @@ impl Default for SelfUpdate {
   fn default() -> Self {
     Self {
       running: RUNNING.to_string(),
-      asset: platform_asset().map(str::to_string),
+      asset: platform_asset(false).map(str::to_string),
       stage: Stage::Idle,
       downloads: 0,
     }
@@ -521,6 +528,7 @@ mod tests {
   use thunderstore_engine::profile::launch::{HostOs, LaunchMode};
 
   const BUILD: &str = "rivet-linux-x86_64";
+  const APPIMAGE: &str = "rivet-linux-x86_64.AppImage";
 
   /// A Linux state running Rivet 0.2.0, with valheim set up and open last,
   /// and updating automatically turned `on`, after its settings loaded.
@@ -827,6 +835,56 @@ mod tests {
     );
 
     assert_eq!(effects, vec![]);
+    assert_eq!(
+      state.self_update.stage,
+      Stage::CheckFailed(CheckFailure::NoBuild("0.3.0".to_string()))
+    );
+  }
+
+  #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+  #[test]
+  fn an_appimage_copy_is_offered_the_appimage_and_a_bare_copy_the_bare_build() {
+    let both = Release {
+      assets: vec![
+        asset(BUILD),
+        asset(&format!("{BUILD}.sha256")),
+        asset(APPIMAGE),
+        asset(&format!("{APPIMAGE}.sha256")),
+      ],
+      ..release("v0.3.0")
+    };
+
+    for (appimage, build) in [(false, BUILD), (true, APPIMAGE)] {
+      let (mut state, _) = started(true);
+
+      state.self_update.asset = platform_asset(appimage).map(str::to_string);
+
+      update(
+        &mut state,
+        Msg::RivetReleasesFetched(Ok(vec![both.clone()])),
+      );
+
+      let Stage::Offered(found) = &state.self_update.stage else {
+        panic!("nothing offered to an appimage={appimage} copy");
+      };
+
+      assert_eq!(found.build, asset(build));
+      assert_eq!(found.checksum, asset(&format!("{build}.sha256")));
+    }
+  }
+
+  #[test]
+  fn an_appimage_copy_finds_no_build_in_a_release_without_an_appimage() {
+    let (mut state, _) = started(false);
+
+    state.self_update.asset = Some(APPIMAGE.to_string());
+
+    update(&mut state, Msg::CheckForUpdatesPressed);
+    update(
+      &mut state,
+      Msg::RivetReleasesFetched(Ok(vec![release("v0.3.0")])),
+    );
+
     assert_eq!(
       state.self_update.stage,
       Stage::CheckFailed(CheckFailure::NoBuild("0.3.0".to_string()))

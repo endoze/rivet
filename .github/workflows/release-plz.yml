@@ -5,40 +5,63 @@ on:
     branches:
       - master
 
-concurrency:
-  group: release-plz-${{ github.ref }}
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
-  release-plz:
-    name: Release-plz
+  # Tag before opening release PRs. Run the other way round, merging a release
+  # PR opens another one for the same version, since its tag doesn't exist yet.
+  release:
+    name: Release-plz release
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-release-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          # A tag pushed with the default token starts no workflow, so dist's
-          # release would never run.
+          # PAT so the tag release-plz pushes can trigger release.yml
+          # (tags pushed with the default GITHUB_TOKEN do not trigger workflows).
           token: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+        with:
+          toolchain: stable
+          cache: false
 
-      # Tag before opening release PRs. Run the other way round, merging a
-      # release PR opens another one for the same version, since its tag
-      # doesn't exist yet.
-      - name: Tag a merged release PR
+      - name: Run release-plz release
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
-      - name: Fetch the new tag
-        run: git fetch --tags origin
+  release-pr:
+    name: Release-plz PR
+    needs: release
+    # Still refresh the release PR when tagging fails; skip only on cancel.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLZ_TOKEN }}
 
-      - name: Open or update the release PR
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
+        with:
+          toolchain: stable
+          cache: false
+
+      - name: Run release-plz release-pr
         uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
         with:
           command: release-pr

@@ -3,7 +3,9 @@
 
 pub mod browse;
 pub mod details;
+pub mod handoff;
 pub mod install;
+pub mod install_link;
 pub mod launch;
 pub mod loader_files;
 pub mod manage;
@@ -21,7 +23,9 @@ pub mod switcher;
 pub mod updates;
 
 use browse::{Browse, Fetch, Filters, Index, Refresh, SortKey};
+use handoff::{Open, Request};
 use install::{Confirmation, Install, Installed, Outcome, Profile, Progress};
+use install_link::{Claim, InstallLink, Linking, ListingFailure};
 use launch::{Attempt, Launch, LaunchFailure, Launcher, SteamOptionRead};
 use loader_files::{Copied, FileRemoval, LoaderFile};
 use manage::{Folders, Manage, Scope, SetEnabled, Sort, Tab, Uninstall};
@@ -108,6 +112,15 @@ pub struct State {
   pub r2modman: Option<R2modman>,
   /// Keeping Rivet itself current.
   pub self_update: SelfUpdate,
+  /// What a launch of Rivet was started with, waiting until Rivet is ready
+  /// to act on it.
+  pub opening: Option<Open>,
+  /// Acting on a Thunderstore install link, from asking Thunderstore about
+  /// its package to queueing the install.
+  pub install_link: Option<Linking>,
+  /// Whether Rivet is the app that opens install links, once registering
+  /// for them has said.
+  pub install_links: Option<bool>,
 }
 
 impl State {
@@ -143,6 +156,9 @@ impl State {
       importing: None,
       r2modman: None,
       self_update: SelfUpdate::default(),
+      opening: None,
+      install_link: None,
+      install_links: None,
     }
   }
 }
@@ -460,6 +476,33 @@ pub enum Msg {
   RivetReplaced(Result<(), String>),
   /// A [`Command::SettleRivetUpdate`] ended.
   RivetUpdateSettled(Settled),
+  /// A later launch of Rivet found this one running and handed over its
+  /// request.
+  HandedOff(Request),
+  /// The request this launch of Rivet was started with. What it opens waits
+  /// until Rivet is ready for it.
+  Launched(Request),
+  /// Thunderstore named the communities that list an install link's
+  /// package, leaving out listings it rejected, or why it could not.
+  ListingsFound {
+    link: InstallLink,
+    communities: Result<Vec<String>, ListingFailure>,
+  },
+  /// A game to install an install link's package into was chosen, by key.
+  LinkGameChosen(String),
+  /// A profile to install an install link's package into was chosen, by
+  /// name.
+  LinkProfileChosen(String),
+  /// Installing an install link's package into the chosen profile was
+  /// confirmed.
+  LinkInstallConfirmed,
+  /// The install link's choice of game and profile was closed.
+  LinkInstallDismissed,
+  /// A [`Command::RegisterInstallLinks`] ended: whether Rivet now opens
+  /// install links, or why it could not tell.
+  InstallLinksRegistered(Result<bool, String>),
+  /// Opening install links in Rivet was turned on or off in settings.
+  InstallLinksChosen(bool),
 }
 
 /// Work the shell must do outside the pure core. Each effect is answered with
@@ -480,6 +523,10 @@ pub enum Effect {
   OpenUrl(String),
   /// Close the window. Needs the window, so the shell runs it. Not answered.
   CloseWindow,
+  /// Bring the window to the front, or where the desktop won't allow that,
+  /// ask it to draw the user's attention to the window. Needs the window, so
+  /// the shell runs it. Not answered.
+  FocusWindow,
   /// Ask the user where to save an export, suggesting this file name. Needs
   /// the window, so the shell runs it. Answered with
   /// [`Msg::ExportFileChosen`].
@@ -617,6 +664,12 @@ pub enum Command {
   /// delete the program it replaced once the new one runs, or report that
   /// it did not. Answered with [`Msg::RivetUpdateSettled`].
   SettleRivetUpdate { running: String },
+  /// Ask Thunderstore which communities list an install link's package.
+  /// Answered with [`Msg::ListingsFound`].
+  FindListings(InstallLink),
+  /// Register Rivet as the app that opens install links, or release them, as
+  /// `Claim` says. Answered with [`Msg::InstallLinksRegistered`].
+  RegisterInstallLinks(Claim),
 }
 
 /// Applies one message to the state and returns the effects to run.
@@ -640,6 +693,8 @@ pub fn update(state: &mut State, msg: Msg) -> Vec<Effect> {
   }
 
   effects.extend(remember_tab(state));
+  effects.extend(handoff::open_when_ready(state));
+  effects.extend(install_link::install_when_ready(state));
 
   state.saves += effects
     .iter()
@@ -667,6 +722,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       };
 
       effects.extend(self_update::started(state));
+      effects.extend(install_link::register(state));
 
       effects
     }
@@ -692,26 +748,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       _ => folder_listed(state, folder, entries),
     },
     Msg::SwitchGamePressed => {
-      state.picker.step = Step::Idle;
-      state.picker.refusal = None;
-      state.picker.fallback = None;
-      state.browse = None;
-      state.profile = None;
-      state.confirmation = None;
-      state.launcher = None;
-      state.switcher = None;
-      state.manage.pending = None;
-      state.readme = None;
-      state.importing = None;
-      state.r2modman = None;
-
-      if matches!(state.exporting, Some(Exporting::ChoosingFile(_))) {
-        state.exporting = None;
-      }
-
-      if !state.is_launching() {
-        state.launch = None;
-      }
+      leave_game(state);
 
       picker::show(state)
     }
@@ -818,7 +855,13 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::SteamOptionCheckPressed => launch::check_steam_option(state),
     Msg::LaunchLineCopyPressed => launch::copy_line(state),
     Msg::WindowFocused => launch::window_focused(state),
-    Msg::ProfilesListed { game, names } => switcher::listed(state, game, names),
+    Msg::ProfilesListed { game, names } => {
+      if let Ok(names) = &names {
+        install_link::profiles_listed(state, &game, names);
+      }
+
+      switcher::listed(state, game, names)
+    }
     Msg::ProfilesCounted { game, counts } => switcher::counts_read(state, &game, counts),
     Msg::ProfilePicked(name) => switcher::picked(state, name),
     Msg::ProfileNamePressed(naming) => switcher::name_pressed(state, naming),
@@ -879,6 +922,21 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
     Msg::RestartToUpdatePressed => self_update::restart_pressed(state),
     Msg::RivetReplaced(result) => self_update::replaced(state, result),
     Msg::RivetUpdateSettled(settled) => self_update::settled(settled),
+    Msg::HandedOff(request) => handoff::handed_off(state, request),
+    Msg::Launched(request) => handoff::launched(state, request),
+    Msg::ListingsFound { link, communities } => {
+      install_link::listings_found(state, link, communities)
+    }
+    Msg::LinkGameChosen(game) => install_link::game_chosen(state, game),
+    Msg::LinkProfileChosen(profile) => install_link::profile_chosen(state, profile),
+    Msg::LinkInstallConfirmed => install_link::confirmed(state),
+    Msg::LinkInstallDismissed => {
+      state.install_link = None;
+
+      Vec::new()
+    }
+    Msg::InstallLinksRegistered(opens) => install_link::registered(state, opens),
+    Msg::InstallLinksChosen(on) => install_link::links_chosen(state, on),
   }
 }
 
@@ -1062,6 +1120,60 @@ fn folder_listed(
       vec![Effect::ChooseFolder]
     }
   }
+}
+
+/// Drops what belongs to the open game, and the picker's progress, before
+/// another screen is shown.
+fn leave_game(state: &mut State) {
+  state.picker.step = Step::Idle;
+  state.picker.refusal = None;
+  state.picker.fallback = None;
+  state.browse = None;
+  state.profile = None;
+  state.confirmation = None;
+  state.launcher = None;
+  state.switcher = None;
+  state.manage.pending = None;
+  state.readme = None;
+  state.importing = None;
+  state.r2modman = None;
+
+  if matches!(state.exporting, Some(Exporting::ChoosingFile(_))) {
+    state.exporting = None;
+  }
+
+  if !state.is_launching() {
+    state.launch = None;
+  }
+}
+
+/// Shows `game` with its `profile` selected, a game set up in Rivet, opening
+/// either unless it is open already, and remembers both.
+pub(crate) fn show_profile(state: &mut State, game: &str, profile: &str) -> Vec<Effect> {
+  let mut effects = match &state.screen {
+    Screen::Settings(open) if open == game => settings_screen::closed(state),
+    Screen::Settings(_) => settings_screen::save_unsaved(state),
+    _ => Vec::new(),
+  };
+
+  if state.screen == Screen::Game(game.to_string()) {
+    let selected = state.profile.as_ref().map(|open| open.name.as_str());
+
+    if selected != Some(profile) {
+      effects.extend(switcher::picked(state, profile.to_string()));
+    }
+
+    return effects;
+  }
+
+  if let Some(settings) = state.settings.games.get_mut(game) {
+    settings.profile = (profile != install::DEFAULT_PROFILE).then(|| profile.to_string());
+  }
+
+  leave_game(state);
+  effects.extend(open_game(state, game.to_string()));
+
+  effects
 }
 
 /// Shows `game` and saves it as the game to reopen on the next start.
@@ -1281,6 +1393,10 @@ mod tests {
     }
   }
 
+  fn claim_install_links() -> Effect {
+    Effect::Run(Command::RegisterInstallLinks(Claim::IfUnclaimed))
+  }
+
   fn read_cache(community: &str) -> Effect {
     Effect::Run(Command::ReadCachedIndex(community.to_string()))
   }
@@ -1316,7 +1432,7 @@ mod tests {
     let effects = update(&mut state, Msg::SettingsLoaded(Ok(Settings::default())));
 
     assert_eq!(state.screen, Screen::Picker);
-    assert_eq!(effects, vec![]);
+    assert_eq!(effects, vec![claim_install_links()]);
   }
 
   #[test]
@@ -1334,6 +1450,7 @@ mod tests {
         read_cache("valheim"),
         open_profile("valheim"),
         list_game_folder("valheim", "/games/valheim"),
+        claim_install_links(),
       ]
     );
   }
@@ -1416,7 +1533,7 @@ mod tests {
 
     let effects = update(&mut state, Msg::SettingsLoaded(Ok(Settings::default())));
 
-    assert_eq!(effects, vec![cache_valheim_cover()]);
+    assert_eq!(effects, vec![cache_valheim_cover(), claim_install_links()]);
   }
 
   #[test]

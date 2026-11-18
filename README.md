@@ -9,7 +9,11 @@ Rivet is a free mod manager for games with mods on [Thunderstore](https://thunde
 
 If you've used r2modman, Rivet works the same way and can bring your r2modman profiles across.
 
-Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases): `rivet-windows-x86_64.exe` for Windows or `rivet-linux-x86_64` for Linux. Each comes with a `.sha256` file to check the download against. The Linux build runs on Debian 12, Ubuntu 24.04, SteamOS, Arch, Fedora, and other systems with glibc 2.36 or newer.
+Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases): `rivet-windows-x86_64.exe` for Windows, or `rivet-linux-x86_64.AppImage` for Linux. Each comes with a `.sha256` file to check the download against.
+
+On Linux, make the file executable before you run it the first time: tick **Allow executing file as program** in its **Properties**, or run `chmod +x rivet-linux-x86_64.AppImage`. The AppImage doesn't need the `libfuse2` package older AppImages ask for. `rivet-linux-x86_64` is the same program as a bare binary, if you'd rather not use an AppImage. Both run on Debian 12, Ubuntu 24.04, SteamOS, Arch, Fedora, and other systems with glibc 2.36 or newer.
+
+On Windows, if "Windows protected your PC" appears, choose **More info**, then **Run anyway**. Rivet adds itself to the Start Menu the first time it runs. If you move the `.exe`, start it once from its new place and the shortcut follows.
 
 ## Your first mods
 
@@ -23,6 +27,8 @@ Download Rivet from the [Releases page](https://github.com/endoze/rivet/releases
 
 3. **Install.** Press **Install** on a mod. Rivet shows you any other mods that come with it, then installs them all.
 4. **Play.** Press **Launch modded** in the left sidebar. **Launch vanilla** starts the game with no mods and leaves your mods untouched.
+
+You can also press **Install with Mod Manager** on a mod's Thunderstore page. Rivet asks which of your games and profiles to install it into, switches to them, and installs that version with the mods it needs. An older version than the newest stays where it is when you update everything. Rivet opens these links when no other app does. If r2modman opens them, turn on **Open Thunderstore install links in Rivet** in **Settings**.
 
 ## Profiles
 
@@ -47,6 +53,8 @@ Your mods' settings files are kept when a mod updates.
 
 Right-click a profile and choose **Share as code** to get a short code a friend can paste into Rivet or r2modman, or **Share as file** to save a `.r2z` file. To bring in someone else's profile, press **Import** in the sidebar and paste their code or choose their file. It's added as a new profile with the same mods at the same versions.
 
+You can also double-click a `.r2z` file to import it into the game open in Rivet. A shared profile doesn't say which game it's for, so open that game first. Rivet offers itself as the app for `.r2z` files each time it starts.
+
 If you have r2modman profiles for a game, Rivet offers to copy them in when you open that game. It copies them and never changes r2modman's own files. You can also do it later from **Import**.
 
 ## Linux and Steam
@@ -65,6 +73,7 @@ Press **Settings** in the sidebar to:
 - pick a light or dark look, a theme, and the interface size
 - remove the mod loader files Rivet copied into the game's folder, to put the game back the way it was
 - turn on **Update Rivet automatically**, or press **Check for updates**, to look for a newer Rivet. Rivet asks before downloading it. Press **Restart to update** when it's ready.
+- turn on **Open Thunderstore install links in Rivet** so the **Install with Mod Manager** button on Thunderstore opens in Rivet rather than r2modman. r2modman takes the links back each time it starts, and Rivet takes them back each time it starts while this is on.
 
 ![Valheim's settings: the game folder, launch arguments, how the game runs, loader files, the Steam folder, the look of Rivet, and the Rivet section with Update Rivet automatically and Check for updates](docs/screenshots/settings.png)
 

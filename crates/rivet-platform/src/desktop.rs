@@ -22,6 +22,25 @@ pub struct Launcher<'a> {
   pub executable: &'a Path,
   /// PNG icons, each with its width in pixels.
   pub icons: &'a [(u32, &'a [u8])],
+  /// The kinds of file the program opens.
+  pub file_types: &'a [FileType<'a>],
+  /// The URL schemes whose links the program opens, without their colon,
+  /// such as `ror2mm`.
+  pub schemes: &'a [&'a str],
+}
+
+/// A kind of file, known to desktops by its MIME type.
+#[derive(Clone, Copy, Debug)]
+pub struct FileType<'a> {
+  /// The MIME type, such as `application/x-r2z`.
+  pub mime: &'a str,
+  /// What file managers call it.
+  pub comment: &'a str,
+  /// The extension its file names end in, without the dot.
+  pub extension: &'a str,
+  /// The type its contents read as, such as `application/zip`. Declaring it
+  /// lets the file name decide the type when the contents match too.
+  pub sub_class_of: &'a str,
 }
 
 /// The text of `launcher`'s desktop entry file.
@@ -42,9 +61,11 @@ pub struct Launcher<'a> {
 ///   categories: "Utility;",
 ///   executable: Path::new("/opt/app"),
 ///   icons: &[],
+///   file_types: &[],
+///   schemes: &[],
 /// };
 ///
-/// assert!(entry(&launcher).unwrap().contains("Exec=\"/opt/app\"\n"));
+/// assert!(entry(&launcher).unwrap().contains("Exec=\"/opt/app\" %u\n"));
 /// ```
 pub fn entry(launcher: &Launcher) -> io::Result<String> {
   let executable = launcher.executable.to_str().ok_or_else(|| {
@@ -53,23 +74,67 @@ pub fn entry(launcher: &Launcher) -> io::Result<String> {
       "the executable's path is not UTF-8",
     )
   })?;
+  let mime_types: String = launcher
+    .file_types
+    .iter()
+    .map(|file_type| format!("{};", file_type.mime))
+    .chain(
+      launcher
+        .schemes
+        .iter()
+        .map(|scheme| format!("x-scheme-handler/{scheme};")),
+    )
+    .collect();
 
   Ok(format!(
     "[Desktop Entry]\n\
      Type=Application\n\
      Name={name}\n\
      Comment={comment}\n\
-     Exec={exec}\n\
+     TryExec={try_exec}\n\
+     Exec={exec} %u\n\
      Icon={id}\n\
      Terminal=false\n\
      Categories={categories}\n\
+     MimeType={mime_types}\n\
      StartupWMClass={id}\n",
     id = launcher.id,
     name = launcher.name,
     comment = launcher.comment,
+    try_exec = string_value(executable),
     exec = quoted(executable),
     categories = launcher.categories,
   ))
+}
+
+/// The shared-mime-info package defining `launcher`'s file types, which
+/// goes in `mime/packages` under a data folder. Each field is written as
+/// given, so none may hold XML markup.
+pub fn mime_package(launcher: &Launcher) -> String {
+  let types: String = launcher
+    .file_types
+    .iter()
+    .map(|file_type| {
+      format!(
+        "  <mime-type type=\"{mime}\">\n    \
+         <comment>{comment}</comment>\n    \
+         <sub-class-of type=\"{sub_class_of}\"/>\n    \
+         <glob pattern=\"*.{extension}\"/>\n  \
+         </mime-type>\n",
+        mime = file_type.mime,
+        comment = file_type.comment,
+        sub_class_of = file_type.sub_class_of,
+        extension = file_type.extension,
+      )
+    })
+    .collect();
+
+  format!(
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+     <mime-info xmlns=\"http://www.freedesktop.org/standards/shared-mime-info\">\n\
+     {types}\
+     </mime-info>\n"
+  )
 }
 
 /// `path` as one argument of an `Exec` key. The desktop entry spec escapes
@@ -89,6 +154,24 @@ fn quoted(path: &str) -> String {
   argument.push('"');
 
   argument
+}
+
+/// `text` as a desktop entry string value, such as `TryExec`. Only the
+/// spec's string escapes apply, not the `Exec` quoting rules.
+fn string_value(text: &str) -> String {
+  let mut value = String::new();
+
+  for c in text.chars() {
+    match c {
+      '\\' => value.push_str("\\\\"),
+      '\n' => value.push_str("\\n"),
+      '\t' => value.push_str("\\t"),
+      '\r' => value.push_str("\\r"),
+      c => value.push(c),
+    }
+  }
+
+  value
 }
 
 /// The user's `$XDG_DATA_HOME`, usually `~/.local/share`, where desktops look
@@ -114,18 +197,23 @@ fn data_dirs_in(value: Option<OsString>) -> Vec<PathBuf> {
     .collect()
 }
 
-/// Writes `launcher`'s desktop entry and icons under `data_home`, as returned
-/// by [`data_home`]. Files that already hold the same contents are left
-/// alone, so this can run on every start.
+/// Writes `launcher`'s desktop entry, icons and [`mime_package`] under
+/// `data_home`, as returned by [`data_home`]. Files that already hold the
+/// same contents are left alone, so this can run on every start. Returns
+/// whether it wrote or removed anything, after which the desktop's caches
+/// need a [`refresh`].
 ///
 /// Writes nothing when a package installed an entry with the same ID in one
 /// of `data_dirs`, as returned by [`data_dirs`], so the package's entry is
-/// the one the menu shows.
+/// the one the menu shows. When an AppImage integration tool listed the
+/// program under a name of its own, the entry this wrote before is removed
+/// and only the mime package is written, so the menu doesn't show it twice.
 ///
 /// # Errors
 ///
-/// Why a file could not be written. Files written before it stay in place.
-pub fn install(data_home: &Path, data_dirs: &[PathBuf], launcher: &Launcher) -> io::Result<()> {
+/// Why a file could not be written or removed. Files written before it stay
+/// in place.
+pub fn install(data_home: &Path, data_dirs: &[PathBuf], launcher: &Launcher) -> io::Result<bool> {
   let entry_name = format!("{}.desktop", launcher.id);
   let packaged = data_dirs
     .iter()
@@ -133,7 +221,18 @@ pub fn install(data_home: &Path, data_dirs: &[PathBuf], launcher: &Launcher) -> 
     .any(|dir| dir.join("applications").join(&entry_name).exists());
 
   if packaged {
-    return Ok(());
+    return Ok(false);
+  }
+
+  let applications = data_home.join("applications");
+  let entry_file = applications.join(&entry_name);
+  let package = data_home
+    .join("mime/packages")
+    .join(format!("{}.xml", launcher.id));
+  let mut changed = write_if_changed(&package, mime_package(launcher).as_bytes())?;
+
+  if integrated(&applications, &entry_name, launcher.id) {
+    return Ok(remove_if_present(&entry_file)? || changed);
   }
 
   for (size, png) in launcher.icons {
@@ -143,24 +242,124 @@ pub fn install(data_home: &Path, data_dirs: &[PathBuf], launcher: &Launcher) -> 
       .join("apps")
       .join(format!("{}.png", launcher.id));
 
-    write_if_changed(&icon, png)?;
+    changed |= write_if_changed(&icon, png)?;
   }
 
-  let entry_file = data_home.join("applications").join(entry_name);
+  changed |= write_if_changed(&entry_file, entry(launcher)?.as_bytes())?;
 
-  write_if_changed(&entry_file, entry(launcher)?.as_bytes())
+  Ok(changed)
 }
 
-fn write_if_changed(path: &Path, contents: &[u8]) -> io::Result<()> {
+/// Updates the desktop's caches of the mime types and desktop entries under
+/// `data_home`, so it sees what [`install`] wrote. A missing tool or a
+/// failure is ignored: the caches are only rebuilt later.
+pub fn refresh(data_home: &Path) {
+  run(
+    "update-mime-database",
+    &[data_home.join("mime").as_os_str()],
+  );
+  run(
+    "update-desktop-database",
+    &[data_home.join("applications").as_os_str()],
+  );
+}
+
+/// Makes the desktop entry `id` the default app for each of `file_types`
+/// that has none, through `xdg-mime`. A missing tool or a failure is
+/// ignored.
+pub fn claim_defaults(id: &str, file_types: &[FileType]) {
+  let entry_name = format!("{id}.desktop");
+
+  for file_type in file_types {
+    let current = std::process::Command::new("xdg-mime")
+      .args(["query", "default", file_type.mime])
+      .stderr(std::process::Stdio::null())
+      .output();
+    let unset = current.is_ok_and(|output| {
+      output.status.success() && String::from_utf8_lossy(&output.stdout).trim().is_empty()
+    });
+
+    if unset {
+      run(
+        "xdg-mime",
+        &[
+          "default".as_ref(),
+          entry_name.as_ref(),
+          file_type.mime.as_ref(),
+        ],
+      );
+    }
+  }
+}
+
+/// Runs `program` with `arguments` to its end, ignoring its output and
+/// whether it ran.
+fn run(program: &str, arguments: &[&std::ffi::OsStr]) {
+  std::process::Command::new(program)
+    .args(arguments)
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .ok();
+}
+
+/// Whether an AppImage integration tool, such as AppImageLauncher or Gear
+/// Lever, listed the app in `applications`. Each copies the AppImage's own
+/// entry under a name of its choosing, keeping its `StartupWMClass`, and sets
+/// `TryExec` to the AppImage. An entry whose AppImage is gone is hidden by
+/// desktops, so it doesn't count.
+fn integrated(applications: &Path, own: &str, id: &str) -> bool {
+  let Ok(files) = std::fs::read_dir(applications) else {
+    return false;
+  };
+
+  files
+    .flatten()
+    .map(|file| file.path())
+    .filter(|path| {
+      path
+        .extension()
+        .is_some_and(|extension| extension == "desktop")
+        && path.file_name().is_some_and(|name| name != own)
+    })
+    .filter_map(|path| std::fs::read_to_string(path).ok())
+    .any(|text| {
+      value(&text, "StartupWMClass") == Some(id)
+        && value(&text, "TryExec").is_some_and(|file| Path::new(file).is_file())
+    })
+}
+
+/// The value of the first `key=value` line for `key` in a desktop entry.
+pub(crate) fn value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+  text
+    .lines()
+    .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
+    .map(str::trim)
+}
+
+/// Removes the file at `path`, if there is one. Returns whether there was.
+fn remove_if_present(path: &Path) -> io::Result<bool> {
+  match std::fs::remove_file(path) {
+    Ok(()) => Ok(true),
+    Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+    Err(error) => Err(error),
+  }
+}
+
+/// Writes `contents` to `path`, unless it holds them already. Returns
+/// whether it wrote.
+fn write_if_changed(path: &Path, contents: &[u8]) -> io::Result<bool> {
   if std::fs::read(path).is_ok_and(|current| current == contents) {
-    return Ok(());
+    return Ok(false);
   }
 
   if let Some(folder) = path.parent() {
     std::fs::create_dir_all(folder)?;
   }
 
-  std::fs::write(path, contents)
+  std::fs::write(path, contents)?;
+
+  Ok(true)
 }
 
 #[cfg(test)]
@@ -175,6 +374,13 @@ mod tests {
       categories: "Game;",
       executable,
       icons: &[(16, b"small"), (256, b"large")],
+      file_types: &[FileType {
+        mime: "application/x-app-save",
+        comment: "App save",
+        extension: "appsave",
+        sub_class_of: "application/zip",
+      }],
+      schemes: &["app"],
     }
   }
 
@@ -188,12 +394,44 @@ mod tests {
        Type=Application\n\
        Name=App\n\
        Comment=An app\n\
-       Exec=\"/opt/app\"\n\
+       TryExec=/opt/app\n\
+       Exec=\"/opt/app\" %u\n\
        Icon=org.example.App\n\
        Terminal=false\n\
        Categories=Game;\n\
+       MimeType=application/x-app-save;x-scheme-handler/app;\n\
        StartupWMClass=org.example.App\n"
     );
+  }
+
+  #[test]
+  fn the_mime_package_matches_each_file_type_by_name_over_its_contents() {
+    let package = mime_package(&launcher(Path::new("/opt/app")));
+
+    assert_eq!(
+      package,
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+       <mime-info xmlns=\"http://www.freedesktop.org/standards/shared-mime-info\">\n\
+       \x20 <mime-type type=\"application/x-app-save\">\n\
+       \x20   <comment>App save</comment>\n\
+       \x20   <sub-class-of type=\"application/zip\"/>\n\
+       \x20   <glob pattern=\"*.appsave\"/>\n\
+       \x20 </mime-type>\n\
+       </mime-info>\n"
+    );
+  }
+
+  #[test]
+  fn install_writes_the_mime_package_and_says_when_it_changed_anything() {
+    let home = tempfile::tempdir().unwrap();
+    let launcher = launcher(Path::new("/opt/app"));
+
+    assert!(install(home.path(), &[], &launcher).unwrap());
+    assert_eq!(
+      std::fs::read_to_string(home.path().join("mime/packages/org.example.App.xml")).unwrap(),
+      mime_package(&launcher)
+    );
+    assert!(!install(home.path(), &[], &launcher).unwrap());
   }
 
   #[test]
@@ -202,6 +440,23 @@ mod tests {
 
     assert!(
       entry.contains(r#"Exec="/my apps/\\"q\\"\\$\\`\\\\100%%""#),
+      "{entry}"
+    );
+  }
+
+  #[test]
+  fn try_exec_names_the_executable_as_a_plain_path() {
+    let entry = entry(&launcher(Path::new("/my apps/app"))).unwrap();
+
+    assert!(entry.contains("\nTryExec=/my apps/app\n"), "{entry}");
+  }
+
+  #[test]
+  fn try_exec_escapes_only_what_a_string_value_reserves() {
+    let entry = entry(&launcher(Path::new("/a\\b\nc\td\re\"$`%"))).unwrap();
+
+    assert!(
+      entry.contains("\nTryExec=/a\\\\b\\nc\\td\\re\"$`%\n"),
       "{entry}"
     );
   }
@@ -247,7 +502,7 @@ mod tests {
     let entry =
       std::fs::read_to_string(home.path().join("applications/org.example.App.desktop")).unwrap();
 
-    assert!(entry.contains("Exec=\"/new/app\"\n"), "{entry}");
+    assert!(entry.contains("Exec=\"/new/app\" %u\n"), "{entry}");
   }
 
   #[test]
@@ -270,6 +525,100 @@ mod tests {
     assert!(!home.path().join("icons").exists());
   }
 
+  /// Writes `name` under `home`'s launchers, as an AppImage integration tool
+  /// copies the AppImage's entry: same window class, renamed, and pointing
+  /// at the AppImage at `appimage`.
+  fn integrated(home: &Path, name: &str, appimage: &Path) {
+    let path = home.join("applications").join(name);
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+      &path,
+      format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=App\n\
+         Exec={appimage} %U\n\
+         TryExec={appimage}\n\
+         Icon=appimagekit_0123_org.example.App\n\
+         StartupWMClass=org.example.App\n\
+         X-AppImage-Version=1.0.0\n",
+        appimage = appimage.display()
+      ),
+    )
+    .unwrap();
+  }
+
+  #[test]
+  fn install_leaves_the_menu_to_an_appimage_integration_tool_entry() {
+    let names = [
+      "appimagekit_5d41402abc4b2a76b9719d911017c592-App.desktop",
+      "app.desktop",
+    ];
+
+    for name in names {
+      let home = tempfile::tempdir().unwrap();
+      let appimage = home.path().join("App.AppImage");
+      let own = home.path().join("applications/org.example.App.desktop");
+
+      std::fs::write(&appimage, "").unwrap();
+      install(home.path(), &[], &launcher(&appimage)).unwrap();
+      integrated(home.path(), name, &appimage);
+      install(home.path(), &[], &launcher(&appimage)).unwrap();
+
+      assert!(
+        !own.exists(),
+        "{name}: Rivet's own entry was kept beside it"
+      );
+      assert!(home.path().join("applications").join(name).exists());
+    }
+  }
+
+  #[test]
+  fn install_ignores_an_integration_tool_entry_whose_appimage_is_gone() {
+    let home = tempfile::tempdir().unwrap();
+
+    integrated(
+      home.path(),
+      "app.desktop",
+      &home.path().join("Deleted.AppImage"),
+    );
+    install(home.path(), &[], &launcher(Path::new("/opt/app"))).unwrap();
+
+    assert!(
+      home
+        .path()
+        .join("applications/org.example.App.desktop")
+        .exists()
+    );
+  }
+
+  #[test]
+  fn install_ignores_other_apps_entries() {
+    let home = tempfile::tempdir().unwrap();
+    let other = home.path().join("applications/other.desktop");
+    let existing = home.path().join("Other.AppImage");
+
+    std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+    std::fs::write(&existing, "").unwrap();
+    std::fs::write(
+      &other,
+      format!(
+        "[Desktop Entry]\nTryExec={}\nStartupWMClass=org.example.AppTwo\n",
+        existing.display()
+      ),
+    )
+    .unwrap();
+    install(home.path(), &[], &launcher(Path::new("/opt/app"))).unwrap();
+
+    assert!(
+      home
+        .path()
+        .join("applications/org.example.App.desktop")
+        .exists()
+    );
+  }
+
   #[test]
   fn install_keeps_updating_its_own_entry_when_data_home_is_a_data_dir() {
     let home = tempfile::tempdir().unwrap();
@@ -281,7 +630,7 @@ mod tests {
     let entry =
       std::fs::read_to_string(home.path().join("applications/org.example.App.desktop")).unwrap();
 
-    assert!(entry.contains("Exec=\"/new/app\"\n"), "{entry}");
+    assert!(entry.contains("Exec=\"/new/app\" %u\n"), "{entry}");
   }
 
   #[test]

@@ -124,11 +124,7 @@ async fn fetch_code(config: &Config, community: &str, code: &str) -> Result<Vec<
     .await
     .map_err(|error| match error {
       thunderstore_engine::Error::Config(_) => ReadFailure::UnknownCode,
-      thunderstore_engine::Error::Http(http)
-        if http.status().is_some_and(|status| status.as_u16() == 404) =>
-      {
-        ReadFailure::UnknownCode
-      }
+      thunderstore_engine::Error::Http(http) if not_found(&http) => ReadFailure::UnknownCode,
       other => ReadFailure::Unreachable(other.to_string()),
     })?;
   let encoded = std::str::from_utf8(&body)
@@ -139,6 +135,15 @@ async fn fetch_code(config: &Config, community: &str, code: &str) -> Result<Vec<
   STANDARD
     .decode(encoded.trim())
     .map_err(|error| ReadFailure::Damaged(error.to_string()))
+}
+
+/// Whether Thunderstore answered 404, read from the reqwest error the
+/// engine's opaque [`HttpError`](thunderstore_engine::error::HttpError) wraps.
+fn not_found(http: &thunderstore_engine::error::HttpError) -> bool {
+  std::error::Error::source(http)
+    .and_then(|source| source.downcast_ref::<reqwest::Error>())
+    .and_then(reqwest::Error::status)
+    .is_some_and(|status| status == reqwest::StatusCode::NOT_FOUND)
 }
 
 /// Creates `import.profile`, installs `import.packages` into it at their
@@ -287,7 +292,7 @@ mods:
   /// A zip holding `entries`, by name and content.
   fn zip(entries: &[(&str, &str)]) -> Vec<u8> {
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+    let options = zip::write::SimpleFileOptions::default();
 
     for (name, body) in entries {
       zip.start_file(*name, options).unwrap();
@@ -383,7 +388,10 @@ mods:
     exported(run_now(export(Destination::File(path.clone())), &config)).unwrap();
 
     let archive = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
-    let names: Vec<&str> = archive.file_names().collect();
+    let names: Vec<String> = archive
+      .file_names()
+      .map(|name| name.unwrap().into_owned())
+      .collect();
 
     assert!(names.iter().all(|name| !name.contains("pins")), "{names:?}");
   }

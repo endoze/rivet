@@ -390,7 +390,7 @@ pub(crate) fn version_chosen(state: &mut State, version: Option<String>) -> Vec<
 impl State {
   /// The open profile's packages and the shown index an install is planned
   /// from, once both are loaded.
-  fn planning(&self) -> Option<(&Installed, &Index)> {
+  pub(crate) fn planning(&self) -> Option<(&Installed, &Index)> {
     let installed = self.profile.as_ref().and_then(Profile::installed)?;
     let index = self.browse.as_ref()?.index.as_ref()?;
 
@@ -401,7 +401,7 @@ impl State {
 /// The packages installing `full_name` at `chosen`, or at the latest when
 /// `None`, brings, holding pinned packages where they are. `None` when the
 /// index does not have it.
-fn plan(
+pub(crate) fn plan(
   index: &Index,
   installed: &Installed,
   full_name: &str,
@@ -451,10 +451,25 @@ pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
     .as_ref()
     .is_some_and(Confirmation::can_confirm);
 
-  if !confirmed || !state.can_add_mods() {
+  if !confirmed || !state.can_add_mods() || state.planning().is_none() {
     return Vec::new();
   }
 
+  let Some(confirmation) = state.confirmation.take() else {
+    return Vec::new();
+  };
+
+  queue_install(state, confirmation.package.full_name, confirmation.chosen)
+}
+
+/// Queues installing `package`, an `Owner-Name`, with everything it needs
+/// into the open profile, from the list shown: at `version`, pinned, or at
+/// the latest when `None`. Nothing until both are loaded.
+pub(crate) fn queue_install(
+  state: &mut State,
+  package: String,
+  version: Option<String>,
+) -> Vec<Effect> {
   let Some(profile) = state.profile.as_ref() else {
     return Vec::new();
   };
@@ -466,10 +481,6 @@ pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
   };
   let (game, name) = (profile.game.clone(), profile.name.clone());
   let community = browse.community.clone();
-  let Some(confirmation) = state.confirmation.take() else {
-    return Vec::new();
-  };
-  let package = confirmation.package.full_name;
   let action = Action::Install(package.clone());
 
   queue::enqueue(state, game.clone(), name.clone(), action, |operation| {
@@ -479,7 +490,7 @@ pub(crate) fn install_confirmed(state: &mut State) -> Vec<Effect> {
       community,
       profile: name,
       package,
-      version: confirmation.chosen,
+      version,
       index,
     })
   })

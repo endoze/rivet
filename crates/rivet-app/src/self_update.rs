@@ -16,9 +16,9 @@ use rivet_core::self_update::Stage;
 
 impl Shell {
   /// The settings every game shares about Rivet itself: the version running,
-  /// updating automatically, and checking for updates by hand with the
-  /// result beside the button, which offers the restart or the release page
-  /// when there is one.
+  /// updating automatically, checking for updates by hand with the result
+  /// beside the button, which offers the restart or the release page when
+  /// there is one, and whether Thunderstore's install links open in Rivet.
   pub(crate) fn render_rivet_settings(&self, cx: &mut Context<Self>) -> AnyElement {
     let palette = Palette::new(cx);
     let state = &self.state;
@@ -46,6 +46,32 @@ impl Shell {
           .text_small()
           .text_color(palette.muted_text)
           .child(text::UPDATE_AUTOMATICALLY_HINT),
+      );
+    let opens_links = state
+      .install_links
+      .unwrap_or(state.settings.install_links == Some(true));
+    let links = v_flex()
+      .gap_1()
+      .child(
+        h_flex()
+          .gap_3()
+          .items_center()
+          .child(label(text::INSTALL_LINKS))
+          .child(
+            Switch::new("install-links")
+              .small()
+              .checked(opens_links)
+              .accessibility_label(text::INSTALL_LINKS)
+              .on_click(cx.listener(|this, on: &bool, _, cx| {
+                this.dispatch(Msg::InstallLinksChosen(*on), cx);
+              })),
+          ),
+      )
+      .child(
+        div()
+          .text_small()
+          .text_color(palette.muted_text)
+          .child(text::INSTALL_LINKS_HINT),
       );
     let follow_up = match &update.stage {
       Stage::Ready { .. } => Some(
@@ -110,6 +136,7 @@ impl Shell {
       )
       .child(automatic)
       .child(check)
+      .child(links)
       .into_any_element()
   }
 

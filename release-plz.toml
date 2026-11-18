@@ -1,7 +1,10 @@
 [workspace]
-changelog_config = "cliff.toml"
 changelog_update = true
-dependencies_update = true
+# Dependabot (with a cooldown) owns dependency updates; release PRs only release.
+dependencies_update = false
+git_tag_enable = true
+# dist's release.yml owns the GitHub Release; release-plz only tags.
+git_release_enable = false
 pr_labels = ["release"]
 allow_dirty = false
 publish_allow_dirty = false
@@ -15,8 +18,18 @@ publish = false
 # Release only when a release PR is merged, never on an ordinary push.
 release_always = false
 
-# dist makes the GitHub release from the tag.
-git_release_enable = false
+[changelog]
+# release-plz's default parsers, plus skips for Dependabot's grouped bumps.
+commit_parsers = [
+  { message = "^chore\\(deps\\)", skip = true },
+  { message = "^ci\\(deps\\)", skip = true },
+  { message = "^feat", group = "added" },
+  { message = "^changed", group = "changed" },
+  { message = "^deprecated", group = "deprecated" },
+  { message = "^fix", group = "fixed" },
+  { message = "^security", group = "security" },
+  { message = "^.*", group = "other" },
+]
 
 # The crates share the workspace version, and a change to any of them can
 # raise it past a patch. Only the app is tagged and keeps a changelog.
