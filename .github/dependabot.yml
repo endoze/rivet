@@ -7,6 +7,17 @@ updates:
     # Also update indirect dependencies: release-plz no longer runs cargo update.
     allow:
       - dependency-type: all
+    # These follow gpui (see the pins in Cargo.toml), so they move by hand
+    # with gpui-kit. A lone bump builds a second copy or a mismatched UI.
+    ignore:
+      - dependency-name: "gpui-kit"
+      - dependency-name: "gpui-pre-*"
+      - dependency-name: "windows"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "windows-registry"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "windows-sys"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     cooldown:
       default-days: 14
     commit-message:
