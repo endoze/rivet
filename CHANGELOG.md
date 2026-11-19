@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1](https://github.com/endoze/rivet/compare/v0.4.0...v0.4.1) - 2026-11-19
+
+### Other
+
+- update Cargo.lock dependencies
+- update Cargo.toml dependencies
+
 ## [0.4.0](https://github.com/endoze/rivet/compare/v0.3.0...v0.4.0) - 2026-11-18
 
 ### Added
