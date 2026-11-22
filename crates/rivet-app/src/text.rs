@@ -24,7 +24,11 @@ pub const EXPERIMENTAL: &str = "Experimental Windows build";
 pub const PICKER_TITLE: &str = "Choose your game";
 pub const PICKER_LIST: &str = "List";
 pub const PICKER_GRID: &str = "Grid";
-pub const YOUR_GAMES: &str = "Your games";
+pub const FAVORITES: &str = "Favorites";
+/// The star on a game that is not a favorite.
+pub const ADD_FAVORITE: &str = "Add to favorites";
+/// The star on a favorite.
+pub const REMOVE_FAVORITE: &str = "Remove from favorites";
 pub const ALL_GAMES: &str = "All games";
 /// The tag on a game Rivet has a folder for, so it is ready to mod.
 pub const READY: &str = "Ready";
