@@ -195,6 +195,8 @@ pub enum Msg {
   SearchChanged(String),
   /// The picker's list or grid was chosen.
   PickerLayoutChosen(PickerLayout),
+  /// A game's star in the picker was clicked, by community slug.
+  FavoriteToggled(String),
   /// Game covers now on disk, each by community slug. A
   /// [`Command::CacheCovers`] sends these as covers are found or downloaded.
   CoversCached(BTreeMap<String, PathBuf>),
@@ -737,6 +739,7 @@ fn apply(state: &mut State, msg: Msg) -> Vec<Effect> {
       Vec::new()
     }
     Msg::PickerLayoutChosen(layout) => picker::layout_chosen(state, layout),
+    Msg::FavoriteToggled(game) => picker::favorite_toggled(state, game),
     Msg::GamePicked(game) => pick_game(state, game),
     Msg::SteamSearched { game, folder } => steam_searched(state, game, folder),
     Msg::FolderChosen(folder) => match state.screen {
@@ -1650,6 +1653,56 @@ mod tests {
     let effects = update(&mut state, Msg::PickerLayoutChosen(PickerLayout::List));
 
     assert_eq!(effects, vec![]);
+  }
+
+  #[test]
+  fn starring_a_game_makes_it_a_favorite_and_saves_it() {
+    let mut state = on_picker();
+
+    let effects = update(&mut state, Msg::FavoriteToggled("valheim".to_string()));
+
+    assert_eq!(state.settings.favorites, ["valheim".to_string()].into());
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+    );
+  }
+
+  #[test]
+  fn starring_a_favorite_again_unstars_it_and_saves_it() {
+    let mut state = on_picker();
+
+    update(&mut state, Msg::FavoriteToggled("valheim".to_string()));
+
+    let effects = update(&mut state, Msg::FavoriteToggled("valheim".to_string()));
+
+    assert!(state.settings.favorites.is_empty());
+    assert_eq!(
+      effects,
+      vec![Effect::Run(Command::SaveSettings(state.settings.clone()))]
+    );
+  }
+
+  #[test]
+  fn starring_a_game_over_unreadable_settings_keeps_the_file() {
+    let mut state = started();
+
+    update(&mut state, Msg::SettingsLoaded(Err("bad toml".to_string())));
+
+    let effects = update(&mut state, Msg::FavoriteToggled("valheim".to_string()));
+
+    assert_eq!(state.settings.favorites, ["valheim".to_string()].into());
+    assert_eq!(effects, vec![]);
+  }
+
+  #[test]
+  fn setting_up_a_game_does_not_make_it_a_favorite() {
+    let mut state = checking("valheim", "/games/valheim");
+
+    update(&mut state, listed("/games/valheim", &["valheim.x86_64"]));
+
+    assert!(state.settings.folder("valheim").is_some());
+    assert!(state.settings.favorites.is_empty());
   }
 
   fn checking(game: &str, folder: &str) -> State {

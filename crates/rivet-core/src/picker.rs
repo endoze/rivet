@@ -113,9 +113,7 @@ pub(crate) fn steam_app_id(game: &GameDef) -> Option<u32> {
   game.profile().and_then(|profile| profile.steam_app_id())
 }
 
-/// Records the picker's list or grid and saves it, when it changed. While the
-/// settings file could not be read, nothing is saved, so the defaults shown
-/// in its place never overwrite it.
+/// Records the picker's list or grid and saves it, when it changed.
 pub(crate) fn layout_chosen(state: &mut State, layout: PickerLayout) -> Vec<Effect> {
   if state.settings.picker_layout == layout {
     return Vec::new();
@@ -123,6 +121,24 @@ pub(crate) fn layout_chosen(state: &mut State, layout: PickerLayout) -> Vec<Effe
 
   state.settings.picker_layout = layout;
 
+  save(state)
+}
+
+/// Stars `game` as a favorite, or unstars it when it is one, and saves the
+/// change.
+pub(crate) fn favorite_toggled(state: &mut State, game: String) -> Vec<Effect> {
+  let favorites = &mut state.settings.favorites;
+
+  if !favorites.remove(&game) {
+    favorites.insert(game);
+  }
+
+  save(state)
+}
+
+/// Saves the settings. While the settings file could not be read, nothing is
+/// saved, so the defaults shown in its place never overwrite it.
+fn save(state: &State) -> Vec<Effect> {
   if matches!(state.settings_error, Some(SettingsError::Load(_))) {
     return Vec::new();
   }
@@ -155,15 +171,15 @@ pub fn games<'a>(ecosystem: &'a Ecosystem, query: &str) -> Vec<&'a GameDef> {
   games
 }
 
-/// `games` split into those with a folder in `settings`, then the rest, each
-/// in the order given.
-pub fn set_up_first<'a>(
+/// `games` split into the favorites in `settings`, then the rest, each in
+/// the order given.
+pub fn favorites_first<'a>(
   games: Vec<&'a GameDef>,
   settings: &Settings,
 ) -> (Vec<&'a GameDef>, Vec<&'a GameDef>) {
   games
     .into_iter()
-    .partition(|game| settings.folder(&game.slug).is_some())
+    .partition(|game| settings.favorites.contains(&game.slug))
 }
 
 /// A store a game is sold on.
@@ -388,22 +404,22 @@ mod tests {
   }
 
   #[test]
-  fn games_with_a_folder_are_set_apart_from_the_rest_in_order() {
+  fn favorites_are_set_apart_from_the_rest_in_order() {
     let ecosystem = test_ecosystem();
-    let mut settings = Settings::default();
+    let mut settings = Settings {
+      favorites: ["valheim".to_string(), "balatro".to_string()].into(),
+      ..Settings::default()
+    };
 
     settings.games.insert(
-      "valheim".to_string(),
-      crate::settings::GameSettings::new("/games/valheim"),
+      "riskofrain2".to_string(),
+      crate::settings::GameSettings::new("/games/riskofrain2"),
     );
 
-    let (set_up, rest) = set_up_first(games(&ecosystem, ""), &settings);
+    let (favorites, rest) = favorites_first(games(&ecosystem, ""), &settings);
 
-    assert_eq!(names(set_up), vec!["Valheim"]);
-    assert_eq!(
-      names(rest),
-      vec!["Balatro", "Lethal Company", "Risk of Rain 2"]
-    );
+    assert_eq!(names(favorites), vec!["Balatro", "Valheim"]);
+    assert_eq!(names(rest), vec!["Lethal Company", "Risk of Rain 2"]);
   }
 
   #[test]

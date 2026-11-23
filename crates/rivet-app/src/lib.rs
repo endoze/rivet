@@ -21,6 +21,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::text::TextView;
@@ -496,66 +497,83 @@ impl Shell {
     });
     let layout = self.state.settings.picker_layout;
     let empty = games.is_empty().then_some(text::NO_GAME_MATCHES);
-    let games = match layout {
-      PickerLayout::List => {
-        let (set_up, rest) = rivet_core::picker::set_up_first(games, &self.state.settings);
-        let headed = !set_up.is_empty();
-        let heading = |id: &'static str, label: &'static str| {
-          div()
-            .id(id)
-            .pt_2()
-            .text_small()
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(palette.muted_text)
-            .child(label)
-            .test_support()
-        };
-        let set_up: Vec<_> = set_up
-          .into_iter()
-          .map(|game| self.render_pickable(game, layout, cx))
-          .collect();
-        let rest: Vec<_> = rest
-          .into_iter()
-          .map(|game| self.render_pickable(game, layout, cx))
-          .collect();
-        let all = (headed && !rest.is_empty()).then(|| heading("all-games", text::ALL_GAMES));
-
-        v_flex()
-          .id("games-list")
-          .flex_1()
-          .w_full()
-          .max_w(spec(LIST_WIDTH))
-          .mx_auto()
-          .overflow_y_scroll()
-          .children(empty)
-          .children(headed.then(|| heading("your-games", text::YOUR_GAMES)))
-          .children(set_up)
-          .children(all)
-          .children(rest)
-      }
+    let (favorites, rest) = rivet_core::picker::favorites_first(games, &self.state.settings);
+    let headed = !favorites.is_empty();
+    let heading = |id: &'static str, label: &'static str| {
+      div()
+        .id(id)
+        .pt_2()
+        .text_small()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(palette.muted_text)
+        .when(layout == PickerLayout::Grid, |heading| {
+          heading.text_center()
+        })
+        .child(label)
+        .test_support()
+    };
+    let favorites_heading = headed.then(|| heading("favorites", text::FAVORITES));
+    let all = (headed && !rest.is_empty()).then(|| heading("all-games", text::ALL_GAMES));
+    let favorites: Vec<_> = favorites
+      .into_iter()
+      .map(|game| self.render_pickable(game, layout, cx))
+      .collect();
+    let rest: Vec<_> = rest
+      .into_iter()
+      .map(|game| self.render_pickable(game, layout, cx))
+      .collect();
+    let (id, scroll, content) = match layout {
+      PickerLayout::List => (
+        "games-list",
+        "games-list-scroll",
+        v_flex().w_full().child(
+          v_flex()
+            .w_full()
+            .max_w(spec(LIST_WIDTH))
+            .mx_auto()
+            .children(empty)
+            .children(favorites_heading)
+            .children(favorites)
+            .children(all)
+            .children(rest),
+        ),
+      ),
       PickerLayout::Grid => {
-        let tiles: Vec<_> = games
-          .into_iter()
-          .map(|game| self.render_pickable(game, layout, cx))
-          .collect();
-
-        v_flex()
-          .id("games-grid")
-          .flex_1()
-          .overflow_y_scroll()
-          .child(
+        let tiles = |tiles: Vec<AnyElement>| {
+          (!tiles.is_empty()).then(|| {
             div()
               .flex()
               .flex_row()
               .flex_wrap()
               .justify_center()
               .gap_3()
-              .children(empty)
-              .children(tiles),
-          )
+              .children(tiles)
+          })
+        };
+
+        (
+          "games-grid",
+          "games-grid-scroll",
+          v_flex()
+            .w_full()
+            .gap_3()
+            .children(empty.map(|empty| div().text_center().child(empty)))
+            .children(favorites_heading)
+            .children(tiles(favorites))
+            .children(all)
+            .children(tiles(rest)),
+        )
       }
-    }
-    .test_support();
+    };
+    // The scroll area spans the window so its scrollbar sits at the edge,
+    // not against the narrower list column.
+    let games = v_flex()
+      .id(id)
+      .flex_1()
+      .min_h_0()
+      .w_full()
+      .child(content.overflow_y_scrollbar().id(scroll))
+      .test_support();
     let shell = cx.weak_entity();
     let labelled = |icon: gpui_kit::assets::IconName, label: &'static str| {
       h_flex()
@@ -628,9 +646,10 @@ impl Shell {
 
   /// `game` in the picker, found in tests by its community slug. In the
   /// list it is a row with its cover, its name over the stores it is sold
-  /// on, and a tag when Rivet has its folder; in the grid, a cover tile with
-  /// its name under it. Either way a game whose mods Rivet cannot install is
-  /// marked under its name.
+  /// on; in the grid, a cover tile with its name under it. Either way it has
+  /// a star that adds it to or removes it from the favorites, a game whose
+  /// mods Rivet cannot install is marked under its name, and a game whose
+  /// folder Rivet has is tagged.
   fn render_pickable(
     &self,
     game: &GameDef,
@@ -656,6 +675,56 @@ impl Shell {
         .child(text::NO_MOD_SUPPORT)
         .test_support()
     });
+    let set_up = self.state.settings.folder(&game.slug).is_some().then(|| {
+      let color = cx.theme().success;
+
+      div()
+        .id("ready")
+        .flex_none()
+        .aria_label(text::READY)
+        .child(
+          Tag::custom(color, color, color)
+            .outline()
+            .small()
+            .rounded_full()
+            .text_size(spec(TAG_TEXT_SIZE))
+            .child(
+              h_flex()
+                .gap_1()
+                .child(Icon::new(IconName::Check).xsmall())
+                .child(text::READY),
+            ),
+        )
+        .test_support()
+    });
+    let favorite = self.state.settings.favorites.contains(&game.slug);
+    let star = {
+      let slug = slug.clone();
+      let (icon, label) = if favorite {
+        (
+          Icon::new(IconName::StarFill).text_color(palette.warning),
+          text::REMOVE_FAVORITE,
+        )
+      } else {
+        (
+          Icon::new(IconName::Star).text_color(palette.muted_text),
+          text::ADD_FAVORITE,
+        )
+      };
+
+      Button::new("favorite")
+        .icon(icon)
+        .ghost()
+        .small()
+        .toggled(favorite)
+        .tooltip(label)
+        .accessibility_label(label)
+        .on_click(cx.listener(move |this, _, _, cx| {
+          // The star sits inside the clickable game, which would open it.
+          cx.stop_propagation();
+          this.dispatch(Msg::FavoriteToggled(slug.clone()), cx);
+        }))
+    };
     let item = match layout {
       PickerLayout::List => {
         let stores = rivet_core::picker::stores(game);
@@ -669,28 +738,6 @@ impl Shell {
             .text_color(palette.muted_text)
             .aria_label(names.clone())
             .child(names)
-            .test_support()
-        });
-        let set_up = self.state.settings.folder(&game.slug).is_some().then(|| {
-          let color = cx.theme().success;
-
-          div()
-            .id("ready")
-            .flex_none()
-            .aria_label(text::READY)
-            .child(
-              Tag::custom(color, color, color)
-                .outline()
-                .small()
-                .rounded_full()
-                .text_size(spec(TAG_TEXT_SIZE))
-                .child(
-                  h_flex()
-                    .gap_1()
-                    .child(Icon::new(IconName::Check).xsmall())
-                    .child(text::READY),
-                ),
-            )
             .test_support()
         });
 
@@ -712,6 +759,7 @@ impl Shell {
               .children(no_mod_support),
           )
           .children(set_up)
+          .child(star)
           .child(
             Icon::new(IconName::ChevronRight)
               .small()
@@ -732,8 +780,14 @@ impl Shell {
           GRID_COVER_HEIGHT,
           cx,
         ))
-        .child(name_label(name))
-        .children(no_mod_support),
+        .child(
+          h_flex()
+            .gap_1()
+            .child(div().flex_1().min_w_0().child(name_label(name)))
+            .child(star),
+        )
+        .children(no_mod_support)
+        .children(set_up.map(|ready| h_flex().child(ready))),
     };
     let item = item
       .cursor_pointer()

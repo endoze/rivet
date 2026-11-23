@@ -23,6 +23,10 @@ _Avoid_: Dependent, child, consumer
 A user's choice to hold a package at a specific version in one profile. A pinned package is skipped by "update all" until it is unpinned.
 _Avoid_: Lock, freeze
 
+**Favorite**:
+A game the user starred in the game picker, which lists it first. Setting up a game does not make it one.
+_Avoid_: Pinned game, starred game
+
 **Operation**:
 One user-requested change to a profile: an install, update, uninstall, enable, disable, or import. A profile runs one operation at a time and queues the rest.
 _Avoid_: Task, job, action

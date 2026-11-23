@@ -1,6 +1,8 @@
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions, px};
+use gpui_kit::{
+  AnyWindowHandle, AppContext as _, Entity, ScrollDelta, TestAppContext, WindowOptions, point, px,
+};
 use rivet_app::Shell;
 use rivet_core::picker::Step;
 use rivet_core::settings::{GameSettings, PickerLayout, Settings};
@@ -107,49 +109,118 @@ fn picking_a_game_from_the_grid_opens_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_list_puts_games_with_a_folder_under_their_own_heading(cx: &mut TestAppContext) {
-  let mut settings = Settings::default();
+fn either_layout_puts_favorites_under_their_own_heading(cx: &mut TestAppContext) {
+  for layout in [PickerLayout::List, PickerLayout::Grid] {
+    let mut settings = Settings {
+      picker_layout: layout,
+      favorites: ["valheim".to_string()].into(),
+      ..Settings::default()
+    };
 
-  settings.games.insert(
-    "riskofrain2".to_string(),
-    GameSettings::new("/games/RiskOfRain2"),
-  );
-
-  let picker = open_picker_with(cx, settings);
-
-  cx.update_window(picker.window, |_, window, cx| {
-    window.render_frame(cx);
-
-    let top = |window: &mut gpui_kit::Window, id: &'static str| window.find(id).bounds().top();
-    let yours = top(window, "your-games");
-    let set_up = top(window, "riskofrain2");
-    let all = top(window, "all-games");
-    let rest = top(window, "valheim");
-
-    assert!(
-      yours < set_up && set_up < all && all < rest,
-      "the set-up game is not listed first under its own heading"
+    settings.games.insert(
+      "riskofrain2".to_string(),
+      GameSettings::new("/games/RiskOfRain2"),
     );
-    assert_eq!(
-      window.within("riskofrain2").find("ready").label(),
-      Some("Ready")
-    );
-    assert!(window.within("valheim").try_find("ready").is_none());
-  })
-  .unwrap();
+
+    let picker = open_picker_with(cx, settings);
+
+    cx.update_window(picker.window, |_, window, cx| {
+      window.render_frame(cx);
+
+      let top = |window: &mut gpui_kit::Window, id: &'static str| window.find(id).bounds().top();
+      let favorites = top(window, "favorites");
+      let favorite = top(window, "valheim");
+      let all = top(window, "all-games");
+      let rest = top(window, "riskofrain2");
+
+      assert!(
+        favorites < favorite && favorite < all && all < rest,
+        "{layout:?}: the favorite is not listed first under its own heading"
+      );
+      assert_eq!(
+        window.within("riskofrain2").find("ready").label(),
+        Some("Ready"),
+        "{layout:?}: a set-up game that is not a favorite lost its tag"
+      );
+      assert!(
+        window.within("valheim").try_find("ready").is_none(),
+        "{layout:?}"
+      );
+    })
+    .unwrap();
+  }
 }
 
 #[gpui_kit::test]
-fn the_list_has_no_headings_while_no_game_has_a_folder(cx: &mut TestAppContext) {
-  let picker = open_picker(cx, PickerLayout::List);
+fn neither_layout_has_headings_while_no_game_is_a_favorite(cx: &mut TestAppContext) {
+  for layout in [PickerLayout::List, PickerLayout::Grid] {
+    let mut settings = Settings {
+      picker_layout: layout,
+      ..Settings::default()
+    };
 
-  cx.update_window(picker.window, |_, window, cx| {
-    window.render_frame(cx);
+    settings.games.insert(
+      "riskofrain2".to_string(),
+      GameSettings::new("/games/RiskOfRain2"),
+    );
 
-    assert!(window.try_find("your-games").is_none());
-    assert!(window.try_find("all-games").is_none());
-  })
-  .unwrap();
+    let picker = open_picker_with(cx, settings);
+
+    cx.update_window(picker.window, |_, window, cx| {
+      window.render_frame(cx);
+
+      assert!(window.try_find("favorites").is_none(), "{layout:?}");
+      assert!(window.try_find("all-games").is_none(), "{layout:?}");
+    })
+    .unwrap();
+  }
+}
+
+#[gpui_kit::test]
+fn the_star_adds_and_removes_a_favorite_without_opening_the_game(cx: &mut TestAppContext) {
+  for layout in [PickerLayout::List, PickerLayout::Grid] {
+    let picker = open_picker(cx, layout);
+    let favorites = |cx: &mut TestAppContext| {
+      picker
+        .shell
+        .read_with(cx, |shell, _| shell.state().settings.favorites.clone())
+    };
+
+    cx.update_window(picker.window, |_, window, cx| {
+      window.render_frame(cx);
+
+      let star = window.within("valheim").find("favorite");
+
+      assert_eq!(star.label(), Some("Add to favorites"), "{layout:?}");
+      assert_eq!(star.checked(), Some(false), "{layout:?}");
+
+      window.within("valheim").click("favorite", cx);
+      window.render_frame(cx);
+
+      let star = window.within("valheim").find("favorite");
+
+      assert_eq!(star.label(), Some("Remove from favorites"), "{layout:?}");
+      assert_eq!(star.checked(), Some(true), "{layout:?}");
+      assert!(window.try_find("favorites").is_some(), "{layout:?}");
+    })
+    .unwrap();
+
+    assert_eq!(favorites(cx), ["valheim".to_string()].into(), "{layout:?}");
+    assert_eq!(
+      picker
+        .shell
+        .read_with(cx, |shell, _| shell.state().picker.step.clone()),
+      Step::Idle,
+      "{layout:?}: starring the game opened it"
+    );
+
+    cx.update_window(picker.window, |_, window, cx| {
+      window.within("valheim").click("favorite", cx);
+    })
+    .unwrap();
+
+    assert!(favorites(cx).is_empty(), "{layout:?}");
+  }
 }
 
 #[gpui_kit::test]
@@ -203,6 +274,40 @@ fn a_game_whose_mods_cannot_be_installed_is_marked_and_still_opens(cx: &mut Test
       Step::Choosing("riskofrain2".to_string()),
       "{layout:?}"
     );
+  }
+}
+
+#[gpui_kit::test]
+fn games_past_the_window_scroll_into_view_in_either_layout(cx: &mut TestAppContext) {
+  for (layout, area) in [
+    (PickerLayout::List, "games-list"),
+    (PickerLayout::Grid, "games-grid"),
+  ] {
+    let settings = Settings {
+      picker_layout: layout,
+      ..Settings::default()
+    };
+    let picker = open_picker_on(cx, settings, many_games(40));
+
+    cx.update_window(picker.window, |_, window, cx| {
+      window.render_frame(cx);
+
+      let height = window.viewport_size().height;
+      let before = window.find("game-00").bounds().top();
+
+      assert!(
+        window.find(area).bounds().bottom() <= height,
+        "{layout:?}: the games run past the window instead of scrolling"
+      );
+
+      window.scroll(area, ScrollDelta::Pixels(point(px(0.), px(-200.))), cx);
+
+      assert!(
+        window.find("game-00").bounds().top() < before,
+        "{layout:?}: the games did not scroll"
+      );
+    })
+    .unwrap();
   }
 }
 
@@ -328,15 +433,21 @@ fn open_picker(cx: &mut TestAppContext, layout: PickerLayout) -> Picker {
   )
 }
 
-/// Opens the picker with `settings`, which name no last game.
+/// Opens the picker on [`two_games`] with `settings`, which name no last
+/// game.
 fn open_picker_with(cx: &mut TestAppContext, settings: Settings) -> Picker {
+  open_picker_on(cx, settings, two_games())
+}
+
+/// Opens the picker on `ecosystem` with `settings`, which name no last game.
+fn open_picker_on(cx: &mut TestAppContext, settings: Settings, ecosystem: Ecosystem) -> Picker {
   cx.update(gpui_kit::init);
 
   let (commands, sent) = unbounded::<Command>();
   let (answers, inbox) = unbounded::<Msg>();
   let (window, shell) = cx.update(|cx| {
     gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
-      cx.new(|cx| Shell::new(State::new(two_games()), commands, inbox, window, cx))
+      cx.new(|cx| Shell::new(State::new(ecosystem), commands, inbox, window, cx))
     })
     .expect("open test window")
   });
@@ -352,6 +463,27 @@ fn open_picker_with(cx: &mut TestAppContext, settings: Settings) -> Picker {
     sent,
     answers,
   }
+}
+
+/// `count` games named and slugged `game-00`, `game-01` and on, too many to
+/// fit in the window in either layout.
+fn many_games(count: usize) -> Ecosystem {
+  let games: Vec<String> = (0..count)
+    .map(|n| {
+      format!(
+        r#""game-{n:02}": {{
+          "label": "game-{n:02}",
+          "meta": {{ "displayName": "game-{n:02}" }},
+          "r2modman": [{{
+            "gameInstanceType": "game",
+            "packageIndex": "https://thunderstore.io/c/game-{n:02}/api/v1/package/"
+          }}]
+        }}"#
+      )
+    })
+    .collect();
+
+  Ecosystem::from_json(&format!(r#"{{ "games": {{ {} }} }}"#, games.join(","))).unwrap()
 }
 
 /// Valheim with a cover and no store, and Risk of Rain 2 without a cover,

@@ -5,7 +5,7 @@ use crate::install::DEFAULT_PROFILE;
 use crate::loader_files::LoaderFile;
 use crate::manage::Tab;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use thunderstore_engine::profile::launch::Runtime;
 
@@ -40,6 +40,10 @@ pub struct Settings {
   pub picker_layout: PickerLayout,
   /// Per-game settings, keyed by community slug.
   pub games: BTreeMap<String, GameSettings>,
+  /// The community slugs of the games the user starred, which the picker
+  /// shows first. A game need not be set up to be one.
+  #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+  pub favorites: BTreeSet<String>,
   /// Whether Rivet checks GitHub for a newer release of itself on each start,
   /// and offers to download it.
   #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -432,6 +436,26 @@ mod tests {
 
     assert_eq!(saved["picker_layout"], "grid");
     assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), settings);
+  }
+
+  #[test]
+  fn no_game_is_a_favorite_until_one_is_starred_and_saved() {
+    let older: Settings = serde_json::from_value(serde_json::json!({ "games": {} })).unwrap();
+    let starred = Settings {
+      favorites: ["valheim".to_string()].into(),
+      ..Settings::default()
+    };
+    let saved = serde_json::to_value(&starred).unwrap();
+
+    assert!(older.favorites.is_empty());
+    assert_eq!(
+      serde_json::to_value(Settings::default())
+        .unwrap()
+        .get("favorites"),
+      None
+    );
+    assert_eq!(saved["favorites"], serde_json::json!(["valheim"]));
+    assert_eq!(serde_json::from_value::<Settings>(saved).unwrap(), starred);
   }
 
   #[test]
