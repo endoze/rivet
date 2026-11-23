@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0](https://github.com/endoze/rivet/compare/v0.4.0...v0.5.0) - 2026-11-23
+
+### Added
+
+- *(picker)* let users star favorite games
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.4.0](https://github.com/endoze/rivet/compare/v0.3.0...v0.4.0) - 2026-11-18
 
 ### Added
